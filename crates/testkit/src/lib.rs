@@ -8,7 +8,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 
 pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState};
 use rcli_agent::{Credentials, ServerEndpoint};
-pub use rcli_server::clock::ManualClock;
+pub use rcli_server::clock::{Clock, ManualClock};
 pub use reqwest::StatusCode;
 use serde_json::Value;
 use testcontainers_modules::{
@@ -34,12 +34,17 @@ pub struct TestSystem {
 
 impl TestSystem {
     pub async fn start() -> Self {
+        Self::start_on("127.0.0.1:0".parse().unwrap()).await
+    }
+
+    /// Like `start`, with the Controller API on a fixed address (the Dashboard's Playwright stack).
+    pub async fn start_on(http_addr: std::net::SocketAddr) -> Self {
         let postgres = Postgres::default().with_tag("16-alpine").start().await.expect("start postgres container");
         let port = postgres.get_host_port_ipv4(5432).await.unwrap();
         let clock = Arc::new(ManualClock::default());
         let config = rcli_server::Config {
             database_url: format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
-            http_addr: "127.0.0.1:0".parse().unwrap(),
+            http_addr,
             agent_addr: "127.0.0.1:0".parse().unwrap(),
             agent_hostnames: vec!["localhost".into()],
             bootstrap_admin_token: BOOTSTRAP_TOKEN.into(),
@@ -94,6 +99,12 @@ impl TestSystem {
         let (status, body) = self.api.post(&format!("/api/v1/users/{name}/tokens")).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         body["token"].as_str().unwrap().to_owned()
+    }
+
+    /// The current TOTP code for a base32 `secret` (as an authenticator app would show it), by the Server clock.
+    pub fn totp(&self, secret: &str) -> String {
+        let secret = data_encoding::BASE32_NOPAD.decode(secret.as_bytes()).expect("base32 TOTP secret");
+        format!("{:06}", rcli_server::auth::totp(&secret, self.clock.now().timestamp()))
     }
 
     pub async fn create_enrollment_code(&self) -> String {
@@ -280,6 +291,10 @@ impl ApiClient {
 
     pub async fn post(&self, path: &str) -> (StatusCode, Value) {
         self.send(self.http.post(format!("{}{path}", self.base))).await
+    }
+
+    pub async fn delete(&self, path: &str) -> (StatusCode, Value) {
+        self.send(self.http.delete(format!("{}{path}", self.base))).await
     }
 
     pub async fn post_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {

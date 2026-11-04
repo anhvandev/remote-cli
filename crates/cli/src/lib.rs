@@ -238,6 +238,12 @@ enum UserCommand {
     List,
     /// Disable a user; all of their API tokens stop working.
     Disable { name: String },
+    /// Set a user's Dashboard password and enroll a new TOTP secret (shown once; scan the otpauth URL).
+    SetPassword {
+        name: String,
+        #[arg(long, env = "RCLI_NEW_PASSWORD", hide_env_values = true)]
+        password: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -401,6 +407,12 @@ where
         Command::User(UserCommand::Disable { name }) => {
             let user = api.call(reqwest::Method::POST, &format!("/api/v1/users/{name}/disable"), None).await?;
             (user, format!("disabled {name}\n"))
+        }
+        Command::User(UserCommand::SetPassword { name, password }) => {
+            let body = serde_json::json!({ "password": password });
+            let set = api.call(reqwest::Method::POST, &format!("/api/v1/users/{name}/credentials"), Some(&body)).await?;
+            let text = format!("totp_secret {}\notpauth_url {}\n", str_of(&set["totp_secret"]), str_of(&set["otpauth_url"]));
+            (set, text)
         }
         Command::Token(TokenCommand::Create { user }) => {
             let issued = api.call(reqwest::Method::POST, &format!("/api/v1/users/{user}/tokens"), None).await?;

@@ -6,6 +6,7 @@ mod control_lock;
 mod devices;
 mod enrollment;
 mod history;
+mod sessions;
 mod updates;
 mod users;
 
@@ -35,6 +36,7 @@ pub fn router(state: State) -> Router {
         .merge(control_lock::routes())
         .merge(actions::routes())
         .merge(audit::routes())
+        .merge(sessions::routes())
         .with_state(state)
 }
 
