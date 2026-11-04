@@ -1,10 +1,11 @@
 import { notFound } from "next/navigation";
-import { api, ApiError, type ControlLock, type DeviceDetails, type Resources } from "@/lib/api";
+import { api, ApiError, type ControlLock, type DeviceDetails, type Resources, type User } from "@/lib/api";
 import { Nav } from "../../nav";
 import { Refresh } from "../../refresh";
 import { Status } from "../../status";
 import { History } from "./history";
 import { LiveView } from "./live-view";
+import { Terminal } from "./terminal";
 
 const GB = 1 << 30;
 const gb = (b: number) => `${(b / GB).toFixed(1)} GB`;
@@ -39,6 +40,7 @@ export default async function DevicePage({
     if (e instanceof ApiError && e.status === 404) notFound();
     throw e;
   });
+  const me = await api<User>("/api/v1/me");
   const time = (t: string) => new Date(t).toLocaleTimeString("vi-VN");
   const inv = d.inventory;
   const r = d.resources;
@@ -102,6 +104,7 @@ export default async function DevicePage({
           </section>
 
           <LiveView device={d.id} name={d.name} />
+          <Terminal device={d.id} admin={me.role === "admin"} />
 
           <section className="card" aria-label="Phần cứng">
             <h3>Phần cứng</h3>
