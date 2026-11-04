@@ -1,12 +1,12 @@
 //! Executor: carries out the Actions of a request in order, then produces one Observation.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
-use rcli_protocol::agent::{action::Kind, ActRequest, ActResult, Error, Mark, ObserveMode, Point};
+use rcli_protocol::agent::{action::Kind, Action, ActRequest, ActResult, Error, Mark, ObserveMode, Point};
 
 use crate::{
     coords, marks,
-    observer::{self, Observer},
+    observer::{self, Frames, Observer},
     platform::{Button, DisplayInfo, Input, Platform},
 };
 
@@ -28,17 +28,25 @@ fn error(code: &str, e: impl std::fmt::Display) -> Error {
 
 impl Executor {
     pub fn act(&mut self, p: &dyn Platform, req: &ActRequest) -> ActResult {
-        let mut result = self.run(p, req).unwrap_or_else(|e| ActResult { error: Some(e), ..Default::default() });
+        let mut failed_step = None;
+        let mut result = self.run(p, req, &mut failed_step).unwrap_or_else(|e| ActResult { error: Some(e), ..Default::default() });
         result.request_id = req.request_id;
+        result.failed_step = failed_step;
         result
     }
 
-    fn run(&mut self, p: &dyn Platform, req: &ActRequest) -> Result<ActResult, Error> {
+    fn run(&mut self, p: &dyn Platform, req: &ActRequest, failed_step: &mut Option<u32>) -> Result<ActResult, Error> {
         let displays = p.displays().map_err(|e| error("platform", e))?;
-        for action in &req.actions {
-            let kind = action.kind.as_ref().ok_or_else(|| error("invalid_action", "empty action"))?;
-            for input in self.inputs(p, &req.controller, &displays, kind)? {
-                p.input(input).map_err(|e| error("platform", e))?;
+        // `frames` watches every display; the observed ones are picked once the Actions are done.
+        let mut frames = (req.observe() == ObserveMode::Frames)
+            .then(|| Frames::new(displays.iter().map(|d| d.index).collect(), req.max_frames));
+        if let Some(f) = frames.as_mut() {
+            f.record(p, Duration::ZERO).map_err(|e| error("platform", e))?;
+        }
+        for (i, action) in req.actions.iter().enumerate() {
+            if let Err(e) = self.step(p, &req.controller, &displays, frames.as_mut(), action) {
+                *failed_step = Some(i as u32);
+                return Err(e);
             }
         }
         if req.observe() == ObserveMode::None {
@@ -49,6 +57,10 @@ impl Executor {
             (false, Some(d)) => vec![find(&displays, d)?.index],
             (false, None) => vec![self.last_display.or(displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0)],
         };
+        if let Some(f) = frames {
+            let images = self.observer.frames(p, f, &wanted, &req.controller).map_err(|e| error("platform", e))?;
+            return Ok(ActResult { images, ..Default::default() });
+        }
         let (images, marks) = self.observer.shot(p, &wanted, &req.controller, req.marks).map_err(|e| error("platform", e))?;
         if !req.marks {
             return Ok(ActResult { images, ..Default::default() });
@@ -56,6 +68,32 @@ impl Executor {
         self.last_observation += 1;
         self.marks.insert(req.controller.clone(), (self.last_observation, marks.clone()));
         Ok(ActResult { images, observation: self.last_observation, marks, ..Default::default() })
+    }
+
+    /// One Action of a batch: its inputs, then its wait (recording frames meanwhile if asked).
+    fn step(
+        &mut self,
+        p: &dyn Platform,
+        controller: &str,
+        displays: &[DisplayInfo],
+        frames: Option<&mut Frames>,
+        action: &Action,
+    ) -> Result<(), Error> {
+        let kind = action.kind.as_ref().ok_or_else(|| error("invalid_action", "empty action"))?;
+        for input in self.inputs(p, controller, displays, kind)? {
+            p.input(input).map_err(|e| error("platform", e))?;
+        }
+        let wait = match kind {
+            Kind::WaitMs(ms) => Duration::from_millis((*ms).into()),
+            _ => Duration::ZERO,
+        };
+        match frames {
+            Some(f) => f.record(p, wait).map_err(|e| error("platform", e)),
+            None => {
+                std::thread::sleep(wait);
+                Ok(())
+            }
+        }
     }
 
     /// The input primitives for one Action.
@@ -90,6 +128,7 @@ impl Executor {
                 inputs.extend(modifiers.iter().rev().map(|m| Input::KeyUp(m.to_string())));
                 inputs
             }
+            Kind::WaitMs(_) => vec![],
         })
     }
 

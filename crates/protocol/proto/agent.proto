@@ -174,6 +174,8 @@ message ActRequest {
   bool all_displays = 5;
   // Who asks; "unchanged" is relative to the last image this Controller got.
   string controller = 6;
+  // `frames`: at most this many frames per display (the last one is always the final screen).
+  uint32 max_frames = 8;
   // Detect Marks: annotate the images and return the Mark table.
   bool marks = 10;
 }
@@ -181,6 +183,8 @@ message ActRequest {
 enum ObserveMode {
   OBSERVE_MODE_SHOT = 0;
   OBSERVE_MODE_NONE = 1;
+  // Change-triggered, timestamped frames captured while the Actions run.
+  OBSERVE_MODE_FRAMES = 8;
 }
 
 // Coordinates are in Observation image space of `display`; the Agent's Coordinate Mapper converts them.
@@ -207,6 +211,8 @@ message Action {
     string type_text = 7;
     // Key combination, e.g. "ctrl+shift+t".
     string key = 8;
+    // Action Batch: pause this long before the next Action.
+    uint32 wait_ms = 80;
   }
 }
 
@@ -226,6 +232,8 @@ message ActResult {
   uint64 request_id = 1;
   repeated Image images = 2;
   Error error = 3;
+  // Index of the Action in `actions` that failed (with `error`).
+  optional uint32 failed_step = 8;
   // Set when Marks were requested: this Observation's id and its Mark table.
   uint64 observation = 10;
   repeated Mark marks = 11;
@@ -251,6 +259,8 @@ message Image {
   bool unchanged = 4;
   string mime = 5;
   bytes data = 6;
+  // `frames`: milliseconds since the Agent started the request.
+  uint32 at_ms = 8;
 }
 
 message DisplaysRequest {
