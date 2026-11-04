@@ -10,6 +10,7 @@ mod history;
 mod power;
 mod live;
 mod sessions;
+mod shell;
 mod updates;
 mod users;
 mod wake;
@@ -47,6 +48,7 @@ pub fn router(state: State) -> Router {
         .merge(sessions::routes())
         .merge(vault::routes())
         .merge(live::routes())
+        .merge(shell::routes())
         .with_state(state)
 }
 

@@ -14,6 +14,7 @@ pub mod history;
 pub mod metrics;
 pub mod pki;
 pub mod registry;
+pub mod shell;
 pub mod updates;
 pub mod wake;
 pub mod vault;
@@ -76,6 +77,7 @@ pub struct AppState {
     pub maintenance: history::Maintenance,
     /// Signalled on every rollout so live Device sessions offer the update.
     pub rollouts: tokio::sync::watch::Sender<()>,
+    pub shells: shell::Shells,
     pub lock_watchers: control_lock::Watchers,
 }
 
@@ -115,6 +117,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
         agents: Default::default(),
         maintenance: Default::default(),
         rollouts: tokio::sync::watch::Sender::new(()),
+        shells: Default::default(),
         lock_watchers: Default::default(),
     });
     let acceptor = agent_link::acceptor(&state)?;
