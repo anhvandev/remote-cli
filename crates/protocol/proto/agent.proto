@@ -177,6 +177,8 @@ message ActRequest {
   bool all_displays = 5;
   // Who asks; "unchanged" is relative to the last image this Controller got.
   string controller = 6;
+  // Detect Marks: annotate the images and return the Mark table.
+  bool marks = 10;
 }
 
 enum ObserveMode {
@@ -185,10 +187,16 @@ enum ObserveMode {
 }
 
 // Coordinates are in Observation image space of `display`; the Agent's Coordinate Mapper converts them.
+// Set `mark` or `text` to target a Mark instead of (x, y).
 message Point {
   uint32 display = 1;
   uint32 x = 2;
   uint32 y = 3;
+  // Mark number from the Controller's latest Observation with Marks, which must be `observation`.
+  optional uint32 mark = 10;
+  uint64 observation = 11;
+  // Visible text of a Mark on `display`, detected now.
+  optional string text = 12;
 }
 
 message Action {
@@ -221,6 +229,21 @@ message ActResult {
   uint64 request_id = 1;
   repeated Image images = 2;
   Error error = 3;
+  // Set when Marks were requested: this Observation's id and its Mark table.
+  uint64 observation = 10;
+  repeated Mark marks = 11;
+}
+
+// A numbered on-screen element; the box is in Observation image space of `display`.
+message Mark {
+  uint32 number = 1;
+  string text = 2;
+  string role = 3;
+  uint32 display = 4;
+  uint32 x = 5;
+  uint32 y = 6;
+  uint32 width = 7;
+  uint32 height = 8;
 }
 
 message Image {

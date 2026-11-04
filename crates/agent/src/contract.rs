@@ -11,11 +11,13 @@ pub const WAKE_TEST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x27];
 /// Like the probe: how long a key may take to show up on screen.
 const SCREEN_CHANGE_TIMEOUT: Duration = Duration::from_secs(1);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(3);
-const CHECKS: [&str; 10] = [
+const CHECKS: [&str; 12] = [
     "displays",
     "capture",
     "key shows on screen",
     "session state",
+    "text recognition",
+    "accessibility tree",
     "metrics",
     "inventory",
     "processes",
@@ -102,6 +104,11 @@ pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
     });
     operator(Step::FocusTextField);
     screen_checks(p, Env::LoggedIn, SessionState::LoggedIn, &mut r);
+    r.check("accessibility tree", Env::LoggedIn, || {
+        let tree = p.accessibility(primary(p)?)?.ok_or_else(|| anyhow::anyhow!("no accessibility tree"))?;
+        anyhow::ensure!(!tree.is_empty(), "accessibility tree has no elements");
+        Ok(())
+    });
     r.check("metrics", Env::LoggedIn, || {
         let m = p.metrics()?;
         let cpu = m.cpu_percent.unwrap_or(-1.0);
@@ -160,6 +167,11 @@ fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Rep
         Ok(())
     });
     r.check("session state", env, || wait_for_state(p, expected, Duration::ZERO));
+    // Every screen shows some text (a clock, a user name), and OCR is the Mark fallback where there is no tree.
+    r.check("text recognition", env, || {
+        anyhow::ensure!(!p.recognize_text(&p.capture(primary(p)?)?)?.is_empty(), "no text recognized");
+        Ok(())
+    });
 }
 
 fn primary(p: &dyn Platform) -> anyhow::Result<u32> {

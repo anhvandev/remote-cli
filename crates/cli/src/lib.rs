@@ -62,6 +62,9 @@ enum Command {
         /// Display index or `all`; default: the display last acted on.
         #[arg(long)]
         display: Option<String>,
+        /// Number the detected Marks on the images and print the Mark table.
+        #[arg(long)]
+        marks: bool,
         /// Directory to save images in.
         #[arg(long, default_value = ".")]
         out: PathBuf,
@@ -95,6 +98,9 @@ enum Command {
         /// Display to observe, index or `all`; default: the display acted on.
         #[arg(long, global = true)]
         observe_display: Option<String>,
+        /// Number the detected Marks on the Observation and print the Mark table.
+        #[arg(long, global = true)]
+        marks: bool,
         /// Directory to save images in.
         #[arg(long, global = true, default_value = ".")]
         out: PathBuf,
@@ -110,10 +116,10 @@ enum LockCommand {
 
 #[derive(Subcommand)]
 enum ActCommand {
-    Move { x: u32, y: u32 },
-    Click { x: u32, y: u32 },
-    DoubleClick { x: u32, y: u32 },
-    RightClick { x: u32, y: u32 },
+    Move(At),
+    Click(At),
+    DoubleClick(At),
+    RightClick(At),
     /// Drag with the left button from (x, y) to (to_x, to_y).
     Drag { x: u32, y: u32, to_x: u32, to_y: u32 },
     /// Scroll at (x, y); positive --dy scrolls down.
@@ -136,14 +142,37 @@ enum ActCommand {
     Key { keys: String },
 }
 
+/// Where to point: image coordinates X Y, `--mark N --observation ID`, or `--text T`.
+#[derive(clap::Args)]
+struct At {
+    #[arg(required_unless_present_any = ["mark", "text"])]
+    x: Option<u32>,
+    #[arg(required_unless_present_any = ["mark", "text"])]
+    y: Option<u32>,
+    /// Mark number from an Observation taken with --marks.
+    #[arg(long, requires = "observation", conflicts_with_all = ["x", "y", "text"])]
+    mark: Option<u32>,
+    /// The Observation the Mark number comes from.
+    #[arg(long)]
+    observation: Option<u64>,
+    /// Visible text of the target Mark.
+    #[arg(long, conflicts_with_all = ["x", "y"])]
+    text: Option<String>,
+}
+
 impl ActCommand {
     fn json(self, display: u32) -> Value {
         let point = |kind: &str, x, y| json!({ "type": kind, "display": display, "x": x, "y": y });
+        let at = |kind: &str, at: At| match at {
+            At { mark: Some(mark), observation, .. } => json!({ "type": kind, "mark": mark, "observation": observation }),
+            At { text: Some(text), .. } => json!({ "type": kind, "display": display, "text": text }),
+            At { x, y, .. } => json!({ "type": kind, "display": display, "x": x, "y": y }),
+        };
         match self {
-            ActCommand::Move { x, y } => point("move", x, y),
-            ActCommand::Click { x, y } => point("click", x, y),
-            ActCommand::DoubleClick { x, y } => point("double_click", x, y),
-            ActCommand::RightClick { x, y } => point("right_click", x, y),
+            ActCommand::Move(a) => at("move", a),
+            ActCommand::Click(a) => at("click", a),
+            ActCommand::DoubleClick(a) => at("double_click", a),
+            ActCommand::RightClick(a) => at("right_click", a),
             ActCommand::Drag { x, y, to_x, to_y } => {
                 let mut v = point("drag", x, y);
                 v["to"] = json!({ "display": display, "x": to_x, "y": to_y });
@@ -183,6 +212,13 @@ fn save_observation(obs: &Value, out: &Path) -> anyhow::Result<String> {
         let path = out.join(format!("display-{display}.jpg"));
         std::fs::write(&path, data)?;
         text += &format!("display {display}: {}x{} {}\n", i["width"], i["height"], path.display());
+    }
+    if let Some(marks) = obs["marks"].as_array() {
+        text += &format!("observation {}\n{:<4}  {:<7}  {:<12}  {:<19}  {}\n", obs["observation"], "MARK", "DISPLAY", "ROLE", "BOX", "TEXT");
+        for m in marks {
+            let bbox = format!("{},{} {}x{}", m["x"], m["y"], m["width"], m["height"]);
+            text += &format!("{:<4}  {:<7}  {:<12}  {bbox:<19}  {}\n", m["number"].to_string(), m["display"].to_string(), str_of(&m["role"]), str_of(&m["text"]));
+        }
     }
     if text.is_empty() {
         text = "ok\n".into();
@@ -240,6 +276,12 @@ enum UserCommand {
     List,
     /// Disable a user; all of their API tokens stop working.
     Disable { name: String },
+    /// Set a user's Dashboard password and enroll a new TOTP secret (shown once; scan the otpauth URL).
+    SetPassword {
+        name: String,
+        #[arg(long, env = "RCLI_NEW_PASSWORD", hide_env_values = true)]
+        password: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -407,6 +449,12 @@ where
             let user = api.call(reqwest::Method::POST, &format!("/api/v1/users/{name}/disable"), None).await?;
             (user, format!("disabled {name}\n"))
         }
+        Command::User(UserCommand::SetPassword { name, password }) => {
+            let body = serde_json::json!({ "password": password });
+            let set = api.call(reqwest::Method::POST, &format!("/api/v1/users/{name}/credentials"), Some(&body)).await?;
+            let text = format!("totp_secret {}\notpauth_url {}\n", str_of(&set["totp_secret"]), str_of(&set["otpauth_url"]));
+            (set, text)
+        }
         Command::Token(TokenCommand::Create { user }) => {
             let issued = api.call(reqwest::Method::POST, &format!("/api/v1/users/{user}/tokens"), None).await?;
             let text = format!("id {}\ntoken {}\n", str_of(&issued["id"]), str_of(&issued["token"]));
@@ -447,8 +495,8 @@ where
             }
             (displays, text)
         }
-        Command::Shot { device, display, out } => {
-            let body = json!({ "actions": [], "display": display_sel(display)? });
+        Command::Shot { device, display, marks, out } => {
+            let body = json!({ "actions": [], "display": display_sel(display)?, "marks": marks });
             let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
             (obs, text)
@@ -474,11 +522,12 @@ where
             }
             (entries, text)
         }
-        Command::Act { device, action, display, observe, observe_display, out } => {
+        Command::Act { device, action, display, observe, observe_display, marks, out } => {
             let body = json!({
                 "actions": [action.json(display)],
                 "observe": observe,
                 "display": display_sel(observe_display)?,
+                "marks": marks,
             });
             let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
