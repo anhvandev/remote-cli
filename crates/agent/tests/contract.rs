@@ -85,6 +85,9 @@ impl Platform for Broken {
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()> {
         self.fake.send_wake(mac)
     }
+    fn install_update(&self, version: &str, build: &[u8]) -> anyhow::Result<()> {
+        self.fake.install_update(version, build)
+    }
 }
 
 #[test]
