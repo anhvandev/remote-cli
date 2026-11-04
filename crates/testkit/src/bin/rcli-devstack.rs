@@ -1,7 +1,8 @@
 //! The in-process system for the Dashboard's Playwright tests: Server on Postgres (testcontainers), a manual
 //! clock, and FakePlatform Agents. Usage: `rcli-devstack <http-port> <info.json>`.
 //! Writes `{api, admin_token, now}` to `info.json` once the fleet is ready; runs until SIGINT/SIGTERM.
-//! Fleet: `alpha` Online (LockScreen, user "an", full inventory, a rolled-up minute of history), `bravo` Offline.
+//! Fleet: `alpha` Online (LockScreen, user "an", full inventory, a rolled-up minute of history), `bravo` Offline,
+//! `charlie` Online (logged in; its Control Lock belongs to the direct-control test).
 //! The clock starts at real time (the Dashboard picks history ranges by its own clock) and is frozen after seeding.
 
 use rcli_testkit::{platform::SessionState, Clock, FakePlatform, TestAgent, TestSystem};
@@ -41,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
         s.resources.disk_used_percent.insert("/".into(), 40.0);
     });
     let mut agents = vec![];
-    for platform in [alpha, FakePlatform::new("bravo")] {
+    for platform in [alpha, FakePlatform::new("bravo"), FakePlatform::new("charlie")] {
         let creds = sys.enroll(&sys.create_enrollment_code().await, &platform).await?;
         let mut agent = TestAgent::new(sys.endpoint(), platform, creds);
         agent.start();
