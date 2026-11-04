@@ -1,9 +1,12 @@
 //! Controller API (HTTP). One file per area; each exposes `routes()` merged here.
 
 mod actions;
+mod audit;
 mod control_lock;
 mod devices;
 mod enrollment;
+mod history;
+mod sessions;
 mod updates;
 mod users;
 
@@ -27,10 +30,13 @@ pub fn router(state: State) -> Router {
         .route("/api/v1/server-ca", get(|s: axum::extract::State<State>| async move { s.ca.cert_pem.clone() }))
         .merge(devices::routes())
         .merge(enrollment::routes())
+        .merge(history::routes())
         .merge(updates::routes())
         .merge(users::routes())
         .merge(control_lock::routes())
         .merge(actions::routes())
+        .merge(audit::routes())
+        .merge(sessions::routes())
         .with_state(state)
 }
 

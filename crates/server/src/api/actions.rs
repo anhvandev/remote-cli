@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{devices::resolve, ApiError, Caller};
-use crate::{agent_link::RequestError, control_lock};
+use crate::{agent_link::RequestError, audit, auth::User, control_lock, metrics};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -85,6 +85,7 @@ enum Action {
     },
     Type {
         text: String,
+        // `"secret": true` (a password field) is read only by `mask_secrets`.
     },
     /// Key combination, e.g. "ctrl+shift+t".
     Key {
@@ -134,13 +135,34 @@ async fn act(
     Caller(user): Caller,
     State(state): State<super::State>,
     Path(id): Path<String>,
-    body: Result<Json<ActBody>, JsonRejection>,
+    body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let device = resolve(&state, &id).await?;
-    let Json(body) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let Json(mut params) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let body: ActBody = serde_json::from_value(params.clone())
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?;
     if !body.actions.is_empty() {
         control_lock::check(&state, device, &user).await?;
     }
+    mask_secrets(&state, device, &mut params);
+    let result = forward(&state, device, &user, body).await;
+    let outcome = json!({ "error": result.as_ref().err().map(|e| e.code) });
+    audit::record(&state, &user, device, "act", params, outcome).await?;
+    result
+}
+
+/// Text typed into a password field (`secret`) or while the Device sits at a lock/login screen is masked.
+fn mask_secrets(state: &super::State, device: uuid::Uuid, params: &mut Value) {
+    let session = metrics::current_resources(state, device).and_then(|r| r.session);
+    let at_lock_screen = session.is_some_and(|s| s != proto::SessionState::Active as i32);
+    for a in params["actions"].as_array_mut().into_iter().flatten() {
+        if a["type"] == "type" && (at_lock_screen || a["secret"] == true) {
+            a["text"] = audit::MASK.into();
+        }
+    }
+}
+
+async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: ActBody) -> Result<Json<Value>, ApiError> {
     let req = |request_id| {
         server_message::Msg::Act(proto::ActRequest {
             request_id,
