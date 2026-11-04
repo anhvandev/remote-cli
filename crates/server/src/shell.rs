@@ -43,8 +43,10 @@ impl Shells {
     pub fn deliver(&self, device: Uuid, session: &str, msg: agent_message::Msg) {
         let Ok(session) = session.parse() else { return };
         if let Some(s) = self.0.lock().unwrap().get_mut(&session).filter(|s| s.device == device) {
-            if let Some(Err(mpsc::error::TrySendError::Full(_))) = s.output.as_ref().map(|o| o.try_send(msg)) {
-                s.output = None;
+            if let Some(o) = &s.output {
+                if let Err(mpsc::error::TrySendError::Full(_)) = o.try_send(msg) {
+                    s.output = None;
+                }
             }
         }
     }
