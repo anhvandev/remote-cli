@@ -24,6 +24,8 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/ice-servers", get(ice_servers))
         .route("/api/v1/devices/{device}/live", post(open))
         .route("/api/v1/devices/{device}/live/{session}", delete(close))
+        .route("/api/v1/devices/{device}/media", post(open_media))
+        .route("/api/v1/devices/{device}/media/{session}", delete(close))
 }
 
 /// STUN/TURN servers for a peer connection, with fresh TURN credentials in coturn's REST API format:
@@ -58,18 +60,33 @@ struct Offer {
     display: Option<u32>,
 }
 
-/// Relays the viewer's SDP offer (all ICE candidates included) to the Agent and returns its answer.
 async fn open(
     _: Caller,
     State(state): State<super::State>,
     Path(key): Path<String>,
     Json(offer): Json<Offer>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let id = resolve(&state, &key).await?;
+    signal(&state, &key, offer, false).await
+}
+
+/// A media channel: a data channel that carries large Observations and clips of `.../actions` requests
+/// naming its session (`media_session`). Closed like a live view (`DELETE .../media/{session}`).
+async fn open_media(
+    _: Caller,
+    State(state): State<super::State>,
+    Path(key): Path<String>,
+    Json(offer): Json<Offer>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    signal(&state, &key, offer, true).await
+}
+
+/// Relays the peer's SDP offer (all ICE candidates included) to the Agent and returns its answer.
+async fn signal(state: &super::State, key: &str, offer: Offer, media: bool) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let id = resolve(state, key).await?;
     let session = uuid::Uuid::new_v4().to_string();
     let msg = |request_id| {
-        let ice_servers = ice(&state);
-        server_message::Msg::LiveOffer(LiveOffer { request_id, session: session.clone(), sdp: offer.sdp, ice_servers, display: offer.display })
+        let ice_servers = ice(state);
+        server_message::Msg::LiveOffer(LiveOffer { request_id, session: session.clone(), sdp: offer.sdp, ice_servers, display: offer.display, media })
     };
     match state.agents.request(id, msg).await? {
         agent_message::Msg::LiveAnswer(a) => match a.error {

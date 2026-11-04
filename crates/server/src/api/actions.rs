@@ -37,6 +37,9 @@ struct ActBody {
     /// Detect Marks: annotated images plus `observation` id and `marks` table in the reply.
     #[serde(default)]
     marks: bool,
+    /// The caller's open media channel (`POST .../media`): large images and clips go over it peer-to-peer.
+    #[serde(default)]
+    media_session: String,
 }
 
 /// Upper bound of `max_frames`.
@@ -264,6 +267,7 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
         controller: user.id.to_string(),
         max_frames,
         marks: body.marks,
+        media_session: body.media_session,
     };
     send(state, device, req, &step_of).await
 }
@@ -305,15 +309,26 @@ async fn send(state: &super::State, device: uuid::Uuid, req: proto::ActRequest, 
     }
     let b64 = |data: &[u8]| base64::engine::general_purpose::STANDARD.encode(data);
     // Relayed, never stored (spec: no media in the audit log).
+    // Bytes sent peer-to-peer are only referenced (`p2p`); the client puts them back into `data`.
+    let p2p = |v: &mut Value, id: u64| {
+        if id != 0 {
+            v["data"] = Value::Null;
+            v["p2p"] = id.into();
+        }
+    };
     let clip = result.clip.map(|c| {
-        json!({ "display": c.display, "width": c.width, "height": c.height, "mime": c.mime, "duration_ms": c.duration_ms, "data": b64(&c.data) })
+        let mut v = json!({ "display": c.display, "width": c.width, "height": c.height, "mime": c.mime, "duration_ms": c.duration_ms, "data": b64(&c.data) });
+        p2p(&mut v, c.p2p);
+        v
     });
     let images: Vec<Value> = result
         .images
         .into_iter()
         .map(|i| {
             let data = (!i.unchanged).then(|| b64(&i.data));
-            json!({ "display": i.display, "width": i.width, "height": i.height, "unchanged": i.unchanged, "mime": i.mime, "data": data, "at_ms": i.at_ms })
+            let mut v = json!({ "display": i.display, "width": i.width, "height": i.height, "unchanged": i.unchanged, "mime": i.mime, "data": data, "at_ms": i.at_ms });
+            p2p(&mut v, i.p2p);
+            v
         })
         .collect();
     let mut reply = json!({ "images": images });

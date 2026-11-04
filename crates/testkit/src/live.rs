@@ -104,18 +104,7 @@ impl LiveViewer {
 
     /// Candidate type ("host", "relay", ...) of this side of the selected candidate pair.
     pub async fn local_candidate_type(&self) -> RTCIceCandidateType {
-        let stats = self.pc.get_stats().await.reports;
-        let pair = stats
-            .values()
-            .find_map(|s| match s {
-                StatsReportType::CandidatePair(p) if p.nominated => Some(p.local_candidate_id.clone()),
-                _ => None,
-            })
-            .expect("a nominated candidate pair");
-        match &stats[&pair] {
-            StatsReportType::LocalCandidate(c) => c.candidate_type.into(),
-            other => panic!("not a local candidate: {other:?}"),
-        }
+        local_candidate_type(&self.pc).await
     }
 
     /// Stops watching: tells the Server, then closes the peer connection.
@@ -123,6 +112,22 @@ impl LiveViewer {
         let (status, _) = api.delete(&self.path).await;
         self.pc.close().await.unwrap();
         status
+    }
+}
+
+/// Candidate type ("host", "relay", ...) of `pc`'s side of its selected candidate pair.
+pub async fn local_candidate_type(pc: &RTCPeerConnection) -> RTCIceCandidateType {
+    let stats = pc.get_stats().await.reports;
+    let pair = stats
+        .values()
+        .find_map(|s| match s {
+            StatsReportType::CandidatePair(p) if p.nominated => Some(p.local_candidate_id.clone()),
+            _ => None,
+        })
+        .expect("a nominated candidate pair");
+    match &stats[&pair] {
+        StatsReportType::LocalCandidate(c) => c.candidate_type.into(),
+        other => panic!("not a local candidate: {other:?}"),
     }
 }
 

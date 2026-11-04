@@ -2659,6 +2659,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "webrtc",
 ]
 
 [[package]]
@@ -2666,6 +2667,7 @@ name = "rcli-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
  "hex",
  "image",

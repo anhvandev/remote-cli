@@ -54,10 +54,10 @@ impl Observer {
         let unchanged = self.last.get(&key) == Some(&data);
         let mime = "image/jpeg".to_owned();
         if unchanged {
-            return Ok(Image { display, width, height, unchanged, mime, data: vec![], at_ms: 0 });
+            return Ok(Image { display, width, height, unchanged, mime, data: vec![], at_ms: 0, p2p: 0 });
         }
         self.last.insert(key, data.clone());
-        Ok(Image { display, width, height, unchanged, mime, data, at_ms: 0 })
+        Ok(Image { display, width, height, unchanged, mime, data, at_ms: 0, p2p: 0 })
     }
 
     /// Finishes a `frames` recording: keeps recording until the screen settles (at most `SETTLE_MAX`),
@@ -75,7 +75,7 @@ impl Observer {
             for (at_ms, img) in track.frames {
                 let (width, height) = img.dimensions();
                 let data = jpeg(img)?;
-                images.push(Image { display: track.display, width, height, unchanged: false, mime: "image/jpeg".into(), data, at_ms });
+                images.push(Image { display: track.display, width, height, unchanged: false, mime: "image/jpeg".into(), data, at_ms, p2p: 0 });
             }
             if let Some(last) = images.last().filter(|i| i.display == track.display) {
                 // A later `shot` of this same screen can then answer "unchanged".
