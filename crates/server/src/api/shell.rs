@@ -1,7 +1,7 @@
 //! Interactive shell (PTY) sessions. No Control Lock: only input Actions are exclusive.
 //!
 //! `POST /devices/{d}/shell` answers with an NDJSON stream: `{"session","as"}`, then `{"output": base64}` lines,
-//! then `{"exit_code": n}` (or `{"error": {...}}` if the Device disconnects). Closing the stream ends the session.
+//! then `{"exit_code": n}` (or `{"error": {...}}` if the Device disconnects or the Controller reads too slowly). Closing the stream ends the session.
 //! Keystrokes and terminal size go to `POST /shell-sessions/{id}/input` (raw bytes) and `.../resize`.
 
 use std::convert::Infallible;
@@ -62,6 +62,8 @@ enum EndReason {
     Closed,
     Exited,
     DeviceDisconnected,
+    /// The Controller read output too slowly; the Server dropped the session rather than buffer without bound.
+    ControllerTooSlow,
 }
 
 fn check_size(cols: u32, rows: u32) -> Result<(), ApiError> {
@@ -148,6 +150,11 @@ async fn open(
                         break (Some(e.exit_code), EndReason::Exited);
                     }
                     Some(_) => {}
+                    None if state.shells.overflowed(session) => {
+                        let error = json!({ "code": "controller_too_slow", "message": "output was not read fast enough" });
+                        let _ = lines.send(line(json!({ "error": error }))).await;
+                        break (None, EndReason::ControllerTooSlow);
+                    }
                     None => {
                         let error = json!({ "code": "device_disconnected", "message": "the Device disconnected" });
                         let _ = lines.send(line(json!({ "error": error }))).await;
@@ -157,7 +164,7 @@ async fn open(
             }
         };
         state.shells.close(session);
-        if reason == EndReason::Closed {
+        if matches!(reason, EndReason::Closed | EndReason::ControllerTooSlow) {
             state.agents.send(device, server_message::Msg::ShellClose(proto::ShellClose { session: session.to_string() }));
         }
         let result = json!({ "exit_code": exit_code, "reason": reason });
