@@ -4,7 +4,11 @@
 //! Tests drive the system only through the Controller API (or `rcli`) and assert on what comes back.
 //! System tests live in `crates/testkit/tests/<area>.rs`, one file per area.
 
+mod live;
+
 use std::{future::Future, sync::Arc, time::Duration};
+
+pub use live::{LiveViewer, TestTurn};
 
 pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState, UiElement};
 use rcli_agent::{Credentials, ServerEndpoint};
@@ -16,6 +20,9 @@ use testcontainers_modules::{
     testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt},
 };
 use tokio::task::JoinHandle;
+
+/// Shared secret between the Server and the TURN relay (coturn `static-auth-secret`).
+pub const TURN_SECRET: &str = "test-turn-secret";
 
 /// First-run token from the Server config; the harness uses it once to create the `admin` user.
 pub const BOOTSTRAP_TOKEN: &str = "test-bootstrap-token";
@@ -29,6 +36,8 @@ pub struct TestSystem {
     /// PKCS#8 Ed25519 key that signs Agent builds; Agents from `endpoint()` trust its public half.
     pub update_signing_key: Vec<u8>,
     update_public_key: Vec<u8>,
+    /// The TURN relay the Server hands out, if started with `start_with_turn`.
+    pub turn: Option<TestTurn>,
     _postgres: ContainerAsync<Postgres>,
 }
 
@@ -37,8 +46,17 @@ impl TestSystem {
         Self::start_on("127.0.0.1:0".parse().unwrap()).await
     }
 
+    /// Like `start`, with a TURN relay configured as the Server's ICE server.
+    pub async fn start_with_turn() -> Self {
+        Self::start_inner("127.0.0.1:0".parse().unwrap(), Some(TestTurn::start(TURN_SECRET).await)).await
+    }
+
     /// Like `start`, with the Controller API on a fixed address (the Dashboard's Playwright stack).
     pub async fn start_on(http_addr: std::net::SocketAddr) -> Self {
+        Self::start_inner(http_addr, None).await
+    }
+
+    async fn start_inner(http_addr: std::net::SocketAddr, turn: Option<TestTurn>) -> Self {
         let postgres = Postgres::default().with_tag("16-alpine").start().await.expect("start postgres container");
         let port = postgres.get_host_port_ipv4(5432).await.unwrap();
         let clock = Arc::new(ManualClock::default());
@@ -48,6 +66,9 @@ impl TestSystem {
             agent_addr: "127.0.0.1:0".parse().unwrap(),
             agent_hostnames: vec!["localhost".into()],
             bootstrap_admin_token: BOOTSTRAP_TOKEN.into(),
+            master_key: Some("42".repeat(32).parse().unwrap()),
+            ice_urls: turn.iter().map(|t| format!("turn:{}?transport=udp", t.addr)).collect(),
+            turn_secret: turn.as_ref().map(|_| TURN_SECRET.into()),
         };
         let server = rcli_server::start(config, clock.clone()).await.expect("start server");
         let (update_signing_key, update_public_key) = rcli_protocol::update::generate_key().unwrap();
@@ -58,6 +79,7 @@ impl TestSystem {
             admin_token: String::new(),
             update_signing_key,
             update_public_key,
+            turn,
             _postgres: postgres,
         };
         sys.admin_token = sys.create_user("admin", "admin").await;

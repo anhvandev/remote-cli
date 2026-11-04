@@ -8,10 +8,12 @@ mod enrollment;
 mod exec;
 mod history;
 mod power;
+mod live;
 mod sessions;
 mod updates;
 mod users;
 mod wake;
+mod vault;
 
 use std::sync::Arc;
 
@@ -43,6 +45,8 @@ pub fn router(state: State) -> Router {
         .merge(wake::routes())
         .merge(power::routes())
         .merge(sessions::routes())
+        .merge(vault::routes())
+        .merge(live::routes())
         .with_state(state)
 }
 
