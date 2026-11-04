@@ -15,6 +15,7 @@ message AgentMessage {
     ResourceSample sample = 40;
     ActResult act_result = 5;
     DisplayList displays = 50;
+    ExecResult exec_result = 11;
   }
   reserved 30; // was a bare Resources delta; now ResourceSample
 }
@@ -27,6 +28,7 @@ message ServerMessage {
     ProcessListRequest list_processes = 3;
     ActRequest act = 5;
     DisplaysRequest list_displays = 50;
+    ExecRequest exec = 11;
   }
 }
 
@@ -283,4 +285,29 @@ message DisplayInfo {
   // Real pixels per logical point (2.0 on Retina).
   double scale = 6;
   bool primary = 7;
+}
+
+// --- One-shot terminal command (ticket 11) ---
+
+// Runs `command` through the OS shell; answered with an ExecResult carrying the same request_id.
+message ExecRequest {
+  uint64 request_id = 1;
+  string command = 2;
+  // Run as root/SYSTEM instead of the logged-in user.
+  bool as_root = 3;
+  // With nobody logged in: run as root (admins) instead of failing with "no_logged_in_user" (operators).
+  bool root_if_nobody_logged_in = 4;
+  // The Agent kills the command after this long.
+  uint32 timeout_ms = 5;
+}
+
+// `error` set = nothing ran (code "no_logged_in_user", or a Platform failure).
+message ExecResult {
+  uint64 request_id = 1;
+  int32 exit_code = 2; // meaningless when timed_out
+  string stdout = 3;
+  string stderr = 4;
+  bool timed_out = 5;
+  bool as_root = 6; // who it actually ran as
+  Error error = 7;
 }

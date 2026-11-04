@@ -20,7 +20,7 @@ use platform::Platform;
 use rcli_protocol::{
     agent::{
         agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, DisplayList, EnrollRequest, Error,
-        Heartbeat, ProcessList, ResourceSample, Resources, ServerMessage, UpdateFailed,
+        ExecRequest, ExecResult, Heartbeat, ProcessList, ResourceSample, Resources, ServerMessage, UpdateFailed,
     },
     Conn,
 };
@@ -194,6 +194,13 @@ async fn session(
                             let _ = replies.send(agent_message::Msg::ActResult(result));
                         });
                     }
+                    Some(server_message::Msg::Exec(req)) => {
+                        // Off the loop: a command may run for minutes; commands run concurrently.
+                        let (platform, replies) = (platform_arc.clone(), replies.clone());
+                        tokio::task::spawn_blocking(move || {
+                            let _ = replies.send(agent_message::Msg::ExecResult(exec(platform.as_ref(), &req)));
+                        });
+                    }
                     Some(server_message::Msg::ListDisplays(req)) => {
                         let (displays, error) = match platform.displays() {
                             Ok(d) => (d, None),
@@ -226,6 +233,32 @@ async fn session(
                 }
             }
         }
+    }
+}
+
+/// Runs a one-shot command as the logged-in user, or as root when asked or allowed with nobody logged in.
+fn exec(platform: &dyn Platform, req: &ExecRequest) -> ExecResult {
+    let reply = |error: Error| ExecResult { request_id: req.request_id, error: Some(error), ..Default::default() };
+    let nobody = match platform.session_state() {
+        Ok(state) => state == platform::SessionState::LoginScreen,
+        Err(e) => return reply(Error { code: "platform".into(), message: format!("{e:#}") }),
+    };
+    if nobody && !req.as_root && !req.root_if_nobody_logged_in {
+        return reply(Error { code: "no_logged_in_user".into(), message: "nobody is logged in on the Device".into() });
+    }
+    let as_root = req.as_root || nobody;
+    let run_as = if as_root { platform::RunAs::Root } else { platform::RunAs::LoggedInUser };
+    match platform.shell(&req.command, run_as, Duration::from_millis(req.timeout_ms.into())) {
+        Ok(out) => ExecResult {
+            request_id: req.request_id,
+            exit_code: out.exit_code,
+            stdout: out.stdout,
+            stderr: out.stderr,
+            timed_out: out.timed_out,
+            as_root,
+            error: None,
+        },
+        Err(e) => reply(Error { code: "platform".into(), message: format!("{e:#}") }),
     }
 }
 

@@ -4,11 +4,11 @@
 
 **Blocked by:** 02, 06
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `rcli exec <device> -- <cmd>` returns stdout, stderr, exit code; timeout is enforced
-- [ ] Default run-as is the logged-in user
-- [ ] `--as root` refused for operators
-- [ ] With no logged-in user, operators are refused; admins run as root/SYSTEM
-- [ ] Command and exit code are audited
-- [ ] Does not require the Control Lock
+- [x] `rcli exec <device> -- <cmd>` returns stdout, stderr, exit code; timeout is enforced
+- [x] Default run-as is the logged-in user
+- [x] `--as root` refused for operators
+- [x] With no logged-in user, operators are refused; admins run as root/SYSTEM
+- [x] Command and exit code are audited
+- [x] Does not require the Control Lock

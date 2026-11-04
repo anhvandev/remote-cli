@@ -1,9 +1,11 @@
 //! The Platform contract suite, run against the FakePlatform with a scripted operator.
 
+use std::time::Duration;
+
 use rcli_agent::{
     contract::{self, Env, Step},
     platform::{
-        DisplayInfo, FakePlatform, Frame, Input, Inventory, Platform, PowerAction, Process, Resources, SessionState,
+        DisplayInfo, FakePlatform, Frame, Input, Inventory, Platform, PowerAction, Process, Resources, RunAs, SessionState,
         ShellOutput, UiElement,
     },
 };
@@ -49,6 +51,8 @@ fn fake_platform_passes_every_check_in_every_environment() {
 | inventory | ✅ | | |
 | processes | ✅ | | |
 | shell | ✅ | | |
+| shell timeout | ✅ | | |
+| shell as root | | | ✅ |
 | wake send | ✅ | | |
 | power lock | ✅ | | |
 "
@@ -102,8 +106,8 @@ impl Platform for Broken {
     fn processes(&self) -> anyhow::Result<Vec<Process>> {
         self.fake.processes()
     }
-    fn shell(&self, command: &str) -> anyhow::Result<ShellOutput> {
-        self.fake.shell(command)
+    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
+        self.fake.shell(command, run_as, timeout)
     }
     fn power(&self, action: PowerAction) -> anyhow::Result<()> {
         self.fake.power(action)
