@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{bad_request, devices::resolve, Admin, ApiError};
-use crate::vault;
+use crate::{audit, vault};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -51,7 +51,7 @@ fn body(updated_at: Option<chrono::DateTime<chrono::Utc>>) -> Result<Json<Value>
 }
 
 async fn set(
-    _: Admin,
+    Admin(user): Admin,
     State(state): State<super::State>,
     Path(id): Path<String>,
     req: Result<Json<SetBody>, JsonRejection>,
@@ -62,10 +62,14 @@ async fn set(
         return Err(bad_request("password must not be empty"));
     }
     vault::set(&state, device, &req.password).await?;
+    // Never the password itself.
+    audit::record(&state, &user, device, "unlock_password.set", json!({}), json!({ "error": null })).await?;
     body(vault::updated_at(&state, device).await?)
 }
 
-async fn clear(_: Admin, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    vault::clear(&state, resolve(&state, &id).await?).await?;
+async fn clear(Admin(user): Admin, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    let device = resolve(&state, &id).await?;
+    vault::clear(&state, device).await?;
+    audit::record(&state, &user, device, "unlock_password.clear", json!({}), json!({ "error": null })).await?;
     body(None)
 }

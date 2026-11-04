@@ -93,10 +93,11 @@ async fn reinstalled_machine_is_a_new_device_until_an_admin_merges_the_old_histo
     assert_eq!(cpus(&sys.history(&new_id, &format!("{range}&resolution=1m")).await), vec![10.0, 20.0]);
     let raw = cpus(&sys.history(&new_id, &format!("{range}&resolution=5s")).await);
     assert!(raw.contains(&10.0) && raw.contains(&20.0), "{raw:?}");
-    // Audit entries about the old Device now point at the new one.
+    // Audit entries about the old Device now point at the new one (followed by the merge itself).
     let (_, audit) = sys.api.get(&format!("/api/v1/audit?device={new_id}")).await;
-    assert_eq!(audit.as_array().map(Vec::len), Some(1), "{audit}");
-    assert_eq!(audit[0]["device"], "lab-pc", "{audit}");
+    assert_eq!(audit.as_array().map(Vec::len), Some(2), "{audit}");
+    assert_eq!((&audit[0]["action"], &audit[0]["device"]), (&"act".into(), &"lab-pc".into()), "{audit}");
+    assert_eq!(audit[1]["action"], "device.merge", "{audit}");
     // The old Device is gone; the new one keeps its identity and connection.
     let (status, _) = sys.api.get(&format!("/api/v1/devices/{old_id}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);

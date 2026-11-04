@@ -1,4 +1,4 @@
-use rcli_testkit::{FakePlatform, SessionState, StatusCode, TestSystem};
+use rcli_testkit::{FakePlatform, LiveViewer, SessionState, StatusCode, TestSystem};
 use serde_json::{json, Value};
 
 const DAY: i64 = 24 * 3600;
@@ -116,4 +116,47 @@ async fn entries_older_than_90_days_are_removed() {
     assert_eq!(audit(&sys, "").await.len(), 1);
     sys.advance(120);
     assert_eq!(audit(&sys, "").await.len(), 0);
+}
+
+#[tokio::test]
+async fn admin_operations_and_live_views_are_recorded_without_the_unlock_password() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    let dev = agent.device_id().to_owned();
+    sys.wait_device(&dev, |d| d["status"] == "Online").await;
+    let old = sys.enroll(&sys.create_enrollment_code().await, &FakePlatform::new("old-pc")).await.unwrap();
+    let doomed = sys.enroll(&sys.create_enrollment_code().await, &FakePlatform::new("doomed")).await.unwrap();
+    let path = format!("/api/v1/devices/{dev}");
+
+    let live = LiveViewer::open(&sys.api, &dev, false).await.expect("open live view");
+    assert_eq!(live.close(&sys.api).await, StatusCode::NO_CONTENT);
+    let ok = |(status, body): (StatusCode, Value)| assert!(status.is_success(), "{body}");
+    ok(sys.api.post_json(&format!("{path}/unlock-password"), &json!({ "password": "hunter2" })).await);
+    ok(sys.api.post(&format!("{path}/unlock-password/clear")).await);
+    ok(sys.api.patch_json(&path, &json!({ "name": "lab-pc-2" })).await);
+    ok(sys.api.post_json(&format!("{path}/merge"), &json!({ "from": old.device_id })).await);
+    ok(sys.api.post(&format!("{path}/revoke")).await);
+    ok(sys.api.delete(&format!("/api/v1/devices/{}", doomed.device_id)).await);
+
+    let entries = audit(&sys, "").await;
+    assert!(!Value::from(entries.clone()).to_string().contains("hunter2"), "{entries:?}");
+    let got: Vec<_> = entries
+        .iter()
+        .map(|e| (e["user"].as_str().unwrap(), e["device_id"].as_str().unwrap(), e["action"].as_str().unwrap(), e["params"].clone(), e["result"]["error"].clone()))
+        .collect();
+    let session = &entries[0]["result"]["session"];
+    assert!(session.is_string(), "{entries:?}");
+    let doomed_id = doomed.device_id.to_string();
+    assert_eq!(
+        got,
+        vec![
+            ("admin", &dev[..], "live.start", json!({ "display": null }), Value::Null),
+            ("admin", &dev[..], "unlock_password.set", json!({}), Value::Null),
+            ("admin", &dev[..], "unlock_password.clear", json!({}), Value::Null),
+            ("admin", &dev[..], "device.rename", json!({ "name": "lab-pc-2" }), Value::Null),
+            ("admin", &dev[..], "device.merge", json!({ "from": old.device_id }), Value::Null),
+            ("admin", &dev[..], "device.revoke", json!({}), Value::Null),
+            ("admin", &doomed_id[..], "device.delete", json!({ "name": "doomed" }), Value::Null),
+        ]
+    );
 }

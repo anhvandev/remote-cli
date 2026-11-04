@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{devices::resolve, ApiError, Caller};
+use crate::audit;
 
 /// How long minted TURN credentials stay valid; a live view must start within it (running streams keep going).
 const TURN_CREDENTIALS_TTL: Duration = Duration::from_secs(12 * 3600);
@@ -61,12 +62,20 @@ struct Offer {
 }
 
 async fn open(
-    _: Caller,
+    Caller(user): Caller,
     State(state): State<super::State>,
     Path(key): Path<String>,
     Json(offer): Json<Offer>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    signal(&state, &key, offer, false).await
+    let device = resolve(&state, &key).await?;
+    let params = json!({ "display": offer.display });
+    let reply = signal(&state, &key, offer, false).await;
+    let result = match &reply {
+        Ok((_, Json(body))) => json!({ "session": body["session"], "error": null }),
+        Err(e) => json!({ "error": e.code }),
+    };
+    audit::record(&state, &user, device, "live.start", params, result).await?;
+    reply
 }
 
 /// A media channel: a data channel that carries large Observations and clips of `.../actions` requests

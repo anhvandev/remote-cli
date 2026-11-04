@@ -6,10 +6,11 @@ use axum::{
 };
 use rcli_protocol::agent::{agent_message, server_message, Inventory, Process, ProcessListRequest, Resources};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use uuid::Uuid;
 
 use super::{bad_request, Admin, ApiError, Caller};
-use crate::{metrics, registry};
+use crate::{audit, metrics, registry};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -26,20 +27,24 @@ struct Rename {
 }
 
 async fn rename(
-    _: Admin,
+    Admin(user): Admin,
     State(state): State<super::State>,
     Path(key): Path<String>,
     body: Result<Json<Rename>, JsonRejection>,
 ) -> Result<Json<registry::Device>, ApiError> {
     let Json(body) = body.map_err(|e| bad_request(e.body_text()))?;
     let id = resolve(&state, &key).await?;
-    registry::rename(&state, id, &body.name).await?.map_err(|m| bad_request(m))?;
+    registry::rename(&state, id, &body.name).await?.map_err(bad_request)?;
+    audit::record(&state, &user, id, "device.rename", json!({ "name": body.name }), json!({ "error": null })).await?;
     Ok(Json(registry::get(&state, id).await?))
 }
 
-async fn delete(_: Admin, State(state): State<super::State>, Path(key): Path<String>) -> Result<StatusCode, ApiError> {
+async fn delete(Admin(user): Admin, State(state): State<super::State>, Path(key): Path<String>) -> Result<StatusCode, ApiError> {
     let id = resolve(&state, &key).await?;
+    let name = registry::get(&state, id).await?.name;
     registry::delete(&state, id).await?;
+    // The entry outlives the Device, so it keeps the name.
+    audit::record(&state, &user, id, "device.delete", json!({ "name": name }), json!({ "error": null })).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -50,7 +55,7 @@ struct Merge {
 }
 
 async fn merge(
-    _: Admin,
+    Admin(user): Admin,
     State(state): State<super::State>,
     Path(key): Path<String>,
     body: Result<Json<Merge>, JsonRejection>,
@@ -62,16 +67,18 @@ async fn merge(
         return Err(bad_request("cannot merge a Device into itself"));
     }
     registry::merge(&state, old, new).await?;
+    audit::record(&state, &user, new, "device.merge", json!({ "from": old }), json!({ "error": null })).await?;
     Ok(Json(registry::get(&state, new).await?))
 }
 
 async fn revoke(
-    _: Admin,
+    Admin(user): Admin,
     State(state): State<super::State>,
     Path(key): Path<String>,
 ) -> Result<Json<registry::Device>, ApiError> {
     let id = resolve(&state, &key).await?;
     registry::revoke(&state, id).await?;
+    audit::record(&state, &user, id, "device.revoke", json!({}), json!({ "error": null })).await?;
     Ok(Json(registry::get(&state, id).await?))
 }
 
