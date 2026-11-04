@@ -4,14 +4,14 @@
 
 use std::time::{Duration, Instant};
 
-use crate::platform::{Platform, PowerAction, SessionState};
+use crate::platform::{Input, Platform, PowerAction, SessionState};
 
 /// Locally administered MAC that belongs to no real NIC, so the Wake check wakes nothing.
 pub const WAKE_TEST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x27];
 /// Like the probe: how long a key may take to show up on screen.
 const SCREEN_CHANGE_TIMEOUT: Duration = Duration::from_secs(1);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(3);
-const CHECKS: [&str; 7] = ["capture", "key shows on screen", "session state", "metrics", "shell", "wake send", "power lock"];
+const CHECKS: [&str; 8] = ["displays", "capture", "key shows on screen", "session state", "metrics", "shell", "wake send", "power lock"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Env {
@@ -80,6 +80,15 @@ impl Report {
 /// Runs every check; `operator` must have done each Step before it returns.
 pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
     let mut r = Report::default();
+    r.check("displays", Env::LoggedIn, || {
+        let displays = p.displays()?;
+        anyhow::ensure!(displays.iter().filter(|d| d.primary).count() == 1, "need exactly one primary display: {displays:?}");
+        for d in displays {
+            let f = p.capture(d.index)?;
+            anyhow::ensure!((f.width, f.height) == (d.width, d.height), "display {} captured as {}x{}", d.index, f.width, f.height);
+        }
+        Ok(())
+    });
     operator(Step::FocusTextField);
     screen_checks(p, Env::LoggedIn, SessionState::LoggedIn, &mut r);
     r.check("metrics", Env::LoggedIn, || {
@@ -113,22 +122,27 @@ pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
 
 fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Report) {
     r.check("capture", env, || {
-        let f = p.capture()?;
+        let f = p.capture(primary(p)?)?;
         anyhow::ensure!(f.width > 0 && f.height > 0, "empty frame");
         anyhow::ensure!(f.rgba.len() == (f.width * f.height * 4) as usize, "frame size mismatch");
         Ok(())
     });
     r.check("key shows on screen", env, || {
-        let before = p.capture()?;
-        p.key("a")?;
+        let primary = primary(p)?;
+        let before = p.capture(primary)?;
+        p.input(Input::Key("a".into()))?;
         let start = Instant::now();
-        while p.capture()? == before {
+        while p.capture(primary)? == before {
             anyhow::ensure!(start.elapsed() < SCREEN_CHANGE_TIMEOUT, "screen did not change after the key");
             std::thread::sleep(Duration::from_millis(100));
         }
         Ok(())
     });
     r.check("session state", env, || wait_for_state(p, expected, Duration::ZERO));
+}
+
+fn primary(p: &dyn Platform) -> anyhow::Result<u32> {
+    p.displays()?.iter().find(|d| d.primary).map(|d| d.index).ok_or_else(|| anyhow::anyhow!("no primary display"))
 }
 
 fn wait_for_state(p: &dyn Platform, expected: SessionState, timeout: Duration) -> anyhow::Result<()> {

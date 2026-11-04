@@ -1,13 +1,21 @@
 //! Agent core: enrollment and the persistent connection to the Server.
 
 pub mod contract;
+mod coords;
+mod executor;
+mod observer;
 pub mod platform;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use executor::Executor;
 
 use platform::Platform;
 use rcli_protocol::{
-    agent::{agent_message, server_message, AgentMessage, EnrollRequest, Heartbeat, ServerMessage},
+    agent::{agent_message, server_message, AgentMessage, DisplayList, EnrollRequest, Error, Heartbeat, ServerMessage},
     Conn,
 };
 use rustls::{
@@ -69,18 +77,20 @@ pub async fn enroll(server: &ServerEndpoint, code: &str, platform: &dyn Platform
             Ok(Credentials { device_id: r.device_id, cert_pem: r.cert_pem, key_pem: key.serialize_pem() })
         }
         Some(server_message::Msg::Error(e)) => anyhow::bail!("enrollment rejected: {}: {}", e.code, e.message),
-        None => anyhow::bail!("server closed the connection during enrollment"),
+        Some(_) | None => anyhow::bail!("server closed the connection during enrollment"),
     }
 }
 
 /// Keeps a connection to the Server open forever, reconnecting with backoff.
-pub async fn run(server: ServerEndpoint, creds: Credentials, _platform: Arc<dyn Platform>) {
+pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn Platform>) {
+    // Outlives sessions: the last acted-on display and what each Controller last saw survive a reconnect.
+    let executor = Arc::new(Mutex::new(Executor::default()));
     let mut backoff = Duration::from_secs(1);
     loop {
         match connect(&server, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
-                if let Err(e) = session(conn).await {
+                if let Err(e) = session(conn, &platform, &executor).await {
                     tracing::warn!("connection to server lost: {e}");
                 }
             }
@@ -91,18 +101,43 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, _platform: Arc<dyn 
     }
 }
 
-async fn session(mut conn: Conn<TlsStream<TcpStream>>) -> anyhow::Result<()> {
+async fn session(
+    mut conn: Conn<TlsStream<TcpStream>>,
+    platform: &Arc<dyn Platform>,
+    executor: &Arc<Mutex<Executor>>,
+) -> anyhow::Result<()> {
+    let send = |msg| AgentMessage { msg: Some(msg) };
     let mut tick = tokio::time::interval(HEARTBEAT_EVERY);
+    // Replies from work that runs off this loop (Actions block on the OS for up to seconds).
+    let (replies, mut replies_rx) = tokio::sync::mpsc::unbounded_channel();
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                conn.send(&AgentMessage { msg: Some(agent_message::Msg::Heartbeat(Heartbeat {})) }).await?;
+                conn.send(&send(agent_message::Msg::Heartbeat(Heartbeat {}))).await?;
             }
+            Some(reply) = replies_rx.recv() => conn.send(&send(reply)).await?,
             msg = conn.recv::<ServerMessage>() => {
-                if msg?.is_none() {
-                    anyhow::bail!("server closed the connection");
+                match msg?.and_then(|m| m.msg) {
+                    None => anyhow::bail!("server closed the connection"),
+                    Some(server_message::Msg::Act(req)) => {
+                        // The Executor's lock runs requests one at a time, in arrival order.
+                        let (platform, executor, replies) = (platform.clone(), executor.clone(), replies.clone());
+                        tokio::task::spawn_blocking(move || {
+                            let result = executor.lock().unwrap().act(platform.as_ref(), &req);
+                            let _ = replies.send(agent_message::Msg::ActResult(result));
+                        });
+                    }
+                    Some(server_message::Msg::ListDisplays(req)) => {
+                        let (displays, error) = match platform.displays() {
+                            Ok(d) => (d, None),
+                            Err(e) => (vec![], Some(Error { code: "platform".into(), message: e.to_string() })),
+                        };
+                        let reply = DisplayList { request_id: req.request_id, displays, error };
+                        conn.send(&send(agent_message::Msg::Displays(reply))).await?;
+                    }
+                    // Later tickets handle more requests from the Server here.
+                    Some(_) => {}
                 }
-                // Later tickets handle Actions and requests from the Server here.
             }
         }
     }

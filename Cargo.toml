@@ -9,11 +9,13 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1"
+base64 = "0.22"
 axum = "0.8"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 prost = "0.13"
 prost-build = "0.13"
 protoc-bin-vendored = "3"
@@ -36,3 +38,7 @@ rcli-protocol = { path = "crates/protocol" }
 rcli-server = { path = "crates/server" }
 rcli-agent = { path = "crates/agent" }
 rcli = { path = "crates/cli" }
+
+# Observation encoding is too slow unoptimized for the system tests.
+[profile.dev.package.image]
+opt-level = 3

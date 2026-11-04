@@ -56,6 +56,10 @@ pub async fn list(state: &AppState) -> anyhow::Result<Vec<Device>> {
         .collect())
 }
 
+pub async fn exists(state: &AppState, id: Uuid) -> anyhow::Result<bool> {
+    Ok(sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM devices WHERE id = $1)").bind(id).fetch_one(&state.db).await?)
+}
+
 pub async fn find_by_cert_fingerprint(state: &AppState, fp: &[u8]) -> anyhow::Result<Option<Uuid>> {
     Ok(sqlx::query_scalar("SELECT id FROM devices WHERE cert_fingerprint = $1")
         .bind(fp)

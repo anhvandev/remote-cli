@@ -8,6 +8,8 @@ message AgentMessage {
   oneof msg {
     EnrollRequest enroll = 1;
     Heartbeat heartbeat = 2;
+    ActResult act_result = 5;
+    DisplayList displays = 50;
   }
 }
 
@@ -15,6 +17,8 @@ message ServerMessage {
   oneof msg {
     EnrollResponse enrolled = 1;
     Error error = 2;
+    ActRequest act = 5;
+    DisplaysRequest list_displays = 50;
   }
 }
 
@@ -37,4 +41,95 @@ message Heartbeat {}
 message Error {
   string code = 1;
   string message = 2;
+}
+
+// --- Actions and Observations (ticket 05) ---
+// Requests carry a request_id; the Agent answers with the same id.
+
+// Runs `actions` in order, then returns one Observation (ActResult).
+message ActRequest {
+  uint64 request_id = 1;
+  repeated Action actions = 2;
+  ObserveMode observe = 3;
+  // Which display to observe: unset = the display last acted on.
+  optional uint32 display = 4;
+  bool all_displays = 5;
+  // Who asks; "unchanged" is relative to the last image this Controller got.
+  string controller = 6;
+}
+
+enum ObserveMode {
+  OBSERVE_MODE_SHOT = 0;
+  OBSERVE_MODE_NONE = 1;
+}
+
+// Coordinates are in Observation image space of `display`; the Agent's Coordinate Mapper converts them.
+message Point {
+  uint32 display = 1;
+  uint32 x = 2;
+  uint32 y = 3;
+}
+
+message Action {
+  oneof kind {
+    Point move = 1;
+    Point click = 2;
+    Point double_click = 3;
+    Point right_click = 4;
+    Drag drag = 5;
+    Scroll scroll = 6;
+    string type_text = 7;
+    // Key combination, e.g. "ctrl+shift+t".
+    string key = 8;
+  }
+}
+
+message Drag {
+  Point from = 1;
+  Point to = 2;
+}
+
+message Scroll {
+  Point at = 1;
+  int32 dx = 2;
+  int32 dy = 3;
+}
+
+// `error` set = the request failed (code "invalid_action" for bad input, else a Platform failure).
+message ActResult {
+  uint64 request_id = 1;
+  repeated Image images = 2;
+  Error error = 3;
+}
+
+message Image {
+  uint32 display = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  // Same as the last image this Controller got for this display; `data` is empty.
+  bool unchanged = 4;
+  string mime = 5;
+  bytes data = 6;
+}
+
+message DisplaysRequest {
+  uint64 request_id = 1;
+}
+
+message DisplayList {
+  uint64 request_id = 1;
+  repeated DisplayInfo displays = 2;
+  Error error = 3;
+}
+
+// A display, its size in real pixels and its place in the desktop arrangement.
+message DisplayInfo {
+  uint32 index = 1;
+  int32 x = 2;
+  int32 y = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+  // Real pixels per logical point (2.0 on Retina).
+  double scale = 6;
+  bool primary = 7;
 }

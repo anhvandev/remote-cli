@@ -2,7 +2,7 @@
 
 use rcli_agent::{
     contract::{self, Env, Step},
-    platform::{FakePlatform, Frame, Metrics, Platform, PowerAction, SessionState, ShellOutput},
+    platform::{DisplayInfo, FakePlatform, Frame, Input, Metrics, Platform, PowerAction, SessionState, ShellOutput},
 };
 
 /// Does to the FakePlatform what a person at the machine would do.
@@ -25,6 +25,7 @@ fn fake_platform_passes_every_check_in_every_environment() {
         "\
 | Check | Logged in | Lock screen | Login screen |
 |---|---|---|---|
+| displays | ✅ | | |
 | capture | ✅ | ✅ | ✅ |
 | key shows on screen | ✅ | ✅ | ✅ |
 | session state | ✅ | ✅ | ✅ |
@@ -48,12 +49,15 @@ impl Platform for Broken {
     fn hostname(&self) -> String {
         self.fake.hostname()
     }
-    fn capture(&self) -> anyhow::Result<Frame> {
-        self.fake.capture()
+    fn displays(&self) -> anyhow::Result<Vec<DisplayInfo>> {
+        self.fake.displays()
     }
-    fn key(&self, key: &str) -> anyhow::Result<()> {
+    fn capture(&self, display: u32) -> anyhow::Result<Frame> {
+        self.fake.capture(display)
+    }
+    fn input(&self, input: Input) -> anyhow::Result<()> {
         if self.keys_reach_screen {
-            self.fake.key(key)
+            self.fake.input(input)
         } else {
             Ok(())
         }
