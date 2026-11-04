@@ -75,3 +75,5 @@ export type Resources = {
 /** GET /api/v1/devices/{d}/lock. `expires_at` arrives with the Control Lock rules (ticket 07). */
 export type ControlLock = { holder: string | null; acquired_at?: string; expires_at?: string };
 export type DeviceDetails = Device & { inventory: Inventory | null; resources: Resources | null };
+/** GET /api/v1/devices/{d}/history: raw samples ("5s") or per-minute averages ("1m"), oldest first. */
+export type History = { resolution: "5s" | "1m"; samples: { at: string; resources: Resources }[] };
