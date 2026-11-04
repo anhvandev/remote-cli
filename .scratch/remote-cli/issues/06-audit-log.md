@@ -4,10 +4,10 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Every Action from ticket 05 produces an audit entry
-- [ ] `rcli audit` filters by Device, user and time range (admin only)
-- [ ] Text typed into password fields and all `unlock` content is masked
-- [ ] Entries older than 90 days are removed (injectable clock)
-- [ ] No Observation images or clips are stored
+- [x] Every Action from ticket 05 produces an audit entry
+- [x] `rcli audit` filters by Device, user and time range (admin only)
+- [x] Text typed into password fields and all `unlock` content is masked
+- [x] Entries older than 90 days are removed (injectable clock)
+- [x] No Observation images or clips are stored
