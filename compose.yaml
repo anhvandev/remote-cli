@@ -23,6 +23,8 @@ services:
       RCLI_BOOTSTRAP_ADMIN_TOKEN: ${RCLI_BOOTSTRAP_ADMIN_TOKEN:?set RCLI_BOOTSTRAP_ADMIN_TOKEN}
       # Names Agents use to reach port 8443; must match what they pass to --server.
       RCLI_AGENT_HOSTNAMES: ${RCLI_AGENT_HOSTNAMES:-localhost}
+      # Secrets Vault key for unlock passwords: 64 hex chars (`openssl rand -hex 32`). Keep a backup; losing it loses the passwords.
+      RCLI_MASTER_KEY: ${RCLI_MASTER_KEY:-}
     ports:
       - "8080:8080" # Controller API
       - "8443:8443" # Agent connections (TLS / mTLS)

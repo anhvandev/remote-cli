@@ -11,6 +11,7 @@ mod sessions;
 mod updates;
 mod users;
 mod wake;
+mod vault;
 
 use std::sync::Arc;
 
@@ -41,6 +42,7 @@ pub fn router(state: State) -> Router {
         .merge(exec::routes())
         .merge(wake::routes())
         .merge(sessions::routes())
+        .merge(vault::routes())
         .with_state(state)
 }
 

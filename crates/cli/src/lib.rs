@@ -82,6 +82,16 @@ enum Command {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+    /// Make the Agent type the Device's stored unlock password + Enter (needs the Control Lock).
+    Unlock {
+        device: String,
+        /// Directory to save the Observation in.
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+    },
+    /// Store or clear a Device's unlock password in the Secrets Vault (admin).
+    #[command(subcommand)]
+    UnlockPassword(UnlockPasswordCommand),
     /// Audit log of Actions, oldest first (admin).
     Audit {
         /// Device id or name.
@@ -134,6 +144,19 @@ enum Command {
         #[arg(long, default_value = ".")]
         out: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+enum UnlockPasswordCommand {
+    /// Store (or replace) the password; it is encrypted on the Server and never shown again.
+    Set {
+        device: String,
+        #[arg(long, env = "RCLI_UNLOCK_PASSWORD", hide_env_values = true)]
+        password: String,
+    },
+    Clear { device: String },
+    /// Whether a password is stored.
+    Status { device: String },
 }
 
 #[derive(Subcommand)]
@@ -591,6 +614,27 @@ where
                 }
             }
             (r, String::new())
+        }
+        Command::Unlock { device, out } => {
+            let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{}/unlock", path_segment(&device)), None).await?;
+            let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
+            (obs, text)
+        }
+        Command::UnlockPassword(cmd) => {
+            let (method, device, suffix, body) = match cmd {
+                UnlockPasswordCommand::Set { device, password } => {
+                    (reqwest::Method::POST, device, "", Some(json!({ "password": password })))
+                }
+                UnlockPasswordCommand::Clear { device } => (reqwest::Method::POST, device, "/clear", None),
+                UnlockPasswordCommand::Status { device } => (reqwest::Method::GET, device, "", None),
+            };
+            let path = format!("/api/v1/devices/{}/unlock-password{suffix}", path_segment(&device));
+            let r = api.call(method, &path, body.as_ref()).await?;
+            let text = match r["updated_at"].as_str() {
+                Some(at) => format!("unlock password set ({at})\n"),
+                None => "no unlock password\n".into(),
+            };
+            (r, text)
         }
         Command::Audit { device, user, since, until } => {
             let query: Vec<String> = [("device", device), ("user", user), ("since", since), ("until", until)]

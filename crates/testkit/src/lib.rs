@@ -48,6 +48,7 @@ impl TestSystem {
             agent_addr: "127.0.0.1:0".parse().unwrap(),
             agent_hostnames: vec!["localhost".into()],
             bootstrap_admin_token: BOOTSTRAP_TOKEN.into(),
+            master_key: Some("42".repeat(32).parse().unwrap()),
         };
         let server = rcli_server::start(config, clock.clone()).await.expect("start server");
         let (update_signing_key, update_public_key) = rcli_protocol::update::generate_key().unwrap();
