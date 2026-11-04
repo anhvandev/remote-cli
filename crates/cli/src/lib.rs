@@ -29,6 +29,35 @@ enum Command {
     /// Manage Enrollment Codes (admin).
     #[command(subcommand)]
     EnrollmentCode(EnrollmentCodeCommand),
+    /// Manage users (admin).
+    #[command(subcommand)]
+    User(UserCommand),
+    /// Manage per-user API tokens (admin).
+    #[command(subcommand)]
+    Token(TokenCommand),
+}
+
+#[derive(Subcommand)]
+enum UserCommand {
+    /// Create a user.
+    Create {
+        name: String,
+        /// admin or operator.
+        #[arg(long)]
+        role: String,
+    },
+    /// List users.
+    List,
+    /// Disable a user; all of their API tokens stop working.
+    Disable { name: String },
+}
+
+#[derive(Subcommand)]
+enum TokenCommand {
+    /// Issue a new API token for a user. The token is shown only once.
+    Create { user: String },
+    /// Revoke an API token by its id.
+    Revoke { id: String },
 }
 
 #[derive(Subcommand)]
@@ -54,7 +83,7 @@ where
     };
     let (body, human) = match cli.command {
         Command::Devices => {
-            let devices = api.call(reqwest::Method::GET, "/api/v1/devices").await?;
+            let devices = api.call(reqwest::Method::GET, "/api/v1/devices", None).await?;
             let mut text = format!("{:<36}  {:<24}  {:<7}  {}\n", "ID", "NAME", "STATUS", "LAST SEEN");
             for d in devices.as_array().into_iter().flatten() {
                 text += &format!(
@@ -68,9 +97,37 @@ where
             (devices, text)
         }
         Command::EnrollmentCode(EnrollmentCodeCommand::Create) => {
-            let created = api.call(reqwest::Method::POST, "/api/v1/enrollment-codes").await?;
+            let created = api.call(reqwest::Method::POST, "/api/v1/enrollment-codes", None).await?;
             let text = format!("{}\n", str_of(&created["code"]));
             (created, text)
+        }
+        Command::User(UserCommand::Create { name, role }) => {
+            let body = serde_json::json!({ "name": name, "role": role });
+            let user = api.call(reqwest::Method::POST, "/api/v1/users", Some(&body)).await?;
+            let text = format!("created {} ({})\n", str_of(&user["name"]), str_of(&user["role"]));
+            (user, text)
+        }
+        Command::User(UserCommand::List) => {
+            let users = api.call(reqwest::Method::GET, "/api/v1/users", None).await?;
+            let mut text = format!("{:<24}  {:<8}  {}\n", "NAME", "ROLE", "STATE");
+            for u in users.as_array().into_iter().flatten() {
+                let state = if u["disabled_at"].is_null() { "enabled" } else { "disabled" };
+                text += &format!("{:<24}  {:<8}  {}\n", str_of(&u["name"]), str_of(&u["role"]), state);
+            }
+            (users, text)
+        }
+        Command::User(UserCommand::Disable { name }) => {
+            let user = api.call(reqwest::Method::POST, &format!("/api/v1/users/{name}/disable"), None).await?;
+            (user, format!("disabled {name}\n"))
+        }
+        Command::Token(TokenCommand::Create { user }) => {
+            let issued = api.call(reqwest::Method::POST, &format!("/api/v1/users/{user}/tokens"), None).await?;
+            let text = format!("id {}\ntoken {}\n", str_of(&issued["id"]), str_of(&issued["token"]));
+            (issued, text)
+        }
+        Command::Token(TokenCommand::Revoke { id }) => {
+            let body = api.call(reqwest::Method::POST, &format!("/api/v1/tokens/{id}/revoke"), None).await?;
+            (body, format!("revoked {id}\n"))
         }
     };
     if cli.json {
@@ -92,9 +149,13 @@ struct Api {
 }
 
 impl Api {
-    async fn call(&self, method: reqwest::Method, path: &str) -> anyhow::Result<Value> {
+    async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> anyhow::Result<Value> {
         let url = format!("{}{path}", self.base.trim_end_matches('/'));
-        let resp = self.http.request(method, url).bearer_auth(&self.token).send().await?;
+        let mut req = self.http.request(method, url).bearer_auth(&self.token);
+        if let Some(body) = body {
+            req = req.json(body);
+        }
+        let resp = req.send().await?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {

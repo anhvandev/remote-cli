@@ -5,6 +5,7 @@
 
 pub mod agent_link;
 pub mod api;
+pub mod auth;
 pub mod clock;
 pub mod enrollment;
 pub mod pki;
@@ -25,7 +26,7 @@ pub struct Config {
     pub agent_addr: SocketAddr,
     /// DNS names / IPs Agents use to reach `agent_addr`; put in the server certificate.
     pub agent_hostnames: Vec<String>,
-    /// Admin token accepted until users and API tokens exist (ticket 02).
+    /// First-run admin token: accepted only until an enabled admin user has a live API token.
     pub bootstrap_admin_token: String,
 }
 
