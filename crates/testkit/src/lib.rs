@@ -6,7 +6,7 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
-pub use rcli_agent::platform::{self, FakePlatform};
+pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input};
 use rcli_agent::{Credentials, ServerEndpoint};
 pub use rcli_server::clock::{Clock, ManualClock};
 pub use reqwest::StatusCode;
@@ -26,6 +26,9 @@ pub struct TestSystem {
     /// Controller API client authenticated as the `admin` user.
     pub api: ApiClient,
     pub admin_token: String,
+    /// PKCS#8 Ed25519 key that signs Agent builds; Agents from `endpoint()` trust its public half.
+    pub update_signing_key: Vec<u8>,
+    update_public_key: Vec<u8>,
     _postgres: ContainerAsync<Postgres>,
 }
 
@@ -47,11 +50,14 @@ impl TestSystem {
             bootstrap_admin_token: BOOTSTRAP_TOKEN.into(),
         };
         let server = rcli_server::start(config, clock.clone()).await.expect("start server");
+        let (update_signing_key, update_public_key) = rcli_protocol::update::generate_key().unwrap();
         let mut sys = Self {
             clock,
             api: ApiClient::new(format!("http://{}", server.http_addr), Some(BOOTSTRAP_TOKEN)),
             server,
             admin_token: String::new(),
+            update_signing_key,
+            update_public_key,
             _postgres: postgres,
         };
         sys.admin_token = sys.create_user("admin", "admin").await;
@@ -64,7 +70,11 @@ impl TestSystem {
     }
 
     pub fn endpoint(&self) -> ServerEndpoint {
-        ServerEndpoint { addr: format!("localhost:{}", self.server.agent_addr.port()), ca_pem: self.server.ca_pem.clone() }
+        ServerEndpoint {
+            addr: format!("localhost:{}", self.server.agent_addr.port()),
+            ca_pem: self.server.ca_pem.clone(),
+            update_key: Some(self.update_public_key.clone()),
+        }
     }
 
     /// Runs `rcli <args>` in-process against this Server as the admin; returns stdout.
@@ -109,7 +119,11 @@ impl TestSystem {
 
     /// Enrolls a new Device named `hostname` and starts its Agent.
     pub async fn start_agent(&self, hostname: &str) -> TestAgent {
-        let platform = FakePlatform::new(hostname);
+        self.start_agent_on(FakePlatform::new(hostname)).await
+    }
+
+    /// Enrolls a new Device and starts its Agent on `platform` (keep a clone to script it).
+    pub async fn start_agent_on(&self, platform: FakePlatform) -> TestAgent {
         let code = self.create_enrollment_code().await;
         let creds = self.enroll(&code, &platform).await.expect("enroll");
         let mut agent = TestAgent::new(self.endpoint(), platform, creds);
@@ -134,6 +148,22 @@ impl TestSystem {
         })
         .await
     }
+
+    /// `GET /api/v1/devices/{id}/history?{query}`, asserting 200.
+    pub async fn history(&self, id: &str, query: &str) -> Value {
+        let (status, body) = self.api.get(&format!("/api/v1/devices/{id}/history?{query}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    /// Polls the Device's history (`query` as for `history`) until `pred` holds; returns it.
+    pub async fn wait_history(&self, id: &str, query: &str, pred: impl Fn(&Value) -> bool) -> Value {
+        eventually(|| async {
+            let h = self.history(id, query).await;
+            pred(&h).then_some(h)
+        })
+        .await
+    }
 }
 
 /// A real Agent running on a FakePlatform. Dropping it disconnects.
@@ -142,12 +172,24 @@ pub struct TestAgent {
     pub platform: FakePlatform,
     pub creds: Credentials,
     task: Option<JoinHandle<()>>,
+    network: NetworkLink,
 }
 
 impl TestAgent {
     /// An Agent for already-enrolled credentials; call `start` to connect.
+    /// It reaches `endpoint` through a link the test can cut (`cut_network`). Needs a Tokio runtime.
     pub fn new(endpoint: ServerEndpoint, platform: FakePlatform, creds: Credentials) -> Self {
-        Self { endpoint, platform, creds, task: None }
+        let network = NetworkLink::new(&endpoint.addr);
+        Self { endpoint, platform, creds, task: None, network }
+    }
+
+    /// Drops the Agent's connection and stalls new ones until `restore_network`; the Agent keeps running.
+    pub fn cut_network(&self) {
+        self.network.up.send_replace(false);
+    }
+
+    pub fn restore_network(&self) {
+        self.network.up.send_replace(true);
     }
 
     pub fn device_id(&self) -> &str {
@@ -155,7 +197,8 @@ impl TestAgent {
     }
 
     pub fn start(&mut self) {
-        let run = rcli_agent::run(self.endpoint.clone(), self.creds.clone(), Arc::new(self.platform.clone()));
+        let endpoint = ServerEndpoint { addr: self.network.addr.clone(), ..self.endpoint.clone() };
+        let run = rcli_agent::run(endpoint, self.creds.clone(), Arc::new(self.platform.clone()));
         self.task = Some(tokio::spawn(run));
     }
 
@@ -170,6 +213,44 @@ impl TestAgent {
 impl Drop for TestAgent {
     fn drop(&mut self) {
         self.stop();
+        self.network.task.abort();
+    }
+}
+
+/// TCP forwarder between an Agent and the Server that a test can take down and bring back.
+struct NetworkLink {
+    /// `localhost:port` to give the Agent (keeps the TLS server name).
+    addr: String,
+    up: Arc<tokio::sync::watch::Sender<bool>>,
+    task: JoinHandle<()>,
+}
+
+impl NetworkLink {
+    fn new(target: &str) -> Self {
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_listener.set_nonblocking(true).unwrap();
+        let addr = format!("localhost:{}", std_listener.local_addr().unwrap().port());
+        let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+        let up = Arc::new(tokio::sync::watch::channel(true).0);
+        let (target, link) = (target.to_owned(), up.clone());
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut agent, _)) = listener.accept().await else { continue };
+                let (target, mut up) = (target.clone(), link.subscribe());
+                tokio::spawn(async move {
+                    // A cut link stalls new connections (no reset), so the Agent reconnects the moment it is restored.
+                    if up.wait_for(|up| *up).await.is_err() {
+                        return;
+                    }
+                    let Ok(mut server) = tokio::net::TcpStream::connect(&target).await else { return };
+                    tokio::select! {
+                        _ = tokio::io::copy_bidirectional(&mut agent, &mut server) => {}
+                        _ = up.wait_for(|up| !*up) => {}
+                    }
+                });
+            }
+        });
+        Self { addr, up, task }
     }
 }
 
@@ -218,6 +299,10 @@ impl ApiClient {
 
     pub async fn post_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
         self.send(self.http.post(format!("{}{path}", self.base)).json(body)).await
+    }
+
+    pub async fn put_bytes(&self, path: &str, body: Vec<u8>) -> (StatusCode, Value) {
+        self.send(self.http.put(format!("{}{path}", self.base)).body(body)).await
     }
 
     async fn send(&self, mut req: reqwest::RequestBuilder) -> (StatusCode, Value) {

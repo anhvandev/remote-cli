@@ -8,17 +8,25 @@ message AgentMessage {
   oneof msg {
     EnrollRequest enroll = 1;
     Heartbeat heartbeat = 2;
+    AgentHello hello = 17;
+    UpdateFailed update_failed = 170;
     Inventory inventory = 3;
-    Resources resources = 30;
     ProcessList processes = 31;
+    ResourceSample sample = 40;
+    ActResult act_result = 5;
+    DisplayList displays = 50;
   }
+  reserved 30; // was a bare Resources delta; now ResourceSample
 }
 
 message ServerMessage {
   oneof msg {
     EnrollResponse enrolled = 1;
     Error error = 2;
+    AgentUpdate update = 17;
     ProcessListRequest list_processes = 3;
+    ActRequest act = 5;
+    DisplaysRequest list_displays = 50;
   }
 }
 
@@ -41,6 +49,28 @@ message Heartbeat {}
 message Error {
   string code = 1;
   string message = 2;
+}
+
+// First message of every Device session: what the Agent runs.
+message AgentHello {
+  string version = 1;
+  // `<os>-<arch>` of the Agent binary, e.g. `linux-x86_64`.
+  string target = 2;
+}
+
+// An Agent build to install. `signature` is Ed25519 over version, target and build
+// (see `rcli_protocol::update`); the Agent checks it with its configured update key.
+message AgentUpdate {
+  string version = 1;
+  string target = 2;
+  bytes build = 3;
+  bytes signature = 4;
+}
+
+// The Agent refused or failed to install an AgentUpdate.
+message UpdateFailed {
+  string version = 1;
+  string reason = 2;
 }
 
 // Hardware and OS facts. Sent in full at session start and whenever it changes.
@@ -104,6 +134,14 @@ message Resources {
   optional bool battery_charging = 14;
 }
 
+// One 5-second sample, sent live or (after an outage) as backfill, oldest first.
+// `resources` is a delta against the previous sample sent in this session (the first one is complete).
+// `age_ms` = how long ago the Agent took it (monotonic), so the Server stamps it with its own clock: now - age.
+message ResourceSample {
+  Resources resources = 1;
+  uint64 age_ms = 2;
+}
+
 // Answered with a ProcessList carrying the same request_id.
 message ProcessListRequest {
   uint64 request_id = 1;
@@ -121,4 +159,95 @@ message Process {
   string user = 3;
   double cpu_percent = 4;
   uint64 memory_bytes = 5;
+}
+
+// --- Actions and Observations (ticket 05) ---
+// Requests carry a request_id; the Agent answers with the same id.
+
+// Runs `actions` in order, then returns one Observation (ActResult).
+message ActRequest {
+  uint64 request_id = 1;
+  repeated Action actions = 2;
+  ObserveMode observe = 3;
+  // Which display to observe: unset = the display last acted on.
+  optional uint32 display = 4;
+  bool all_displays = 5;
+  // Who asks; "unchanged" is relative to the last image this Controller got.
+  string controller = 6;
+}
+
+enum ObserveMode {
+  OBSERVE_MODE_SHOT = 0;
+  OBSERVE_MODE_NONE = 1;
+}
+
+// Coordinates are in Observation image space of `display`; the Agent's Coordinate Mapper converts them.
+message Point {
+  uint32 display = 1;
+  uint32 x = 2;
+  uint32 y = 3;
+}
+
+message Action {
+  oneof kind {
+    Point move = 1;
+    Point click = 2;
+    Point double_click = 3;
+    Point right_click = 4;
+    Drag drag = 5;
+    Scroll scroll = 6;
+    string type_text = 7;
+    // Key combination, e.g. "ctrl+shift+t".
+    string key = 8;
+  }
+}
+
+message Drag {
+  Point from = 1;
+  Point to = 2;
+}
+
+message Scroll {
+  Point at = 1;
+  int32 dx = 2;
+  int32 dy = 3;
+}
+
+// `error` set = the request failed (code "invalid_action" for bad input, else a Platform failure).
+message ActResult {
+  uint64 request_id = 1;
+  repeated Image images = 2;
+  Error error = 3;
+}
+
+message Image {
+  uint32 display = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  // Same as the last image this Controller got for this display; `data` is empty.
+  bool unchanged = 4;
+  string mime = 5;
+  bytes data = 6;
+}
+
+message DisplaysRequest {
+  uint64 request_id = 1;
+}
+
+message DisplayList {
+  uint64 request_id = 1;
+  repeated DisplayInfo displays = 2;
+  Error error = 3;
+}
+
+// A display, its size in real pixels and its place in the desktop arrangement.
+message DisplayInfo {
+  uint32 index = 1;
+  int32 x = 2;
+  int32 y = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+  // Real pixels per logical point (2.0 on Retina).
+  double scale = 6;
+  bool primary = 7;
 }

@@ -8,6 +8,8 @@ default-run = "rcli-agent"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+hex.workspace = true
+image.workspace = true
 rcgen.workspace = true
 rcli-protocol.workspace = true
 rustls.workspace = true

@@ -72,10 +72,6 @@ export type Resources = {
   battery_percent?: number;
   battery_charging?: boolean;
 };
-export type ControlLock = { holder: string; expires_at: string };
-export type DeviceDetails = Device & {
-  inventory: Inventory | null;
-  resources: Resources | null;
-  /** Not served yet: Control Lock tickets (05/07) should add it to GET /api/v1/devices/{id}. */
-  control_lock?: ControlLock | null;
-};
+/** GET /api/v1/devices/{d}/lock. `expires_at` arrives with the Control Lock rules (ticket 07). */
+export type ControlLock = { holder: string | null; acquired_at?: string; expires_at?: string };
+export type DeviceDetails = Device & { inventory: Inventory | null; resources: Resources | null };

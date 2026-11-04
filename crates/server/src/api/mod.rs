@@ -1,8 +1,12 @@
 //! Controller API (HTTP). One file per area; each exposes `routes()` merged here.
 
+mod actions;
+mod control_lock;
 mod devices;
 mod enrollment;
+mod history;
 mod sessions;
+mod updates;
 mod users;
 
 use std::sync::Arc;
@@ -25,7 +29,11 @@ pub fn router(state: State) -> Router {
         .route("/api/v1/server-ca", get(|s: axum::extract::State<State>| async move { s.ca.cert_pem.clone() }))
         .merge(devices::routes())
         .merge(enrollment::routes())
+        .merge(history::routes())
+        .merge(updates::routes())
         .merge(users::routes())
+        .merge(control_lock::routes())
+        .merge(actions::routes())
         .merge(sessions::routes())
         .with_state(state)
 }
@@ -36,17 +44,27 @@ pub struct ApiError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
+    /// Extra typed fields next to code and message, e.g. `holder` of a Control Lock.
+    pub details: serde_json::Map<String, serde_json::Value>,
 }
 
 impl ApiError {
     pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self { status, code, message: message.into() }
+        Self { status, code, message: message.into(), details: Default::default() }
+    }
+
+    pub fn with(mut self, key: &str, value: impl Into<serde_json::Value>) -> Self {
+        self.details.insert(key.into(), value.into());
+        self
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(json!({ "error": { "code": self.code, "message": self.message } }))).into_response()
+        let mut error = self.details;
+        error.insert("code".into(), self.code.into());
+        error.insert("message".into(), self.message.into());
+        (self.status, Json(json!({ "error": error }))).into_response()
     }
 }
 

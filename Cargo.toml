@@ -9,23 +9,26 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1"
+base64 = "0.22"
 axum = "0.8"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 data-encoding = "2"
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 prost = "0.13"
 prost-build = "0.13"
 protoc-bin-vendored = "3"
 rcgen = { version = "0.13", features = ["x509-parser", "pem"] }
-ring = "0.17"
+hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate", "chrono", "uuid"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate", "chrono", "uuid", "json"] }
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
@@ -38,6 +41,10 @@ rcli-protocol = { path = "crates/protocol" }
 rcli-server = { path = "crates/server" }
 rcli-agent = { path = "crates/agent" }
 rcli = { path = "crates/cli" }
+
+# Observation encoding is too slow unoptimized for the system tests.
+[profile.dev.package.image]
+opt-level = 3
 
 # Password hashing (PBKDF2) is ~10x slower unoptimized; keeps tests fast.
 [profile.dev.package.ring]

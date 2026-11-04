@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { newUser, signIn } from "./devstack";
+import { adminApi, newUser, signIn } from "./devstack";
 
 test("sign in with password + TOTP and open a Device", async ({ page }) => {
   const user = await newUser();
@@ -23,7 +23,17 @@ test("sign in with password + TOTP and open a Device", async ({ page }) => {
   await expect(resources).toContainText("Màn khoá · an");
   await expect(resources).toContainText("CPU13%"); // FakePlatform reports 12.5 %
   await expect(resources).toContainText("4.0 GB / 16.0 GB");
-  await expect(page.getByRole("region", { name: "Control Lock" })).toContainText("Không ai giữ");
+  const lock = page.getByRole("region", { name: "Control Lock" });
+  await expect(lock).toContainText("Không ai giữ");
+
+  // Another Controller (the devstack admin) takes the Control Lock; the page shows the holder.
+  await adminApi("/api/v1/devices/alpha/lock", {});
+  try {
+    await page.reload();
+    await expect(lock).toContainText("🔒 admin");
+  } finally {
+    await adminApi("/api/v1/devices/alpha/lock/release", {});
+  }
 });
 
 test("wrong TOTP code is refused and pages need a session", async ({ page }) => {

@@ -18,6 +18,9 @@ struct Args {
     /// Enrollment Code; needed only on first start.
     #[arg(long)]
     enroll: Option<String>,
+    /// Public key (hex) Agent updates must be signed with, from `rcli update keygen`. Without it updates are rejected.
+    #[arg(long, env = "RCLI_AGENT_UPDATE_KEY")]
+    update_key: Option<String>,
     /// Device name reported at enrollment.
     #[arg(long)]
     name: String,
@@ -27,7 +30,11 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
     let args = Args::parse();
-    let server = ServerEndpoint { addr: args.server, ca_pem: std::fs::read_to_string(&args.ca)? };
+    let server = ServerEndpoint {
+        addr: args.server,
+        ca_pem: std::fs::read_to_string(&args.ca)?,
+        update_key: args.update_key.map(hex::decode).transpose()?,
+    };
     // shortcut: no OS adapter exists yet (tickets 28-35), so the binary runs on the FakePlatform.
     let platform = Arc::new(FakePlatform::new(args.name));
     let path = args.state_dir.join("credentials.json");

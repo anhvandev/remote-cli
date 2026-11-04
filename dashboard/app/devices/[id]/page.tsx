@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { api, ApiError, type DeviceDetails, type Resources } from "@/lib/api";
+import { api, ApiError, type ControlLock, type DeviceDetails, type Resources } from "@/lib/api";
 import { Nav } from "../../nav";
 import { Refresh } from "../../refresh";
 import { Status } from "../../status";
@@ -25,10 +25,12 @@ function Screen({ r }: { r: Resources }) {
 
 export default async function DevicePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const d = await api<DeviceDetails>(`/api/v1/devices/${encodeURIComponent(id)}`).catch((e) => {
+  const path = `/api/v1/devices/${encodeURIComponent(id)}`;
+  const [d, lock] = await Promise.all([api<DeviceDetails>(path), api<ControlLock>(`${path}/lock`)]).catch((e) => {
     if (e instanceof ApiError && e.status === 404) notFound();
     throw e;
   });
+  const time = (t: string) => new Date(t).toLocaleTimeString("vi-VN");
   const inv = d.inventory;
   const r = d.resources;
   return (
@@ -45,11 +47,15 @@ export default async function DevicePage({ params }: { params: Promise<{ id: str
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", alignItems: "start" }}>
           <section className="card" aria-label="Control Lock">
             <h3>Control Lock</h3>
-            {d.control_lock ? (
+            {lock.holder ? (
               <div className="row">
-                <span className="tag lock">🔒 {d.control_lock.holder}</span>
+                <span className="tag lock">🔒 {lock.holder}</span>
                 <span className="muted">
-                  hết hạn lúc <b className="mono">{new Date(d.control_lock.expires_at).toLocaleTimeString("vi-VN")}</b>
+                  {lock.expires_at ? (
+                    <>hết hạn lúc <b className="mono">{time(lock.expires_at)}</b></>
+                  ) : (
+                    lock.acquired_at && <>giữ từ <b className="mono">{time(lock.acquired_at)}</b></>
+                  )}
                 </span>
               </div>
             ) : (
