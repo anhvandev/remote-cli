@@ -36,6 +36,9 @@ export function LiveView({ device, name }: { device: string; name: string }) {
   const queue = useRef(Promise.resolve());
   const click = useRef<{ timer?: ReturnType<typeof setTimeout>; send?: () => void; down?: { x: number; y: number }; dragged?: boolean }>({});
   const [stream, setStream] = useState<MediaStream>();
+  const [displays, setDisplays] = useState<{ index: number; primary: boolean; width: number; height: number }[]>([]);
+  // The streamed display; input Actions target it.
+  const [display, setDisplay] = useState(0);
   const live = useRef<{ pc: RTCPeerConnection; session?: string }>(undefined);
   const video = useRef<HTMLVideoElement>(null);
   const base = `/api/devices/${encodeURIComponent(device)}/live`;
@@ -51,10 +54,15 @@ export function LiveView({ device, name }: { device: string; name: string }) {
     setState("idle");
   }
 
-  async function start() {
+  /** Starts streaming `pick`, or the primary display. */
+  async function start(pick?: number) {
     setError(undefined);
     setState("connecting");
     try {
+      const list = await json(await fetch(`/api/devices/${encodeURIComponent(device)}/displays`));
+      setDisplays(list);
+      const shown: number = pick ?? list.find((d: { primary: boolean }) => d.primary)?.index ?? 0;
+      setDisplay(shown);
       const pc = new RTCPeerConnection({ iceServers: await json(await fetch("/api/ice-servers")) });
       live.current = { pc };
       pc.addTransceiver("video", { direction: "recvonly" });
@@ -67,7 +75,7 @@ export function LiveView({ device, name }: { device: string; name: string }) {
       };
       await pc.setLocalDescription(await pc.createOffer());
       await gathered(pc);
-      const answer = await json(await fetch(base, { method: "POST", body: JSON.stringify({ sdp: pc.localDescription!.sdp }) }));
+      const answer = await json(await fetch(base, { method: "POST", body: JSON.stringify({ sdp: pc.localDescription!.sdp, display: shown }) }));
       if (live.current?.pc !== pc) {
         // Stopped while connecting.
         fetch(`${base}/${answer.session}`, { method: "DELETE" }).catch(() => {});
@@ -103,13 +111,12 @@ export function LiveView({ device, name }: { device: string; name: string }) {
     send?.();
   }
 
-  /** Mouse position in Observation image space (the video is exactly that size; display 0 = streamed primary).
-   * shortcut: assumes the primary display is index 0; pass the streamed display once the view can pick one. */
+  /** Mouse position in Observation image space of the streamed display (the video is exactly that size). */
   function at(e: MouseEvent<HTMLVideoElement>) {
     const v = e.currentTarget;
     const x = Math.min(v.videoWidth - 1, Math.floor((e.nativeEvent.offsetX * v.videoWidth) / v.clientWidth));
     const y = Math.min(v.videoHeight - 1, Math.floor((e.nativeEvent.offsetY * v.videoHeight) / v.clientHeight));
-    return { display: 0, x: Math.max(0, x), y: Math.max(0, y) };
+    return { display, x: Math.max(0, x), y: Math.max(0, y) };
   }
 
   const control = holding && state === "live";
@@ -171,13 +178,31 @@ export function LiveView({ device, name }: { device: string; name: string }) {
       <div className="row" style={{ justifyContent: "space-between" }}>
         <h3>Live view</h3>
         {state === "idle" ? (
-          <button className="btn primary" onClick={start}>
+          <button className="btn primary" onClick={() => start()}>
             Xem trực tiếp
           </button>
         ) : (
-          <button className="btn" onClick={stop}>
-            Dừng xem
-          </button>
+          <span className="row">
+            {displays.length > 1 && (
+              <select
+                aria-label="Chọn màn hình"
+                value={display}
+                onChange={(e) => {
+                  stop();
+                  start(Number(e.target.value));
+                }}
+              >
+                {displays.map((d) => (
+                  <option key={d.index} value={d.index}>
+                    Màn hình {d.index + 1} · {d.width}×{d.height}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button className="btn" onClick={stop}>
+              Dừng xem
+            </button>
+          </span>
         )}
       </div>
       {error && <p className="muted">Không xem được: {error}</p>}

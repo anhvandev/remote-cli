@@ -56,6 +56,17 @@ test("wait for the Control Lock, take it, then drive the Device with mouse and k
         { type: "key", keys: "ctrl+enter", error: null },
       ]);
 
+    // charlie has a second display: pick it and the view streams (and clicks on) that one.
+    await live.getByLabel("Chọn màn hình").selectOption("1");
+    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => `${v.videoWidth}x${v.videoHeight}`), { timeout: 15_000 }).toBe("1024x768");
+    await video.click({ position: { x: 1, y: 1 } });
+    await expect
+      .poll(async () => {
+        const entries = await adminApi(`/api/v1/audit?device=charlie&user=${user.name}`);
+        return entries.at(-1)?.params.actions?.[0].display;
+      })
+      .toBe(1);
+
     await lock.getByRole("button", { name: "Trả Control Lock" }).click();
     await expect(lock).toContainText("Không ai giữ");
     await expect(live).toContainText("Chỉ xem");

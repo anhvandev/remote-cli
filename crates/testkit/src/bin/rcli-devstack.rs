@@ -2,13 +2,13 @@
 //! clock, and FakePlatform Agents. Usage: `rcli-devstack <http-port> <info.json>`.
 //! Writes `{api, admin_token, now}` to `info.json` once the fleet is ready; runs until SIGINT/SIGTERM.
 //! Fleet: `alpha` Online (LockScreen, user "an", full inventory, a rolled-up minute of history), `bravo` Offline,
-//! `charlie` Online (logged in; its Control Lock belongs to the direct-control test),
+//! `charlie` Online (logged in, a second 1024x768 display; its Control Lock belongs to the direct-control test),
 //! and never-connected `delta`, `echo`, `foxtrot` for the admin screen tests to rename/revoke/delete/merge.
 //! `golf` Online (power test), `hotel` Offline in alpha's LAN whose last Wake failed (wake test).
 //! `update` in info.json is a build signed with the key the Agents trust, for the update screen tests.
 //! The clock starts at real time (the Dashboard picks history ranges by its own clock) and is frozen after seeding.
 
-use rcli_testkit::{platform::SessionState, Clock, FakePlatform, TestAgent, TestSystem};
+use rcli_testkit::{platform::SessionState, Clock, DisplayInfo, FakePlatform, TestAgent, TestSystem};
 use rcli_agent::platform::{Disk, Display, Inventory, NetworkInterface};
 use serde_json::json;
 
@@ -50,7 +50,12 @@ async fn main() -> anyhow::Result<()> {
             vec![NetworkInterface { name: "eth0".into(), mac: "02:00:00:00:00:05".into(), ips: vec!["10.0.0.15/24".into()] }]
     });
     let mut agents = vec![];
-    let fleet = [alpha, FakePlatform::new("bravo"), FakePlatform::new("charlie"), FakePlatform::new("golf"), hotel];
+    let charlie = FakePlatform::new("charlie");
+    charlie.set_displays(vec![
+        DisplayInfo { index: 0, x: 0, y: 0, width: 1920, height: 1080, scale: 1.0, primary: true },
+        DisplayInfo { index: 1, x: 1920, y: 0, width: 1024, height: 768, scale: 1.0, primary: false },
+    ]);
+    let fleet = [alpha, FakePlatform::new("bravo"), charlie, FakePlatform::new("golf"), hotel];
     for platform in fleet {
         let creds = sys.enroll(&sys.create_enrollment_code().await, &platform).await?;
         let mut agent = TestAgent::new(sys.endpoint(), platform, creds);
