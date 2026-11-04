@@ -4,6 +4,7 @@ import { Nav } from "../../nav";
 import { Refresh } from "../../refresh";
 import { Status } from "../../status";
 import { History } from "./history";
+import { LiveView } from "./live-view";
 
 const GB = 1 << 30;
 const gb = (b: number) => `${(b / GB).toFixed(1)} GB`;
@@ -99,6 +100,8 @@ export default async function DevicePage({
               <span className="muted">Chỉ có khi Device Online.</span>
             )}
           </section>
+
+          <LiveView device={d.id} name={d.name} />
 
           <section className="card" aria-label="Phần cứng">
             <h3>Phần cứng</h3>

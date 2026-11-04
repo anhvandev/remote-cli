@@ -12,12 +12,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{devices::resolve, ApiError, Caller};
-use crate::{agent_link::RequestError, audit, auth::User, control_lock, metrics};
+use crate::{agent_link::RequestError, audit, auth::User, control_lock, metrics, vault};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
         .route("/api/v1/devices/{id}/actions", post(act))
         .route("/api/v1/devices/{id}/displays", get(displays))
+        .route("/api/v1/devices/{id}/unlock", post(unlock))
 }
 
 /// `{"actions": [...], "observe": "shot" | "none" | "frames" | "clip", "display": N | "all", "max_frames": N}`.
@@ -245,27 +246,53 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
             actions.push(a);
         }
     }
-    let req = |request_id| {
-        server_message::Msg::Act(proto::ActRequest {
-            request_id,
-            actions,
-            observe: match body.observe {
-                Observe::Shot => proto::ObserveMode::Shot,
-                Observe::None => proto::ObserveMode::None,
-                Observe::Frames => proto::ObserveMode::Frames,
-                Observe::Clip => proto::ObserveMode::Clip,
-            }
-            .into(),
-            display: match body.display {
-                Some(DisplaySel::Index(i)) => Some(i),
-                _ => None,
-            },
-            all_displays: matches!(body.display, Some(DisplaySel::All(_))),
-            controller: user.id.to_string(),
-            max_frames,
-            marks: body.marks,
-        })
+    let req = proto::ActRequest {
+        request_id: 0,
+        actions,
+        observe: match body.observe {
+            Observe::Shot => proto::ObserveMode::Shot,
+            Observe::None => proto::ObserveMode::None,
+            Observe::Frames => proto::ObserveMode::Frames,
+            Observe::Clip => proto::ObserveMode::Clip,
+        }
+        .into(),
+        display: match body.display {
+            Some(DisplaySel::Index(i)) => Some(i),
+            _ => None,
+        },
+        all_displays: matches!(body.display, Some(DisplaySel::All(_))),
+        controller: user.id.to_string(),
+        max_frames,
+        marks: body.marks,
     };
+    send(state, device, req, &step_of).await
+}
+
+/// `unlock`: the Agent types the Device's stored password + Enter, then observes. Needs the Control Lock.
+/// The password goes only to the Agent; the audit entry has no params at all.
+async fn unlock(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    let device = resolve(&state, &id).await?;
+    control_lock::touch(&state, device, &user).await?;
+    control_lock::check(&state, device, &user).await?;
+    let password = vault::password(&state, device).await?;
+    let req = proto::ActRequest {
+        actions: vec![Kind::TypeText(password), Kind::Key("enter".into())]
+            .into_iter()
+            .map(|k| proto::Action { kind: Some(k) })
+            .collect(),
+        controller: user.id.to_string(),
+        ..Default::default()
+    };
+    let result = send(&state, device, req, &[]).await;
+    let outcome = json!({ "error": result.as_ref().err().map(|e| e.code) });
+    audit::record(&state, &user, device, "unlock", json!({}), outcome).await?;
+    result
+}
+
+/// Sends `req` (its request_id is filled in) and returns the Observation JSON.
+/// `step_of[i]` = the API step of protocol Action `i`, reported as `step` on failure.
+async fn send(state: &super::State, device: uuid::Uuid, req: proto::ActRequest, step_of: &[u32]) -> Result<Json<Value>, ApiError> {
+    let req = |request_id| server_message::Msg::Act(proto::ActRequest { request_id, ..req });
     let agent_message::Msg::ActResult(result) = state.agents.request(device, req).await? else {
         return Err(anyhow::anyhow!("unexpected reply to ActRequest").into());
     };

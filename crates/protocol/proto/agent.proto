@@ -17,6 +17,7 @@ message AgentMessage {
     DisplayList displays = 50;
     ExecResult exec_result = 11;
     WakeResult wake_result = 14;
+    LiveAnswer live_answer = 21;
   }
   reserved 30; // was a bare Resources delta; now ResourceSample
 }
@@ -32,6 +33,8 @@ message ServerMessage {
     ExecRequest exec = 11;
     ControlIndicator control_indicator = 7;
     WakeRequest wake = 14;
+    LiveOffer live_offer = 21;
+    LiveClose live_close = 210;
   }
 }
 
@@ -347,4 +350,38 @@ message WakeRequest {
 message WakeResult {
   uint64 request_id = 1;
   Error error = 2;
+}
+
+// --- Live view over WebRTC (ticket 21) ---
+// The Server only relays signaling; media goes peer-to-peer between the Agent and the viewer (TURN as fallback).
+// ICE is non-trickle: both SDPs carry all their candidates.
+
+// STUN/TURN server the Agent's peer connection may use; TURN credentials are short-lived (coturn REST API).
+message IceServer {
+  repeated string urls = 1;
+  string username = 2;
+  string credential = 3;
+}
+
+// A viewer's SDP offer; answered with a LiveAnswer carrying the same request_id.
+message LiveOffer {
+  uint64 request_id = 1;
+  // Server-chosen id of this live stream, used by LiveClose.
+  string session = 2;
+  string sdp = 3;
+  repeated IceServer ice_servers = 4;
+  // Display to stream: unset = primary.
+  optional uint32 display = 5;
+}
+
+// The Agent's SDP answer, or `error` (code "invalid_offer" for a bad offer).
+message LiveAnswer {
+  uint64 request_id = 1;
+  string sdp = 2;
+  Error error = 3;
+}
+
+// Stop live stream `session` (no reply; unknown sessions are ignored).
+message LiveClose {
+  string session = 1;
 }

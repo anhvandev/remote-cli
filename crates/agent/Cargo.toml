@@ -21,3 +21,4 @@ tokio.workspace = true
 tokio-rustls.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+webrtc.workspace = true

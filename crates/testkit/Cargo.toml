@@ -18,6 +18,7 @@ rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 serde_json.workspace = true
 testcontainers-modules.workspace = true
 tokio.workspace = true
+webrtc.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
