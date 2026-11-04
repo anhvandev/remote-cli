@@ -1,5 +1,6 @@
 //! Agent core: enrollment and the persistent connection to the Server.
 
+pub mod contract;
 pub mod platform;
 
 use std::{sync::Arc, time::Duration};
