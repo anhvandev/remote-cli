@@ -8,6 +8,7 @@ export async function Nav() {
     <nav>
       <b>⌘ Remote CLI</b>
       <Link href="/">Danh sách Device</Link>
+      {me.role === "admin" && <Link href="/admin">Quản trị</Link>}
       <span className="who">
         {me.name} · {me.role}
         <form action={signOut}>

@@ -3,7 +3,13 @@ import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { expect, type Page } from "@playwright/test";
 
-type Info = { api: string; admin_token: string; now: number };
+type Info = {
+  api: string;
+  admin_token: string;
+  now: number;
+  /** A build signed with the key the devstack's Agents trust. */
+  update: { version: string; target: string; build: string; signature: string };
+};
 
 /** Waits for rcli-devstack to finish seeding the fleet (it writes .devstack.json when ready). */
 export async function devstack(): Promise<Info> {

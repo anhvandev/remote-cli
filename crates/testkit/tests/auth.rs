@@ -82,3 +82,28 @@ async fn admin_manages_users_and_tokens_with_rcli() {
     assert!(sys.rcli_as(&second, &["devices"]).await.is_err());
     assert!(sys.rcli(&["user", "list"]).await.unwrap().lines().any(|l| l.contains("alice") && l.contains("disabled")));
 }
+
+#[tokio::test]
+async fn admin_lists_live_api_tokens_without_secrets_or_dashboard_sessions() {
+    let sys = TestSystem::start().await;
+    sys.api.post_json("/api/v1/users", &json!({"name": "ai-1", "role": "operator"})).await;
+    let (_, first) = sys.api.post("/api/v1/users/ai-1/tokens").await;
+    let (_, second) = sys.api.post("/api/v1/users/ai-1/tokens").await;
+    sys.api.post(&format!("/api/v1/tokens/{}/revoke", first["id"].as_str().unwrap())).await;
+    let (_, creds) = sys.api.post_json("/api/v1/users/ai-1/credentials", &json!({"password": "correct horse"})).await;
+    let totp = sys.totp(creds["totp_secret"].as_str().unwrap());
+    let (status, _) =
+        sys.api.post_json("/api/v1/sessions", &json!({"name": "ai-1", "password": "correct horse", "totp": totp})).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, tokens) = sys.api.get("/api/v1/tokens").await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    let mine: Vec<_> = tokens.as_array().unwrap().iter().filter(|t| t["user"] == "ai-1").collect();
+    assert_eq!(mine.len(), 1, "{tokens}");
+    assert_eq!(mine[0]["id"], second["id"]);
+    assert!(mine[0]["created_at"].is_string());
+    assert!(!tokens.to_string().contains("rcli_"), "token secrets must never be listed");
+
+    let op = sys.api.with_token(second["token"].as_str());
+    assert_eq!(op.get("/api/v1/tokens").await.0, StatusCode::FORBIDDEN);
+}
