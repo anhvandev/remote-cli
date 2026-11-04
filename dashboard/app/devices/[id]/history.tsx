@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { api, type History as HistoryData } from "@/lib/api";
+import { api, type History as HistoryData, type Resources } from "@/lib/api";
 
 // Raw samples (720 points/hour) only for the short range; longer ranges read the 1-minute rollups.
 const RANGES = { "1h": [1, "5s"], "24h": [24, "1m"], "7d": [24 * 7, "1m"], "90d": [24 * 90, "1m"] } as const;
@@ -22,7 +22,8 @@ export async function History({ path, range, ramBytes }: { path: string; range?:
   const h = await api<HistoryData>(`${path}/history?resolution=${resolution}&from=${from}`);
   // shortcut: 7d/90d fetch every rollup (up to 130k) and thin here; add server-side downsampling if that gets slow.
   const step = Math.ceil(h.samples.length / MAX_POINTS) || 1;
-  const s = h.samples.filter((_, i) => i % step === 0 || i === h.samples.length - 1).map((p) => p.resources);
+  const s: Resources[] = [];
+  for (let i = 0; i < h.samples.length; i += step) s.push(peak(h.samples.slice(i, i + step).map((p) => p.resources)));
   const mounts = [...new Set(s.flatMap((x) => Object.keys(x.disk_used_percent ?? {})))];
 
   return (
@@ -60,6 +61,20 @@ export async function History({ path, range, ramBytes }: { path: string; range?:
       </div>
     </section>
   );
+}
+
+/** One point for a bucket of samples: each metric's maximum, so short spikes survive thinning. */
+function peak(bucket: Resources[]): Resources {
+  const max = (a?: number, b?: number) => (a === undefined ? b : b === undefined ? a : Math.max(a, b));
+  return bucket.reduce((acc, r) => {
+    const out: Record<string, unknown> = { ...acc };
+    for (const [k, v] of Object.entries(r)) {
+      if (typeof v === "number") out[k] = max(acc[k as keyof Resources] as number | undefined, v);
+    }
+    const disks = { ...acc.disk_used_percent };
+    for (const [m, v] of Object.entries(r.disk_used_percent ?? {})) disks[m] = max(disks[m], v)!;
+    return { ...(out as Resources), disk_used_percent: disks };
+  });
 }
 
 /** Line chart; points are spaced by sample index (gaps in the data are not drawn as gaps). */
