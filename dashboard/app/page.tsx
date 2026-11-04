@@ -36,7 +36,7 @@ export default async function FleetPage() {
                     </Link>
                   </td>
                   <td>
-                    <Status status={d.status} />
+                    <Status status={d.status} wakeError={d.wake_error} />
                   </td>
                   <td className="muted">{d.last_seen_at ? new Date(d.last_seen_at).toLocaleString("vi-VN") : "—"}</td>
                 </tr>

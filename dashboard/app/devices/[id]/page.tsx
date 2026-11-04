@@ -6,6 +6,7 @@ import { Status } from "../../status";
 import { History } from "./history";
 import { ControlProvider, LockCard } from "./control";
 import { LiveView } from "./live-view";
+import { PowerButtons } from "./power";
 
 const GB = 1 << 30;
 const gb = (b: number) => `${(b / GB).toFixed(1)} GB`;
@@ -51,13 +52,16 @@ export default async function DevicePage({
       <Nav />
       <Refresh />
       <main>
-        <h2>
-          {d.name}{" "}
-          <span style={{ fontSize: 14, fontWeight: 400 }}>
-            <Status status={d.status} />
-          </span>
-        </h2>
         <ControlProvider device={d.id} me={me.name} initial={lock}>
+        <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
+          <h2 style={{ margin: 0 }}>
+            {d.name}{" "}
+            <span style={{ fontSize: 14, fontWeight: 400 }}>
+              <Status status={d.status} wakeError={d.wake_error} />
+            </span>
+          </h2>
+          <PowerButtons device={d.id} name={d.name} status={d.status} me={me.name} admin={me.role === "admin"} />
+        </div>
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", alignItems: "start" }}>
           <LockCard />
 

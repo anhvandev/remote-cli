@@ -9,6 +9,8 @@ const Ctx = createContext<{ device: string; holding: boolean; lock: ControlLock;
 
 /** True while the signed-in person holds the Device's Control Lock (direct input is allowed). */
 export const useHolding = () => useContext(Ctx).holding;
+/** The Device's Control Lock as the watch last reported it. */
+export const useLock = () => useContext(Ctx).lock;
 
 export function ControlProvider(props: { device: string; me: string; initial: ControlLock; children: ReactNode }) {
   const [lock, set] = useState(props.initial);

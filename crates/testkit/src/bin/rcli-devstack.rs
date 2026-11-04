@@ -2,7 +2,8 @@
 //! clock, and FakePlatform Agents. Usage: `rcli-devstack <http-port> <info.json>`.
 //! Writes `{api, admin_token, now}` to `info.json` once the fleet is ready; runs until SIGINT/SIGTERM.
 //! Fleet: `alpha` Online (LockScreen, user "an", full inventory, a rolled-up minute of history), `bravo` Offline,
-//! `charlie` Online (logged in; its Control Lock belongs to the direct-control test).
+//! `charlie` Online (logged in; its Control Lock belongs to the direct-control test), `delta` Online (power test),
+//! `echo` Offline in alpha's LAN whose last Wake failed (wake test).
 //! The clock starts at real time (the Dashboard picks history ranges by its own clock) and is frozen after seeding.
 
 use rcli_testkit::{platform::SessionState, Clock, FakePlatform, TestAgent, TestSystem};
@@ -41,20 +42,34 @@ async fn main() -> anyhow::Result<()> {
         s.resources.uptime_secs = Some(3 * 3600);
         s.resources.disk_used_percent.insert("/".into(), 40.0);
     });
+    let echo = FakePlatform::new("echo");
+    echo.update(|s| {
+        s.inventory.network_interfaces =
+            vec![NetworkInterface { name: "eth0".into(), mac: "02:00:00:00:00:05".into(), ips: vec!["10.0.0.15/24".into()] }]
+    });
     let mut agents = vec![];
-    for platform in [alpha, FakePlatform::new("bravo"), FakePlatform::new("charlie")] {
+    let fleet = [alpha, FakePlatform::new("bravo"), FakePlatform::new("charlie"), FakePlatform::new("delta"), echo];
+    for platform in fleet {
         let creds = sys.enroll(&sys.create_enrollment_code().await, &platform).await?;
         let mut agent = TestAgent::new(sys.endpoint(), platform, creds);
         agent.start();
         sys.wait_device_details(agent.device_id(), |d| !d["inventory"].is_null() && !d["resources"].is_null()).await;
         agents.push(agent);
     }
-    // bravo drops off and stays away past the Offline threshold.
+    // bravo and echo drop off and stay away past the Offline threshold.
     agents[1].stop();
-    let bravo = agents[1].device_id().to_owned();
-    sys.wait_device(&bravo, |d| !d["last_seen_at"].is_null()).await;
+    agents[4].stop();
+    let (bravo, echo) = (agents[1].device_id().to_owned(), agents[4].device_id().to_owned());
+    for id in [&bravo, &echo] {
+        sys.wait_device(id, |d| !d["last_seen_at"].is_null()).await;
+    }
     sys.advance(31);
     sys.wait_device(&bravo, |d| d["status"] == "Offline").await;
+    // echo is woken via alpha but never comes back: "Wake failed".
+    let (status, body) = sys.api.post_json(&format!("/api/v1/devices/{echo}/wake"), &json!({})).await;
+    anyhow::ensure!(status.is_success(), "wake echo: {body}");
+    sys.advance(181);
+    sys.wait_device(&echo, |d| d["wake_error"] == "Wake failed").await;
     // Complete alpha's first minute of samples so it has a 1-minute rollup.
     sys.advance(60);
     let from = (sys.clock.now() - chrono::Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);

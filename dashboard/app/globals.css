@@ -18,6 +18,8 @@ h3 { margin:0 0 10px; font-size:14px; color:var(--muted); font-weight:600; text-
 .muted { color:var(--muted); }
 .btn { background:var(--line); color:var(--text); border:1px solid #333a48; border-radius:6px; padding:6px 12px; font:inherit; cursor:pointer; }
 .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+.btn.danger { color:var(--bad); }
+.btn[disabled] { opacity:.4; cursor:not-allowed; }
 input { background:var(--bg); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:8px 10px; font:inherit; width:100%; }
 table { width:100%; border-collapse:collapse; }
 th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }

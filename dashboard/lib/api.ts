@@ -58,7 +58,8 @@ async function parse<T>(res: Response): Promise<T> {
 // Shapes of Controller API responses (see crates/server/src/api).
 export type User = { id: string; name: string; role: "admin" | "operator" };
 export type DeviceStatus = "Online" | "Offline" | "Waking";
-export type Device = { id: string; name: string; status: DeviceStatus; last_seen_at: string | null };
+/** `wake_error` is "Wake failed" when the last Wake timed out and the Device is still Offline. */
+export type Device = { id: string; name: string; status: DeviceStatus; last_seen_at: string | null; wake_error: string | null };
 export type Inventory = {
   os: string;
   os_version: string;
