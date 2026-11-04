@@ -33,6 +33,10 @@ pub struct Config {
     pub agent_hostnames: Vec<String>,
     /// First-run admin token: accepted only until an enabled admin user has a live API token.
     pub bootstrap_admin_token: String,
+    /// STUN/TURN URLs handed to both WebRTC peers, e.g. `turn:vps.example.com:3478`. Empty = direct paths only.
+    pub ice_urls: Vec<String>,
+    /// coturn `static-auth-secret`: the Server mints short-lived TURN credentials from it.
+    pub turn_secret: Option<String>,
 }
 
 impl Config {
@@ -49,6 +53,8 @@ impl Config {
                 .map(|s| s.trim().to_owned())
                 .collect(),
             bootstrap_admin_token: var("RCLI_BOOTSTRAP_ADMIN_TOKEN", None)?,
+            ice_urls: var("RCLI_ICE_URLS", Some(""))?.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
+            turn_secret: std::env::var("RCLI_TURN_SECRET").ok().filter(|s| !s.is_empty()),
         })
     }
 }

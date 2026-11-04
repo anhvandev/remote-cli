@@ -1,0 +1,72 @@
+use rcli_testkit::{eventually, LiveViewer, StatusCode, TestSystem};
+use serde_json::json;
+use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
+
+#[tokio::test]
+async fn anyone_can_watch_live_peer_to_peer_while_someone_else_holds_the_control_lock() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online").await;
+    let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let (status, _) = alice.post(&format!("/api/v1/devices/{dev}/lock")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!agent.platform.indicator_shown());
+
+    let live = LiveViewer::open(&bob, dev, false).await.expect("open live view");
+    live.wait_packets(10).await;
+    assert_eq!(live.codec(), "video/H264");
+    assert_eq!(live.local_candidate_type().await, RTCIceCandidateType::Host, "direct path, no relay configured");
+    assert!(agent.platform.indicator_shown(), "indicator shows while streaming");
+
+    assert_eq!(live.close(&bob).await, StatusCode::NO_CONTENT);
+    eventually(|| async { (!agent.platform.indicator_shown()).then_some(()) }).await;
+    assert!(agent.platform.inputs().is_empty(), "watching sends no input");
+}
+
+#[tokio::test]
+async fn live_view_falls_back_to_turn_with_short_lived_credentials() {
+    let sys = TestSystem::start_with_turn().await;
+    let agent = sys.start_agent("behind-nat").await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online").await;
+
+    let (status, servers) = sys.api.get("/api/v1/ice-servers").await;
+    assert_eq!(status, StatusCode::OK, "{servers}");
+    let turn = &servers[0];
+    assert_eq!(turn["urls"][0], format!("turn:{}?transport=udp", sys.turn.as_ref().unwrap().addr));
+    let expiry: i64 = turn["username"].as_str().unwrap().parse().expect("username = expiry unix time");
+    let now = chrono::Utc::now().timestamp();
+    assert!(expiry > now && expiry <= now + 24 * 3600, "credentials expire within a day: {turn}");
+    assert!(!turn["credential"].as_str().unwrap().is_empty());
+
+    // Relay-only = what happens when NAT blocks every direct path.
+    let live = LiveViewer::open(&sys.api, dev, true).await.expect("open live view through TURN");
+    live.wait_packets(10).await;
+    assert_eq!(live.local_candidate_type().await, RTCIceCandidateType::Relay);
+    assert_eq!(live.close(&sys.api).await, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn live_view_errors_are_typed() {
+    let sys = TestSystem::start().await;
+    let mut agent = sys.start_agent("lab-pc").await;
+    let dev = agent.device_id().to_owned();
+    sys.wait_device(&dev, |d| d["status"] == "Online").await;
+    let live = format!("/api/v1/devices/{dev}/live");
+
+    let (status, body) = sys.api.with_token(None).post_json(&live, &json!({ "sdp": "v=0" })).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let (status, body) = sys.api.post_json(&live, &json!({ "sdp": "not sdp" })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_offer");
+    let (status, body) = sys.api.post_json("/api/v1/devices/nope/live", &json!({ "sdp": "v=0" })).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    agent.stop();
+    sys.wait_device(&dev, |d| !d["last_seen_at"].is_null()).await;
+    let err = LiveViewer::open(&sys.api, &dev, false).await.err().expect("refused");
+    assert_eq!(err.0, StatusCode::CONFLICT, "{}", err.1);
+    assert_eq!(err.1["error"]["code"], "device_not_connected");
+}

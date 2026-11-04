@@ -32,6 +32,8 @@ pub trait Platform: Send + Sync + 'static {
     fn power(&self, action: PowerAction) -> anyhow::Result<()>;
     /// Sends a Wake-on-LAN magic packet for `mac` on the local network.
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()>;
+    /// Shows or hides the visible on-Device indicator that someone is watching or controlling the screen.
+    fn control_indicator(&self, visible: bool) -> anyhow::Result<()>;
     /// Version of the running Agent.
     fn agent_version(&self) -> String {
         env!("CARGO_PKG_VERSION").into()
@@ -124,6 +126,7 @@ pub struct FakeState {
     captures: u64,
     version: String,
     installed: Vec<String>,
+    indicator: bool,
     pub inventory: Inventory,
     pub resources: Resources,
     pub processes: Vec<Process>,
@@ -150,6 +153,7 @@ impl FakePlatform {
             processes: vec![Process { pid: 1, name: "init".into(), ..Default::default() }],
             version: env!("CARGO_PKG_VERSION").into(),
             installed: vec![],
+            indicator: false,
             accessibility: None,
             screen_text: vec![],
         };
@@ -180,6 +184,11 @@ impl FakePlatform {
 
     pub fn wakes_sent(&self) -> Vec<[u8; 6]> {
         self.state.lock().unwrap().wakes.clone()
+    }
+
+    /// Whether the control indicator is showing.
+    pub fn indicator_shown(&self) -> bool {
+        self.state.lock().unwrap().indicator
     }
 
     /// Versions installed through `install_update`, in order.
@@ -257,6 +266,11 @@ impl Platform for FakePlatform {
 
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()> {
         self.state.lock().unwrap().wakes.push(mac);
+        Ok(())
+    }
+
+    fn control_indicator(&self, visible: bool) -> anyhow::Result<()> {
+        self.state.lock().unwrap().indicator = visible;
         Ok(())
     }
 

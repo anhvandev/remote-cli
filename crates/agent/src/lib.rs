@@ -4,6 +4,7 @@ pub mod backlog;
 pub mod contract;
 mod coords;
 mod executor;
+mod live;
 mod marks;
 mod observer;
 pub mod platform;
@@ -111,12 +112,14 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn P
     let _sampler = AbortOnDrop(sampler);
     // Outlives sessions: the last acted-on display and what each Controller last saw survive a reconnect.
     let executor = Arc::new(Mutex::new(Executor::default()));
+    // Live streams are peer-to-peer, so they survive a lost Server connection.
+    let live = live::Live::new(platform.clone());
     let mut backoff = Duration::from_secs(1);
     loop {
         match connect(&server, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
-                if let Err(e) = session(conn, &server, &platform, &executor, &backlog).await {
+                if let Err(e) = session(conn, &server, &platform, &executor, &live, &backlog).await {
                     tracing::warn!("connection to server lost: {e}");
                 }
             }
@@ -143,6 +146,7 @@ async fn session(
     server: &ServerEndpoint,
     platform_arc: &Arc<dyn Platform>,
     executor: &Arc<Mutex<Executor>>,
+    live: &Arc<live::Live>,
     backlog: &Backlog,
 ) -> anyhow::Result<()> {
     let platform = platform_arc.as_ref();
@@ -192,6 +196,17 @@ async fn session(
                             let result = executor.lock().unwrap().act(platform.as_ref(), &req);
                             let _ = replies.send(agent_message::Msg::ActResult(result));
                         });
+                    }
+                    Some(server_message::Msg::LiveOffer(offer)) => {
+                        // Answering waits for ICE gathering; keep the loop (heartbeats) running meanwhile.
+                        let (live, replies) = (live.clone(), replies.clone());
+                        tokio::spawn(async move {
+                            let _ = replies.send(agent_message::Msg::LiveAnswer(live.open(offer).await));
+                        });
+                    }
+                    Some(server_message::Msg::LiveClose(c)) => {
+                        let live = live.clone();
+                        tokio::spawn(async move { live.close(&c.session).await });
                     }
                     Some(server_message::Msg::ListDisplays(req)) => {
                         let (displays, error) = match platform.displays() {

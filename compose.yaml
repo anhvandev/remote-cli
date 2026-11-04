@@ -1,4 +1,5 @@
-# Server + Postgres + Dashboard. Set RCLI_BOOTSTRAP_ADMIN_TOKEN (and POSTGRES_PASSWORD) in the environment or .env.
+# Server + Postgres + Dashboard + coturn. Set RCLI_BOOTSTRAP_ADMIN_TOKEN, RCLI_TURN_SECRET and RCLI_TURN_HOST
+# (the VPS's public name/IP; Agents and browsers must reach it) (and POSTGRES_PASSWORD) in the environment or .env.
 services:
   postgres:
     image: postgres:16-alpine
@@ -23,6 +24,9 @@ services:
       RCLI_BOOTSTRAP_ADMIN_TOKEN: ${RCLI_BOOTSTRAP_ADMIN_TOKEN:?set RCLI_BOOTSTRAP_ADMIN_TOKEN}
       # Names Agents use to reach port 8443; must match what they pass to --server.
       RCLI_AGENT_HOSTNAMES: ${RCLI_AGENT_HOSTNAMES:-localhost}
+      # WebRTC (live view): peers try direct paths first, then relay through coturn with short-lived credentials.
+      RCLI_ICE_URLS: stun:${RCLI_TURN_HOST:-localhost}:3478,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=udp,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=tcp
+      RCLI_TURN_SECRET: ${RCLI_TURN_SECRET:?set RCLI_TURN_SECRET}
     ports:
       - "8080:8080" # Controller API
       - "8443:8443" # Agent connections (TLS / mTLS)
@@ -34,6 +38,26 @@ services:
       RCLI_API_URL: http://server:8080
     ports:
       - "3000:3000" # Dashboard (put TLS in front of it outside localhost)
+
+  coturn:
+    image: coturn/coturn:4.6
+    # Host networking: TURN allocates relay ports from a range; open 3478 tcp/udp and 49160-49200/udp on the VPS.
+    network_mode: host
+    command:
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --realm=rcli
+      - --use-auth-secret
+      - --static-auth-secret=${RCLI_TURN_SECRET:?set RCLI_TURN_SECRET}
+      - --fingerprint
+      - --no-cli
+      - --no-multicast-peers
+      # Never relay into private networks (the VPS's Docker network, Postgres).
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --log-file=stdout
 
 volumes:
   pgdata:

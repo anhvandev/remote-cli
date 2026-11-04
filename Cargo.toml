@@ -16,6 +16,7 @@ chrono = { version = "0.4", features = ["serde"] }
 data-encoding = "2"
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
+openh264 = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 prost = "0.13"
 prost-build = "0.13"
@@ -36,6 +37,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+webrtc = "0.17"
 
 rcli-protocol = { path = "crates/protocol" }
 rcli-server = { path = "crates/server" }
@@ -43,7 +45,14 @@ rcli-agent = { path = "crates/agent" }
 rcli = { path = "crates/cli" }
 
 # Observation encoding is too slow unoptimized for the system tests.
+# rcli-agent too: generic image/openh264 code (thumbnail, RGB->YUV) is compiled in the caller's crate.
 [profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.openh264-sys2]
+opt-level = 3
+[profile.dev.package.openh264]
+opt-level = 3
+[profile.dev.package.rcli-agent]
 opt-level = 3
 
 # Password hashing (PBKDF2) is ~10x slower unoptimized; keeps tests fast.

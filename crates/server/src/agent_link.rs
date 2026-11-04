@@ -71,6 +71,11 @@ impl Agents {
         result
     }
 
+    /// Sends a message that has no reply; false if the Device is not connected.
+    pub fn send(&self, device: uuid::Uuid, msg: server_message::Msg) -> bool {
+        self.senders.lock().unwrap().get(&device).is_some_and(|s| s.send(ServerMessage { msg: Some(msg) }).is_ok())
+    }
+
     fn reply(&self, device: uuid::Uuid, request_id: u64, msg: agent_message::Msg) {
         if let Some(tx) = self.pending.lock().unwrap().remove(&(device, request_id)) {
             let _ = tx.send(msg);
@@ -175,6 +180,7 @@ where
                 let Some(msg) = msg?? else { return Ok(()) };
                 match msg.msg {
                     Some(agent_message::Msg::ActResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ActResult(r)),
+                    Some(agent_message::Msg::LiveAnswer(a)) => state.agents.reply(device, a.request_id, agent_message::Msg::LiveAnswer(a)),
                     Some(agent_message::Msg::Displays(d)) => state.agents.reply(device, d.request_id, agent_message::Msg::Displays(d)),
                     Some(agent_message::Msg::Inventory(inv)) => metrics::save_inventory(state, device, &inv).await?,
                     Some(agent_message::Msg::Sample(s)) => metrics::apply_sample(state, device, &s).await?,
