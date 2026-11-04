@@ -1,9 +1,10 @@
 import { notFound } from "next/navigation";
-import { api, ApiError, type ControlLock, type DeviceDetails, type Resources } from "@/lib/api";
+import { api, ApiError, type ControlLock, type DeviceDetails, type Resources, type User } from "@/lib/api";
 import { Nav } from "../../nav";
 import { Refresh } from "../../refresh";
 import { Status } from "../../status";
 import { History } from "./history";
+import { ControlProvider, LockCard } from "./control";
 import { LiveView } from "./live-view";
 
 const GB = 1 << 30;
@@ -35,11 +36,14 @@ export default async function DevicePage({
   const { id } = await params;
   const { range } = await searchParams;
   const path = `/api/v1/devices/${encodeURIComponent(id)}`;
-  const [d, lock] = await Promise.all([api<DeviceDetails>(path), api<ControlLock>(`${path}/lock`)]).catch((e) => {
+  const [d, lock, me] = await Promise.all([
+    api<DeviceDetails>(path),
+    api<ControlLock>(`${path}/lock`),
+    api<User>("/api/v1/me"),
+  ]).catch((e) => {
     if (e instanceof ApiError && e.status === 404) notFound();
     throw e;
   });
-  const time = (t: string) => new Date(t).toLocaleTimeString("vi-VN");
   const inv = d.inventory;
   const r = d.resources;
   return (
@@ -53,24 +57,9 @@ export default async function DevicePage({
             <Status status={d.status} />
           </span>
         </h2>
+        <ControlProvider device={d.id} me={me.name} initial={lock}>
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", alignItems: "start" }}>
-          <section className="card" aria-label="Control Lock">
-            <h3>Control Lock</h3>
-            {lock.holder ? (
-              <div className="row">
-                <span className="tag lock">🔒 {lock.holder}</span>
-                <span className="muted">
-                  {lock.expires_at ? (
-                    <>hết hạn lúc <b className="mono">{time(lock.expires_at)}</b></>
-                  ) : (
-                    lock.acquired_at && <>giữ từ <b className="mono">{time(lock.acquired_at)}</b></>
-                  )}
-                </span>
-              </div>
-            ) : (
-              <span className="muted">Không ai giữ</span>
-            )}
-          </section>
+          <LockCard />
 
           <section className="card" aria-label="Tài nguyên">
             <h3>Tài nguyên</h3>
@@ -126,6 +115,7 @@ export default async function DevicePage({
             )}
           </section>
         </div>
+        </ControlProvider>
         <div style={{ marginTop: 12 }}>
           <History path={path} range={range} ramBytes={inv?.ram_bytes} />
         </div>

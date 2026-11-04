@@ -2,7 +2,8 @@
 //! clock, and FakePlatform Agents. Usage: `rcli-devstack <http-port> <info.json>`.
 //! Writes `{api, admin_token, now}` to `info.json` once the fleet is ready; runs until SIGINT/SIGTERM.
 //! Fleet: `alpha` Online (LockScreen, user "an", full inventory, a rolled-up minute of history), `bravo` Offline,
-//! and never-connected `charlie`, `delta`, `echo` for the admin screen tests to rename/revoke/delete/merge.
+//! `charlie` Online (logged in; its Control Lock belongs to the direct-control test),
+//! and never-connected `delta`, `echo`, `foxtrot` for the admin screen tests to rename/revoke/delete/merge.
 //! `update` in info.json is a build signed with the key the Agents trust, for the update screen tests.
 //! The clock starts at real time (the Dashboard picks history ranges by its own clock) and is frozen after seeding.
 
@@ -43,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         s.resources.disk_used_percent.insert("/".into(), 40.0);
     });
     let mut agents = vec![];
-    for platform in [alpha, FakePlatform::new("bravo")] {
+    for platform in [alpha, FakePlatform::new("bravo"), FakePlatform::new("charlie")] {
         let creds = sys.enroll(&sys.create_enrollment_code().await, &platform).await?;
         let mut agent = TestAgent::new(sys.endpoint(), platform, creds);
         agent.start();
@@ -62,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
     let query = format!("resolution=1m&from={from}");
     sys.wait_history(agents[0].device_id(), &query, |h| h["samples"].as_array().is_some_and(|s| !s.is_empty())).await;
 
-    for name in ["charlie", "delta", "echo"] {
+    for name in ["delta", "echo", "foxtrot"] {
         sys.enroll(&sys.create_enrollment_code().await, &FakePlatform::new(name)).await?;
     }
     let (version, target, build) = ("9.9.9", "fake-x86_64", "fake agent build");

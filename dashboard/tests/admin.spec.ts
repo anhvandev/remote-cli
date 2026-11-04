@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { devstack, newUser, signIn } from "./devstack";
 
-// Devices `charlie`, `delta`, `echo` exist only for these tests (rcli-devstack); alpha/bravo stay untouched.
+// Devices `delta`, `echo`, `foxtrot` exist only for these tests (rcli-devstack); alpha/bravo/charlie stay untouched.
 
 async function openAdmin(page: Page) {
   await signIn(page, await newUser("admin"));
@@ -58,10 +58,10 @@ test("admin creates a single-use Enrollment Code", async ({ page }) => {
 
 test("admin renames, revokes, deletes and merges Devices", async ({ page }) => {
   await openAdmin(page);
-  const charlie = rowIn(page, "Device", /^charlie /);
-  await charlie.getByLabel("Tên mới cho charlie").fill("charlie-2");
-  await charlie.getByRole("button", { name: "Đổi tên" }).click();
-  const renamed = rowIn(page, "Device", /^charlie-2 /);
+  const delta = rowIn(page, "Device", /^delta /);
+  await delta.getByLabel("Tên mới cho delta").fill("delta-2");
+  await delta.getByRole("button", { name: "Đổi tên" }).click();
+  const renamed = rowIn(page, "Device", /^delta-2 /);
   await expect(renamed).toBeVisible();
 
   page.once("dialog", (d) => d.accept());
@@ -72,12 +72,12 @@ test("admin renames, revokes, deletes and merges Devices", async ({ page }) => {
   await renamed.getByRole("button", { name: "Xoá" }).click();
   await expect(renamed).toHaveCount(0);
 
-  const echo = rowIn(page, "Device", /^echo /);
-  await echo.getByLabel("Gộp lịch sử từ Device vào echo").selectOption({ label: "delta" });
+  const foxtrot = rowIn(page, "Device", /^foxtrot /);
+  await foxtrot.getByLabel("Gộp lịch sử từ Device vào foxtrot").selectOption({ label: "echo" });
   page.once("dialog", (d) => d.accept());
-  await echo.getByRole("button", { name: "Gộp" }).click();
-  await expect(rowIn(page, "Device", /^delta /)).toHaveCount(0);
-  await expect(rowIn(page, "Device", /^echo /)).toBeVisible();
+  await foxtrot.getByRole("button", { name: "Gộp" }).click();
+  await expect(rowIn(page, "Device", /^echo /)).toHaveCount(0);
+  await expect(rowIn(page, "Device", /^foxtrot /)).toBeVisible();
 });
 
 test("unlock passwords can be set and cleared but are never shown", async ({ page }) => {
