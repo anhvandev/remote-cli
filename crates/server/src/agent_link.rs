@@ -51,6 +51,16 @@ impl Agents {
         device: uuid::Uuid,
         build: impl FnOnce(u64) -> server_message::Msg,
     ) -> Result<agent_message::Msg, RequestError> {
+        self.request_within(device, REQUEST_TIMEOUT, build).await
+    }
+
+    /// `request` with a custom reply timeout, for Agent work that may run long (terminal commands).
+    pub async fn request_within(
+        &self,
+        device: uuid::Uuid,
+        timeout: Duration,
+        build: impl FnOnce(u64) -> server_message::Msg,
+    ) -> Result<agent_message::Msg, RequestError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert((device, id), tx);
@@ -62,7 +72,7 @@ impl Agents {
             .is_some_and(|s| s.send(ServerMessage { msg: Some(build(id)) }).is_ok());
         let result = match sent {
             false => Err(RequestError::NotConnected),
-            true => match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+            true => match tokio::time::timeout(timeout, rx).await {
                 Ok(Ok(reply)) => Ok(reply),
                 Ok(Err(_)) | Err(_) => Err(RequestError::Timeout),
             },
@@ -176,6 +186,7 @@ where
                 match msg.msg {
                     Some(agent_message::Msg::ActResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ActResult(r)),
                     Some(agent_message::Msg::Displays(d)) => state.agents.reply(device, d.request_id, agent_message::Msg::Displays(d)),
+                    Some(agent_message::Msg::ExecResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ExecResult(r)),
                     Some(agent_message::Msg::Inventory(inv)) => metrics::save_inventory(state, device, &inv).await?,
                     Some(agent_message::Msg::Sample(s)) => metrics::apply_sample(state, device, &s).await?,
                     Some(agent_message::Msg::Processes(p)) => {

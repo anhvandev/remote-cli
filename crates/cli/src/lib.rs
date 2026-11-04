@@ -64,6 +64,19 @@ enum Command {
         #[arg(long, default_value = ".")]
         out: PathBuf,
     },
+    /// Run a one-shot command on a Device: prints its stdout/stderr and exits with its exit code.
+    Exec {
+        device: String,
+        /// `root`: run as root/SYSTEM (admin only). Default: the logged-in user.
+        #[arg(long = "as")]
+        run_as: Option<String>,
+        /// Seconds before the command is killed (default 60).
+        #[arg(long)]
+        timeout: Option<u32>,
+        /// The command, after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     /// Audit log of Actions, oldest first (admin).
     Audit {
         /// Device id or name.
@@ -442,6 +455,19 @@ where
             let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
             (obs, text)
         }
+        Command::Exec { device, run_as, timeout, command } => {
+            let body = json!({ "command": command.join(" "), "as": run_as, "timeout_secs": timeout });
+            let r = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{}/exec", path_segment(&device)), Some(&body)).await?;
+            if !cli.json {
+                write!(out, "{}", str_of(&r["stdout"]))?;
+                eprint!("{}", str_of(&r["stderr"]));
+                let code = r["exit_code"].as_i64().unwrap_or(0) as i32;
+                if r["timed_out"] == true || code != 0 {
+                    return Err(RemoteExit { code, timed_out: r["timed_out"] == true }.into());
+                }
+            }
+            (r, String::new())
+        }
         Command::Audit { device, user, since, until } => {
             let query: Vec<String> = [("device", device), ("user", user), ("since", since), ("until", until)]
                 .into_iter()
@@ -497,6 +523,31 @@ where
     }
     Ok(())
 }
+
+/// `rcli exec`'s remote command failed or timed out; `main` exits with `exit_code()` and prints nothing more.
+#[derive(Debug)]
+pub struct RemoteExit {
+    pub code: i32,
+    pub timed_out: bool,
+}
+
+impl RemoteExit {
+    /// The remote exit code, or 124 (like `timeout(1)`) when the command timed out.
+    pub fn exit_code(&self) -> i32 {
+        if self.timed_out { 124 } else { self.code }
+    }
+}
+
+impl std::fmt::Display for RemoteExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.timed_out {
+            true => write!(f, "command timed out"),
+            false => write!(f, "command exited with code {}", self.code),
+        }
+    }
+}
+
+impl std::error::Error for RemoteExit {}
 
 fn write_private(path: &str, bytes: &[u8]) -> anyhow::Result<()> {
     let mut opts = std::fs::OpenOptions::new();

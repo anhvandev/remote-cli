@@ -22,8 +22,9 @@ pub trait Platform: Send + Sync + 'static {
     /// `session` is left unset: the Agent fills it from `session_state`.
     fn metrics(&self) -> anyhow::Result<Resources>;
     fn processes(&self) -> anyhow::Result<Vec<Process>>;
-    /// One-shot command through the OS shell.
-    fn shell(&self, command: &str) -> anyhow::Result<ShellOutput>;
+    /// One-shot command through the OS shell, as `run_as`. Kills it after `timeout` and returns what it printed
+    /// so far with `timed_out` set. `RunAs::LoggedInUser` is only asked while someone is logged in.
+    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput>;
     fn power(&self, action: PowerAction) -> anyhow::Result<()>;
     /// Sends a Wake-on-LAN magic packet for `mac` on the local network.
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()>;
@@ -78,6 +79,15 @@ pub struct ShellOutput {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
+    pub timed_out: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunAs {
+    /// The user logged in at the console.
+    LoggedInUser,
+    /// root, or SYSTEM on Windows.
+    Root,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,11 +219,18 @@ impl Platform for FakePlatform {
         Ok(self.state.lock().unwrap().processes.clone())
     }
 
-    // shortcut: only `echo` is emulated; script more results when a feature needs them.
-    fn shell(&self, command: &str) -> anyhow::Result<ShellOutput> {
-        Ok(match command.strip_prefix("echo ") {
-            Some(text) => ShellOutput { exit_code: 0, stdout: format!("{text}\n"), stderr: String::new() },
-            None => ShellOutput { exit_code: 127, stdout: String::new(), stderr: format!("{command}: not found\n") },
+    // shortcut: only `echo X`, `whoami` ("user" or "root") and `sleep SECS` are emulated; anything else exits 127.
+    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
+        let ok = |stdout: String| ShellOutput { exit_code: 0, stdout, stderr: String::new(), timed_out: false };
+        if let Some(secs) = command.strip_prefix("sleep ").and_then(|s| s.parse().ok()) {
+            let wanted = Duration::from_secs(secs);
+            std::thread::sleep(wanted.min(timeout));
+            return Ok(ShellOutput { timed_out: wanted > timeout, ..ok(String::new()) });
+        }
+        Ok(match (command, command.strip_prefix("echo ")) {
+            (_, Some(text)) => ok(format!("{text}\n")),
+            ("whoami", _) => ok(if run_as == RunAs::Root { "root\n" } else { "user\n" }.into()),
+            _ => ShellOutput { exit_code: 127, stdout: String::new(), stderr: format!("{command}: not found\n"), timed_out: false },
         })
     }
 
