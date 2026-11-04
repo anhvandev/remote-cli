@@ -22,7 +22,7 @@ use rcli_protocol::{
     agent::{
         agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, DisplayList, EnrollRequest, Error,
         ExecRequest, ExecResult, Heartbeat, ProcessList, ResourceSample, Resources, ServerMessage, UpdateFailed,
-        WakeResult,
+        PowerResult, WakeResult,
     },
     Conn,
 };
@@ -225,6 +225,21 @@ async fn session(
                         let error = sent.err().map(|e| Error { code: "platform".into(), message: format!("{e:#}") });
                         let reply = WakeResult { request_id: req.request_id, error };
                         conn.send(&send(agent_message::Msg::WakeResult(reply))).await?;
+                    }
+                    Some(server_message::Msg::Power(req)) => {
+                        use rcli_protocol::agent::PowerAction as P;
+                        let action = match req.action() {
+                            P::Restart => platform::PowerAction::Restart,
+                            P::Shutdown => platform::PowerAction::Shutdown,
+                            P::Sleep => platform::PowerAction::Sleep,
+                            P::LockScreen => platform::PowerAction::Lock,
+                        };
+                        // Off the loop: adapters may take a moment to hand the request to the OS.
+                        let (platform, replies) = (platform_arc.clone(), replies.clone());
+                        tokio::task::spawn_blocking(move || {
+                            let error = platform.power(action).err().map(|e| Error { code: "platform".into(), message: format!("{e:#}") });
+                            let _ = replies.send(agent_message::Msg::PowerResult(PowerResult { request_id: req.request_id, error }));
+                        });
                     }
                     Some(server_message::Msg::Update(update)) => {
                         // shortcut: installs inline, blocking heartbeats; fine while installs take well under 30 s.

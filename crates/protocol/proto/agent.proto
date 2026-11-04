@@ -17,6 +17,7 @@ message AgentMessage {
     DisplayList displays = 50;
     ExecResult exec_result = 11;
     WakeResult wake_result = 14;
+    PowerResult power_result = 13;
   }
   reserved 30; // was a bare Resources delta; now ResourceSample
 }
@@ -32,6 +33,7 @@ message ServerMessage {
     ExecRequest exec = 11;
     ControlIndicator control_indicator = 7;
     WakeRequest wake = 14;
+    PowerRequest power = 13;
   }
 }
 
@@ -345,6 +347,27 @@ message WakeRequest {
 
 // `error` set = the packet could not be sent.
 message WakeResult {
+  uint64 request_id = 1;
+  Error error = 2;
+}
+
+// --- Power (ticket 13) ---
+
+enum PowerAction {
+  RESTART = 0;
+  SHUTDOWN = 1;
+  SLEEP = 2;
+  LOCK_SCREEN = 3;
+}
+
+// Restart / Shut down / Sleep the Device, or lock its screen. The Agent replies once the OS has accepted it.
+message PowerRequest {
+  uint64 request_id = 1;
+  PowerAction action = 2;
+}
+
+// `error` set = the OS refused or the adapter failed.
+message PowerResult {
   uint64 request_id = 1;
   Error error = 2;
 }
