@@ -2,6 +2,7 @@
 
 mod devices;
 mod enrollment;
+mod sessions;
 mod users;
 
 use std::sync::Arc;
@@ -25,6 +26,7 @@ pub fn router(state: State) -> Router {
         .merge(devices::routes())
         .merge(enrollment::routes())
         .merge(users::routes())
+        .merge(sessions::routes())
         .with_state(state)
 }
 

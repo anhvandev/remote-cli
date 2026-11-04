@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
+data-encoding.workspace = true
 rcli.workspace = true
 rcli-agent.workspace = true
 rcli-server.workspace = true
