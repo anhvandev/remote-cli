@@ -10,6 +10,7 @@ use std::{
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 
 pub mod mcp;
 
@@ -94,6 +95,13 @@ enum Command {
     /// Store or clear a Device's unlock password in the Secrets Vault (admin).
     #[command(subcommand)]
     UnlockPassword(UnlockPasswordCommand),
+    /// Interactive shell on a Device, like SSH. Exits with the remote shell's exit code.
+    Shell {
+        device: String,
+        /// `root`: run as root/SYSTEM (admin only). Default: the logged-in user.
+        #[arg(long = "as")]
+        run_as: Option<String>,
+    },
     /// Audit log of Actions, oldest first (admin).
     Audit {
         /// Device id or name.
@@ -410,6 +418,15 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    run_with_input(args, None, out).await
+}
+
+/// `run` with the keystrokes for `rcli shell` taken from `input` instead of the terminal (None = stdin).
+pub async fn run_with_input<I, T>(args: I, input: Option<mpsc::UnboundedReceiver<Vec<u8>>>, out: &mut dyn Write) -> anyhow::Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(e) if !e.use_stderr() => return Ok(write!(out, "{e}")?), // --help / --version
@@ -640,6 +657,13 @@ where
             };
             (r, text)
         }
+        Command::Shell { device, run_as } => {
+            let code = shell(&api, &device, run_as, input.unwrap_or_else(stdin_input), out).await?;
+            if code != 0 {
+                return Err(RemoteExit { code, timed_out: false }.into());
+            }
+            return Ok(());
+        }
         Command::Audit { device, user, since, until } => {
             let query: Vec<String> = [("device", device), ("user", user), ("since", since), ("until", until)]
                 .into_iter()
@@ -710,6 +734,86 @@ where
         write!(out, "{human}")?;
     }
     Ok(())
+}
+
+/// Raw keystrokes from stdin, read on a plain thread (a blocked read must not hold up the runtime's exit).
+fn stdin_input() -> mpsc::UnboundedReceiver<Vec<u8>> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        let mut buf = [0; 4096];
+        while let Ok(n @ 1..) = std::io::Read::read(&mut std::io::stdin(), &mut buf) {
+            if tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+/// Puts the local terminal in raw mode (keys such as Ctrl-C go to the remote shell) until dropped.
+struct RawMode;
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
+/// Runs an interactive shell session until the remote shell exits; returns its exit code.
+async fn shell(
+    api: &Api,
+    device: &str,
+    run_as: Option<String>,
+    mut input: mpsc::UnboundedReceiver<Vec<u8>>,
+    out: &mut dyn Write,
+) -> anyhow::Result<i32> {
+    use std::io::IsTerminal;
+    let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let size = || if tty { crossterm::terminal::size().ok() } else { None };
+    let (cols, rows) = size().unwrap_or((80, 24));
+    let url = format!("{}/api/v1/devices/{}/shell", api.base.trim_end_matches('/'), path_segment(device));
+    let body = json!({ "as": run_as, "cols": cols, "rows": rows });
+    let mut resp = api.check(api.http.post(url).json(&body).bearer_auth(&api.token).send().await?).await?;
+    let _raw = if tty { crossterm::terminal::enable_raw_mode().map(|()| RawMode).ok() } else { None };
+    let session_url = |session: &str, what: &str| format!("{}/api/v1/shell-sessions/{session}/{what}", api.base.trim_end_matches('/'));
+    let (mut session, mut buf, mut last_size, mut input_open) = (String::new(), Vec::new(), size(), true);
+    // shortcut: the terminal size is polled (no SIGWINCH / console events); fine for a human resizing a window.
+    let mut size_poll = tokio::time::interval(std::time::Duration::from_millis(250));
+    loop {
+        tokio::select! {
+            chunk = resp.chunk() => {
+                let Some(chunk) = chunk? else { anyhow::bail!("the Server closed the shell stream") };
+                buf.extend_from_slice(&chunk);
+                while let Some(i) = buf.iter().position(|b| *b == b'\n') {
+                    let line: Value = serde_json::from_slice(&buf[..i])?;
+                    buf.drain(..=i);
+                    if let Some(data) = line["output"].as_str() {
+                        out.write_all(&base64::engine::general_purpose::STANDARD.decode(data)?)?;
+                        out.flush()?;
+                    } else if let Some(code) = line["exit_code"].as_i64() {
+                        return Ok(code as i32);
+                    } else if let Some(s) = line["session"].as_str() {
+                        session = s.to_owned();
+                    } else if !line["error"].is_null() {
+                        anyhow::bail!("{}: {}", str_of(&line["error"]["code"]), str_of(&line["error"]["message"]));
+                    }
+                }
+            }
+            keys = input.recv(), if input_open && !session.is_empty() => match keys {
+                Some(keys) => {
+                    api.check(api.http.post(session_url(&session, "input")).body(keys).bearer_auth(&api.token).send().await?).await?;
+                }
+                None => input_open = false,
+            },
+            _ = size_poll.tick(), if tty && !session.is_empty() => {
+                if let Some((cols, rows)) = size().filter(|s| Some(*s) != last_size) {
+                    last_size = Some((cols, rows));
+                    let body = json!({ "cols": cols, "rows": rows });
+                    api.check(api.http.post(session_url(&session, "resize")).json(&body).bearer_auth(&api.token).send().await?).await?;
+                }
+            }
+        }
+    }
 }
 
 /// `rcli exec`'s remote command failed or timed out; `main` exits with `exit_code()` and prints nothing more.
@@ -789,14 +893,19 @@ impl Api {
     }
 
     async fn send(&self, req: reqwest::RequestBuilder) -> anyhow::Result<Value> {
-        let resp = req.bearer_auth(&self.token).send().await?;
+        let resp = self.check(req.bearer_auth(&self.token).send().await?).await?;
+        Ok(resp.json().await.unwrap_or(Value::Null))
+    }
+
+    /// Turns an API error response into an error naming its code and message.
+    async fn check(&self, resp: reqwest::Response) -> anyhow::Result<reqwest::Response> {
         let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
+            let body: Value = resp.json().await.unwrap_or(Value::Null);
             let e = &body["error"];
             let step = e["step"].as_u64().map(|s| format!(" (step {s})")).unwrap_or_default();
             anyhow::bail!("{} ({}): {}{step}", str_of(&e["code"]), status, str_of(&e["message"]));
         }
-        Ok(body)
+        Ok(resp)
     }
 }
