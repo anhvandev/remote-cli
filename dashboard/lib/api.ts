@@ -56,10 +56,23 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 // Shapes of Controller API responses (see crates/server/src/api).
-export type User = { id: string; name: string; role: "admin" | "operator" };
+export type User = { id: string; name: string; role: "admin" | "operator"; disabled_at: string | null };
+/** GET /api/v1/tokens: live API tokens (never the secret). */
+export type ApiToken = { id: string; user: string; created_at: string };
 export type DeviceStatus = "Online" | "Offline" | "Waking";
-/** `wake_error` is "Wake failed" when the last Wake timed out and the Device is still Offline. */
-export type Device = { id: string; name: string; status: DeviceStatus; last_seen_at: string | null; wake_error: string | null };
+export type Device = {
+  id: string;
+  name: string;
+  status: DeviceStatus;
+  last_seen_at: string | null;
+  agent_version: string | null;
+  update: { version: string; status: "pending" | "updated" | "failed"; error: string | null } | null;
+  revoked_at: string | null;
+  /** "Wake failed" when the last Wake timed out and the Device is still Offline. */
+  wake_error: string | null;
+};
+/** GET /api/v1/devices/{d}/unlock-password: whether one is stored; the password itself is never returned. */
+export type UnlockPassword = { set: boolean; updated_at: string | null };
 export type Inventory = {
   os: string;
   os_version: string;

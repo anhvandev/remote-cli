@@ -5,7 +5,7 @@ test("sign in with password + TOTP and open a Device", async ({ page }) => {
   const user = await newUser();
   await signIn(page, user);
 
-  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("3 Online");
+  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("3 Online ·"); // admin tests add/remove Offline Devices
   const row = (name: string) => page.getByRole("row").filter({ hasText: name });
   await expect(row("alpha")).toContainText("Online");
   await expect(row("bravo")).toContainText("Offline");

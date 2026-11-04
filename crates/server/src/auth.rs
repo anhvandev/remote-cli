@@ -127,6 +127,23 @@ pub async fn issue_token(state: &AppState, user_name: &str) -> Result<(Uuid, Str
     Ok((id, token))
 }
 
+#[derive(Serialize, Debug, sqlx::FromRow)]
+pub struct TokenInfo {
+    pub id: Uuid,
+    pub user: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Live API tokens (not Dashboard sessions); never the token itself, only its id.
+pub async fn list_tokens(state: &AppState) -> anyhow::Result<Vec<TokenInfo>> {
+    Ok(sqlx::query_as(
+        "SELECT t.id, u.name AS user, t.created_at FROM api_tokens t JOIN users u ON u.id = t.user_id
+         WHERE t.revoked_at IS NULL AND t.expires_at IS NULL ORDER BY u.name, t.created_at",
+    )
+    .fetch_all(&state.db)
+    .await?)
+}
+
 pub async fn revoke_token(state: &AppState, id: Uuid) -> Result<(), Error> {
     let updated = sqlx::query("UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, $2) WHERE id = $1")
         .bind(id)
