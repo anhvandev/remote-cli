@@ -26,9 +26,20 @@ struct Cli {
 enum Command {
     /// List Devices with their Device Status.
     Devices,
+    /// One Device: inventory, current resources, processes.
+    #[command(subcommand)]
+    Device(DeviceCommand),
     /// Manage Enrollment Codes (admin).
     #[command(subcommand)]
     EnrollmentCode(EnrollmentCodeCommand),
+}
+
+#[derive(Subcommand)]
+enum DeviceCommand {
+    /// Inventory and current resources of a Device (id or name).
+    Show { device: String },
+    /// The Device's process list, fetched from its Agent now.
+    Processes { device: String },
 }
 
 #[derive(Subcommand)]
@@ -67,6 +78,28 @@ where
             }
             (devices, text)
         }
+        Command::Device(DeviceCommand::Show { device }) => {
+            let d = api.call(reqwest::Method::GET, &format!("/api/v1/devices/{}", path_segment(&device))).await?;
+            let mut text = String::new();
+            flatten("", &d, &mut text);
+            (d, text)
+        }
+        Command::Device(DeviceCommand::Processes { device }) => {
+            let path = format!("/api/v1/devices/{}/processes", path_segment(&device));
+            let procs = api.call(reqwest::Method::GET, &path).await?;
+            let mut text = format!("{:>7}  {:<16}  {:>6}  {:>12}  {}\n", "PID", "USER", "CPU%", "MEM BYTES", "NAME");
+            for p in procs.as_array().into_iter().flatten() {
+                text += &format!(
+                    "{:>7}  {:<16}  {:>6.1}  {:>12}  {}\n",
+                    p["pid"],
+                    str_of(&p["user"]),
+                    p["cpu_percent"].as_f64().unwrap_or(0.0),
+                    p["memory_bytes"],
+                    str_of(&p["name"]),
+                );
+            }
+            (procs, text)
+        }
         Command::EnrollmentCode(EnrollmentCodeCommand::Create) => {
             let created = api.call(reqwest::Method::POST, "/api/v1/enrollment-codes").await?;
             let text = format!("{}\n", str_of(&created["code"]));
@@ -79,6 +112,29 @@ where
         write!(out, "{human}")?;
     }
     Ok(())
+}
+
+/// Human view of nested JSON: one `a.b[0].c: value` line per leaf, nulls and empties skipped.
+fn flatten(prefix: &str, v: &Value, out: &mut String) {
+    match v {
+        Value::Null => {}
+        Value::Object(m) => m
+            .iter()
+            .for_each(|(k, v)| flatten(&if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") }, v, out)),
+        Value::Array(a) => a.iter().enumerate().for_each(|(i, v)| flatten(&format!("{prefix}[{i}]"), v, out)),
+        Value::String(s) if s.is_empty() => {}
+        Value::String(s) => *out += &format!("{prefix}: {s}\n"),
+        _ => *out += &format!("{prefix}: {v}\n"),
+    }
+}
+
+fn path_segment(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 fn str_of(v: &Value) -> &str {

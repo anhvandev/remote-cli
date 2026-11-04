@@ -6,7 +6,7 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
-pub use rcli_agent::platform::FakePlatform;
+pub use rcli_agent::platform::{self, FakePlatform};
 use rcli_agent::{Credentials, ServerEndpoint};
 pub use rcli_server::clock::ManualClock;
 pub use reqwest::StatusCode;
@@ -87,6 +87,15 @@ impl TestSystem {
         eventually(|| async {
             let (_, devices) = self.api.get("/api/v1/devices").await;
             devices.as_array()?.iter().find(|d| d["id"] == id && pred(d)).cloned()
+        })
+        .await
+    }
+
+    /// Polls `GET /api/v1/devices/{id}` (inventory + current resources) until `pred` holds; returns it.
+    pub async fn wait_device_details(&self, id: &str, pred: impl Fn(&Value) -> bool) -> Value {
+        eventually(|| async {
+            let (_, device) = self.api.get(&format!("/api/v1/devices/{id}")).await;
+            pred(&device).then_some(device)
         })
         .await
     }

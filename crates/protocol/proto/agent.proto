@@ -8,6 +8,9 @@ message AgentMessage {
   oneof msg {
     EnrollRequest enroll = 1;
     Heartbeat heartbeat = 2;
+    Inventory inventory = 3;
+    Resources resources = 30;
+    ProcessList processes = 31;
   }
 }
 
@@ -15,6 +18,7 @@ message ServerMessage {
   oneof msg {
     EnrollResponse enrolled = 1;
     Error error = 2;
+    ProcessListRequest list_processes = 3;
   }
 }
 
@@ -37,4 +41,83 @@ message Heartbeat {}
 message Error {
   string code = 1;
   string message = 2;
+}
+
+// Hardware and OS facts. Sent in full at session start and whenever it changes.
+message Inventory {
+  string os = 1;
+  string os_version = 2;
+  string hostname = 3;
+  string cpu_model = 4;
+  uint32 cpu_cores = 5;
+  uint64 ram_bytes = 6;
+  repeated Disk disks = 7;
+  repeated string gpus = 8;
+  repeated NetworkInterface network_interfaces = 9;
+  string serial = 10;
+  repeated Display displays = 11;
+}
+
+message Disk {
+  string name = 1;
+  string mount = 2;
+  uint64 total_bytes = 3;
+}
+
+message NetworkInterface {
+  string name = 1;
+  string mac = 2;
+  repeated string ips = 3;
+}
+
+message Display {
+  string name = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+}
+
+// Where the console session is: who an AI Controller will face.
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  SESSION_STATE_ACTIVE = 1;       // a user is logged in and unlocked
+  SESSION_STATE_LOCK_SCREEN = 2;  // a user is logged in, screen locked
+  SESSION_STATE_LOGIN_SCREEN = 3; // nobody logged in
+}
+
+// Current resources, sampled every 5 s. The first message of a session is complete;
+// later ones are deltas: only fields that changed are set (protobuf merge semantics,
+// so `disks` entries replace per mount). Unset optional = unavailable or unchanged.
+message Resources {
+  optional double cpu_percent = 1;
+  optional uint64 ram_used_bytes = 2;
+  map<string, double> disk_used_percent = 3; // by mount
+  optional uint64 disk_read_bytes_per_sec = 4;
+  optional uint64 disk_write_bytes_per_sec = 5;
+  optional uint64 net_up_bytes_per_sec = 6;
+  optional uint64 net_down_bytes_per_sec = 7;
+  optional double gpu_percent = 8;
+  optional uint64 uptime_secs = 9;
+  optional string logged_in_user = 10; // "" = nobody
+  optional SessionState session = 11;
+  optional double cpu_temp_celsius = 12;
+  optional double battery_percent = 13;
+  optional bool battery_charging = 14;
+}
+
+// Answered with a ProcessList carrying the same request_id.
+message ProcessListRequest {
+  uint64 request_id = 1;
+}
+
+message ProcessList {
+  uint64 request_id = 1;
+  repeated Process processes = 2;
+}
+
+message Process {
+  uint32 pid = 1;
+  string name = 2;
+  string user = 3;
+  double cpu_percent = 4;
+  uint64 memory_bytes = 5;
 }

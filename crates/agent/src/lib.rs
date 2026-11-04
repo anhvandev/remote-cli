@@ -6,7 +6,9 @@ use std::{sync::Arc, time::Duration};
 
 use platform::Platform;
 use rcli_protocol::{
-    agent::{agent_message, server_message, AgentMessage, EnrollRequest, Heartbeat, ServerMessage},
+    agent::{
+        agent_message, server_message, AgentMessage, EnrollRequest, Heartbeat, ProcessList, Resources, ServerMessage,
+    },
     Conn,
 };
 use rustls::{
@@ -18,6 +20,8 @@ use tokio::net::TcpStream;
 use tokio_rustls::{client::TlsStream, TlsConnector};
 
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(10);
+/// Inventory is checked and resources are sampled this often.
+const SAMPLE_EVERY: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// Where the Server's Agent port is and which CA to trust for it.
@@ -68,18 +72,18 @@ pub async fn enroll(server: &ServerEndpoint, code: &str, platform: &dyn Platform
             Ok(Credentials { device_id: r.device_id, cert_pem: r.cert_pem, key_pem: key.serialize_pem() })
         }
         Some(server_message::Msg::Error(e)) => anyhow::bail!("enrollment rejected: {}: {}", e.code, e.message),
-        None => anyhow::bail!("server closed the connection during enrollment"),
+        Some(_) | None => anyhow::bail!("server closed the connection during enrollment"),
     }
 }
 
 /// Keeps a connection to the Server open forever, reconnecting with backoff.
-pub async fn run(server: ServerEndpoint, creds: Credentials, _platform: Arc<dyn Platform>) {
+pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn Platform>) {
     let mut backoff = Duration::from_secs(1);
     loop {
         match connect(&server, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
-                if let Err(e) = session(conn).await {
+                if let Err(e) = session(conn, platform.as_ref()).await {
                     tracing::warn!("connection to server lost: {e}");
                 }
             }
@@ -90,19 +94,73 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, _platform: Arc<dyn 
     }
 }
 
-async fn session(mut conn: Conn<TlsStream<TcpStream>>) -> anyhow::Result<()> {
+async fn session(mut conn: Conn<TlsStream<TcpStream>>, platform: &dyn Platform) -> anyhow::Result<()> {
+    let send = |msg| AgentMessage { msg: Some(msg) };
     let mut tick = tokio::time::interval(HEARTBEAT_EVERY);
+    let mut sample = tokio::time::interval(SAMPLE_EVERY);
+    // What the Server has seen this session; a new session starts from nothing, so it gets everything.
+    let (mut inventory, mut resources) = (None, Resources::default());
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                conn.send(&AgentMessage { msg: Some(agent_message::Msg::Heartbeat(Heartbeat {})) }).await?;
+                conn.send(&send(agent_message::Msg::Heartbeat(Heartbeat {}))).await?;
+            }
+            _ = sample.tick() => {
+                // shortcut: inventory is re-read every sample; OS adapters may want change notifications instead.
+                let inv = platform.inventory();
+                if inventory.as_ref() != Some(&inv) {
+                    conn.send(&send(agent_message::Msg::Inventory(inv.clone()))).await?;
+                    inventory = Some(inv);
+                }
+                let cur = platform.resources();
+                let d = delta(&resources, &cur);
+                if d != Resources::default() {
+                    conn.send(&send(agent_message::Msg::Resources(d))).await?;
+                }
+                resources = cur;
             }
             msg = conn.recv::<ServerMessage>() => {
-                if msg?.is_none() {
-                    anyhow::bail!("server closed the connection");
+                match msg?.and_then(|m| m.msg) {
+                    None => anyhow::bail!("server closed the connection"),
+                    Some(server_message::Msg::ListProcesses(req)) => {
+                        let reply = ProcessList { request_id: req.request_id, processes: platform.processes() };
+                        conn.send(&send(agent_message::Msg::Processes(reply))).await?;
+                    }
+                    // Later tickets handle Actions and requests from the Server here.
+                    Some(_) => {}
                 }
-                // Later tickets handle Actions and requests from the Server here.
             }
         }
     }
+}
+
+/// The fields of `cur` that differ from `prev`.
+// shortcut: a value that becomes unavailable (Some -> None) is not sent; the Server keeps the last one until reconnect.
+fn delta(prev: &Resources, cur: &Resources) -> Resources {
+    let mut d = Resources::default();
+    macro_rules! changed {
+        ($($f:ident),*) => { $( if cur.$f != prev.$f { d.$f = cur.$f.clone(); } )* };
+    }
+    changed!(
+        cpu_percent,
+        ram_used_bytes,
+        disk_read_bytes_per_sec,
+        disk_write_bytes_per_sec,
+        net_up_bytes_per_sec,
+        net_down_bytes_per_sec,
+        gpu_percent,
+        uptime_secs,
+        logged_in_user,
+        session,
+        cpu_temp_celsius,
+        battery_percent,
+        battery_charging
+    );
+    d.disk_used_percent = cur
+        .disk_used_percent
+        .iter()
+        .filter(|(k, v)| prev.disk_used_percent.get(*k) != Some(v))
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+    d
 }

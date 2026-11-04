@@ -2063,6 +2063,7 @@ dependencies = [
  "prost",
  "prost-build",
  "protoc-bin-vendored",
+ "serde",
  "tokio",
  "tokio-util",
 ]
@@ -2074,6 +2075,7 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "prost",
  "rcgen",
  "rcli-protocol",
  "rustls",

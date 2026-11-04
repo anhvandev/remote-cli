@@ -4,6 +4,18 @@ pub mod agent {
     include!(concat!(env!("OUT_DIR"), "/rcli.agent.v1.rs"));
 }
 
+/// `Resources.session` as "Active" | "LockScreen" | "LoginScreen" | null in JSON.
+fn serialize_session<S: serde::Serializer>(v: &Option<i32>, s: S) -> Result<S::Ok, S::Error> {
+    use agent::SessionState::*;
+    let name = match v.and_then(|v| agent::SessionState::try_from(v).ok()) {
+        Some(Active) => Some("Active"),
+        Some(LockScreen) => Some("LockScreen"),
+        Some(LoginScreen) => Some("LoginScreen"),
+        Some(Unspecified) | None => None,
+    };
+    s.serialize_some(&name)
+}
+
 use futures::{SinkExt, StreamExt};
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncWrite};
