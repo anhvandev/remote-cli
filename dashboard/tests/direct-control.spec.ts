@@ -41,8 +41,9 @@ test("wait for the Control Lock, take it, then drive the Device with mouse and k
     await expect
       .poll(async () => {
         const entries = await adminApi(`/api/v1/audit?device=charlie&user=${user.name}`);
-        type Entry = { params: { actions: { x?: number; y?: number }[] }; result: object };
-        return entries.map(({ params, result }: Entry) => {
+        type Entry = { action: string; params: { actions: { x?: number; y?: number }[] }; result: object };
+        // Starting the live view is audited too (`live.start`); only the input Actions matter here.
+        return entries.filter((e: Entry) => e.action === "act").map(({ params, result }: Entry) => {
           const { x, y, ...a } = params.actions[0];
           // The view's pixel grid isn't the image's, so a point lands within a pixel of the target.
           return x === undefined ? { ...a, ...result } : { ...a, ...result, near: Math.hypot(x - 640, y! - 360) <= 1.5 };
@@ -50,7 +51,8 @@ test("wait for the Control Lock, take it, then drive the Device with mouse and k
       })
       .toEqual([
         { type: "click", display: 0, near: true, error: null },
-        { type: "type", text: "h", error: null },
+        // Typed text may be a password: the Dashboard always marks it secret, so it is never audited in clear.
+        { type: "type", text: "***", secret: true, error: null },
         { type: "key", keys: "ctrl+enter", error: null },
       ]);
 

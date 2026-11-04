@@ -154,7 +154,8 @@ export function LiveView({ device, name }: { device: string; name: string }) {
           if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
           e.preventDefault();
           const plain = e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey;
-          act(plain ? { type: "type", text: e.key } : { type: "key", keys: keys(e) });
+          // Any keystroke may be part of a password: `secret` keeps typed text out of the audit log.
+          act(plain ? { type: "type", text: e.key, secret: true } : { type: "key", keys: keys(e) });
         },
       }
     : {};
