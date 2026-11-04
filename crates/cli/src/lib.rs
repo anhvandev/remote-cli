@@ -61,6 +61,12 @@ enum Command {
     Displays { device: String },
     /// Wake an Offline Device through a Wake Relay on its LAN.
     Wake { device: String },
+    /// Restart, shut down, sleep or lock the screen of a Device (all but lock respect the Control Lock).
+    Power {
+        device: String,
+        #[arg(value_parser = ["restart", "shutdown", "sleep", "lock"])]
+        action: String,
+    },
     /// Observe a Device's screen (no Control Lock needed).
     Shot {
         device: String,
@@ -603,6 +609,12 @@ where
             let w = api.call(reqwest::Method::POST, &path, None).await?;
             let text = format!("waking {device} via {} ({})\n", str_of(&w["relay"]["name"]), str_of(&w["mac"]));
             (w, text)
+        }
+        Command::Power { device, action } => {
+            let path = format!("/api/v1/devices/{}/power", path_segment(&device));
+            let p = api.call(reqwest::Method::POST, &path, Some(&json!({ "action": action }))).await?;
+            let text = format!("{device}: {action} sent\n");
+            (p, text)
         }
         Command::Displays { device } => {
             let displays = api.call(reqwest::Method::GET, &format!("/api/v1/devices/{device}/displays"), None).await?;
