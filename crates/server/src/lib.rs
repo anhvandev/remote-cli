@@ -37,6 +37,10 @@ pub struct Config {
     pub bootstrap_admin_token: String,
     /// Secrets Vault key (`RCLI_MASTER_KEY`); None = unlock passwords can't be stored or used.
     pub master_key: Option<vault::MasterKey>,
+    /// STUN/TURN URLs handed to both WebRTC peers, e.g. `turn:vps.example.com:3478`. Empty = direct paths only.
+    pub ice_urls: Vec<String>,
+    /// coturn `static-auth-secret`: the Server mints short-lived TURN credentials from it.
+    pub turn_secret: Option<String>,
 }
 
 impl Config {
@@ -54,6 +58,8 @@ impl Config {
                 .collect(),
             bootstrap_admin_token: var("RCLI_BOOTSTRAP_ADMIN_TOKEN", None)?,
             master_key: std::env::var("RCLI_MASTER_KEY").ok().filter(|k| !k.is_empty()).map(|k| k.parse()).transpose()?,
+            ice_urls: var("RCLI_ICE_URLS", Some(""))?.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
+            turn_secret: std::env::var("RCLI_TURN_SECRET").ok().filter(|s| !s.is_empty()),
         })
     }
 }

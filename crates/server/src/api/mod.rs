@@ -7,6 +7,7 @@ mod devices;
 mod enrollment;
 mod exec;
 mod history;
+mod live;
 mod sessions;
 mod updates;
 mod users;
@@ -43,6 +44,7 @@ pub fn router(state: State) -> Router {
         .merge(wake::routes())
         .merge(sessions::routes())
         .merge(vault::routes())
+        .merge(live::routes())
         .with_state(state)
 }
 
