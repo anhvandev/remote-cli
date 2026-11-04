@@ -60,6 +60,9 @@ enum Command {
         /// Display index or `all`; default: the display last acted on.
         #[arg(long)]
         display: Option<String>,
+        /// Number the detected Marks on the images and print the Mark table.
+        #[arg(long)]
+        marks: bool,
         /// Directory to save images in.
         #[arg(long, default_value = ".")]
         out: PathBuf,
@@ -93,6 +96,9 @@ enum Command {
         /// Display to observe, index or `all`; default: the display acted on.
         #[arg(long, global = true)]
         observe_display: Option<String>,
+        /// Number the detected Marks on the Observation and print the Mark table.
+        #[arg(long, global = true)]
+        marks: bool,
         /// Directory to save images in.
         #[arg(long, global = true, default_value = ".")]
         out: PathBuf,
@@ -108,10 +114,10 @@ enum LockCommand {
 
 #[derive(Subcommand)]
 enum ActCommand {
-    Move { x: u32, y: u32 },
-    Click { x: u32, y: u32 },
-    DoubleClick { x: u32, y: u32 },
-    RightClick { x: u32, y: u32 },
+    Move(At),
+    Click(At),
+    DoubleClick(At),
+    RightClick(At),
     /// Drag with the left button from (x, y) to (to_x, to_y).
     Drag { x: u32, y: u32, to_x: u32, to_y: u32 },
     /// Scroll at (x, y); positive --dy scrolls down.
@@ -134,14 +140,37 @@ enum ActCommand {
     Key { keys: String },
 }
 
+/// Where to point: image coordinates X Y, `--mark N --observation ID`, or `--text T`.
+#[derive(clap::Args)]
+struct At {
+    #[arg(required_unless_present_any = ["mark", "text"])]
+    x: Option<u32>,
+    #[arg(required_unless_present_any = ["mark", "text"])]
+    y: Option<u32>,
+    /// Mark number from an Observation taken with --marks.
+    #[arg(long, requires = "observation", conflicts_with_all = ["x", "y", "text"])]
+    mark: Option<u32>,
+    /// The Observation the Mark number comes from.
+    #[arg(long)]
+    observation: Option<u64>,
+    /// Visible text of the target Mark.
+    #[arg(long, conflicts_with_all = ["x", "y"])]
+    text: Option<String>,
+}
+
 impl ActCommand {
     fn json(self, display: u32) -> Value {
         let point = |kind: &str, x, y| json!({ "type": kind, "display": display, "x": x, "y": y });
+        let at = |kind: &str, at: At| match at {
+            At { mark: Some(mark), observation, .. } => json!({ "type": kind, "mark": mark, "observation": observation }),
+            At { text: Some(text), .. } => json!({ "type": kind, "display": display, "text": text }),
+            At { x, y, .. } => json!({ "type": kind, "display": display, "x": x, "y": y }),
+        };
         match self {
-            ActCommand::Move { x, y } => point("move", x, y),
-            ActCommand::Click { x, y } => point("click", x, y),
-            ActCommand::DoubleClick { x, y } => point("double_click", x, y),
-            ActCommand::RightClick { x, y } => point("right_click", x, y),
+            ActCommand::Move(a) => at("move", a),
+            ActCommand::Click(a) => at("click", a),
+            ActCommand::DoubleClick(a) => at("double_click", a),
+            ActCommand::RightClick(a) => at("right_click", a),
             ActCommand::Drag { x, y, to_x, to_y } => {
                 let mut v = point("drag", x, y);
                 v["to"] = json!({ "display": display, "x": to_x, "y": to_y });
@@ -181,6 +210,13 @@ fn save_observation(obs: &Value, out: &Path) -> anyhow::Result<String> {
         let path = out.join(format!("display-{display}.jpg"));
         std::fs::write(&path, data)?;
         text += &format!("display {display}: {}x{} {}\n", i["width"], i["height"], path.display());
+    }
+    if let Some(marks) = obs["marks"].as_array() {
+        text += &format!("observation {}\n{:<4}  {:<7}  {:<12}  {:<19}  {}\n", obs["observation"], "MARK", "DISPLAY", "ROLE", "BOX", "TEXT");
+        for m in marks {
+            let bbox = format!("{},{} {}x{}", m["x"], m["y"], m["width"], m["height"]);
+            text += &format!("{:<4}  {:<7}  {:<12}  {bbox:<19}  {}\n", m["number"].to_string(), m["display"].to_string(), str_of(&m["role"]), str_of(&m["text"]));
+        }
     }
     if text.is_empty() {
         text = "ok\n".into();
@@ -260,6 +296,18 @@ enum DeviceCommand {
     Show { device: String },
     /// The Device's process list, fetched from its Agent now.
     Processes { device: String },
+    /// Rename a Device (admin).
+    Rename { device: String, name: String },
+    /// Delete a Device and its history (admin).
+    Delete { device: String },
+    /// Revoke a Device's credential so its Agent can no longer connect (admin).
+    Revoke { device: String },
+    /// Move an old Device's history into a new one (e.g. after a reinstall), then delete the old one (admin).
+    Merge {
+        old: String,
+        #[arg(long)]
+        into: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -360,6 +408,28 @@ where
             }
             (procs, text)
         }
+        Command::Device(DeviceCommand::Rename { device, name }) => {
+            let path = format!("/api/v1/devices/{}", path_segment(&device));
+            let d = api.call(reqwest::Method::PATCH, &path, Some(&serde_json::json!({ "name": name }))).await?;
+            let text = format!("renamed {} to {}\n", str_of(&d["id"]), str_of(&d["name"]));
+            (d, text)
+        }
+        Command::Device(DeviceCommand::Delete { device }) => {
+            let path = format!("/api/v1/devices/{}", path_segment(&device));
+            (api.call(reqwest::Method::DELETE, &path, None).await?, format!("deleted {device}\n"))
+        }
+        Command::Device(DeviceCommand::Revoke { device }) => {
+            let path = format!("/api/v1/devices/{}/revoke", path_segment(&device));
+            let d = api.call(reqwest::Method::POST, &path, None).await?;
+            let text = format!("revoked {} at {}\n", str_of(&d["name"]), str_of(&d["revoked_at"]));
+            (d, text)
+        }
+        Command::Device(DeviceCommand::Merge { old, into }) => {
+            let path = format!("/api/v1/devices/{}/merge", path_segment(&into));
+            let d = api.call(reqwest::Method::POST, &path, Some(&serde_json::json!({ "from": old }))).await?;
+            let text = format!("merged {old} into {} ({})\n", str_of(&d["name"]), str_of(&d["id"]));
+            (d, text)
+        }
         Command::Metrics(MetricsCommand::History { device, from, to, resolution }) => {
             let query: Vec<String> = [("from", from), ("to", to), ("resolution", resolution)]
                 .into_iter()
@@ -448,8 +518,8 @@ where
             }
             (displays, text)
         }
-        Command::Shot { device, display, out } => {
-            let body = json!({ "actions": [], "display": display_sel(display)? });
+        Command::Shot { device, display, marks, out } => {
+            let body = json!({ "actions": [], "display": display_sel(display)?, "marks": marks });
             let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
             (obs, text)
@@ -475,11 +545,12 @@ where
             }
             (entries, text)
         }
-        Command::Act { device, action, display, observe, observe_display, out } => {
+        Command::Act { device, action, display, observe, observe_display, marks, out } => {
             let body = json!({
                 "actions": [action.json(display)],
                 "observe": observe,
                 "display": display_sel(observe_display)?,
+                "marks": marks,
             });
             let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };

@@ -6,7 +6,7 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
-pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState};
+pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState, UiElement};
 use rcli_agent::{Credentials, ServerEndpoint};
 pub use rcli_server::clock::{Clock, ManualClock};
 pub use reqwest::StatusCode;
@@ -299,6 +299,10 @@ impl ApiClient {
 
     pub async fn post_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
         self.send(self.http.post(format!("{}{path}", self.base)).json(body)).await
+    }
+
+    pub async fn patch_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
+        self.send(self.http.patch(format!("{}{path}", self.base)).json(body)).await
     }
 
     pub async fn put_bytes(&self, path: &str, body: Vec<u8>) -> (StatusCode, Value) {
