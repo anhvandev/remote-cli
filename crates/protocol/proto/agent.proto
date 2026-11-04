@@ -27,6 +27,7 @@ message ServerMessage {
     ProcessListRequest list_processes = 3;
     ActRequest act = 5;
     DisplaysRequest list_displays = 50;
+    ControlIndicator control_indicator = 7;
   }
 }
 
@@ -250,4 +251,10 @@ message DisplayInfo {
   // Real pixels per logical point (2.0 on Retina).
   double scale = 6;
   bool primary = 7;
+}
+
+// Show (on) or hide the on-Device indicator that the Device is being controlled.
+// Sent whenever it changes and at the start of every Device session.
+message ControlIndicator {
+  bool on = 1;
 }

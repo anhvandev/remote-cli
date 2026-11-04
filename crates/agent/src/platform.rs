@@ -34,6 +34,9 @@ pub trait Platform: Send + Sync + 'static {
     /// Replaces the Agent binary with `build` (signature already verified) and restarts the Agent
     /// onto it. Real adapters normally do not return on success; if they do, the Agent reconnects.
     fn install_update(&self, version: &str, build: &[u8]) -> anyhow::Result<()>;
+    /// Shows (true) or hides the visible on-Device indicator that someone is controlling it
+    /// (Control Lock held or live stream active). Must work at the lock and login screens too.
+    fn set_control_indicator(&self, on: bool) -> anyhow::Result<()>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,6 +111,7 @@ pub struct FakeState {
     captures: u64,
     version: String,
     installed: Vec<String>,
+    control_indicator: bool,
     pub inventory: Inventory,
     pub resources: Resources,
     pub processes: Vec<Process>,
@@ -130,6 +134,7 @@ impl FakePlatform {
             processes: vec![Process { pid: 1, name: "init".into(), ..Default::default() }],
             version: env!("CARGO_PKG_VERSION").into(),
             installed: vec![],
+            control_indicator: false,
         };
         Self { hostname, state: Arc::new(Mutex::new(state)) }
     }
@@ -158,6 +163,11 @@ impl FakePlatform {
 
     pub fn wakes_sent(&self) -> Vec<[u8; 6]> {
         self.state.lock().unwrap().wakes.clone()
+    }
+
+    /// Whether the control indicator is currently shown.
+    pub fn control_indicator(&self) -> bool {
+        self.state.lock().unwrap().control_indicator
     }
 
     /// Versions installed through `install_update`, in order.
@@ -238,6 +248,11 @@ impl Platform for FakePlatform {
         let mut s = self.state.lock().unwrap();
         s.installed.push(version.into());
         s.version = version.into();
+        Ok(())
+    }
+
+    fn set_control_indicator(&self, on: bool) -> anyhow::Result<()> {
+        self.state.lock().unwrap().control_indicator = on;
         Ok(())
     }
 }

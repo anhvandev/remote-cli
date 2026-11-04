@@ -11,11 +11,12 @@ pub const WAKE_TEST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x27];
 /// Like the probe: how long a key may take to show up on screen.
 const SCREEN_CHANGE_TIMEOUT: Duration = Duration::from_secs(1);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(3);
-const CHECKS: [&str; 10] = [
+const CHECKS: [&str; 11] = [
     "displays",
     "capture",
     "key shows on screen",
     "session state",
+    "control indicator",
     "metrics",
     "inventory",
     "processes",
@@ -160,6 +161,11 @@ fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Rep
         Ok(())
     });
     r.check("session state", env, || wait_for_state(p, expected, Duration::ZERO));
+    // shortcut: only checks that show/hide succeed here; whether it is visible is checked by eye on a real machine.
+    r.check("control indicator", env, || {
+        p.set_control_indicator(true)?;
+        p.set_control_indicator(false)
+    });
 }
 
 fn primary(p: &dyn Platform) -> anyhow::Result<u32> {

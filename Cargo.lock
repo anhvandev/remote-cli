@@ -2124,6 +2124,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "futures",
  "hex",
  "prost",
  "rcgen",

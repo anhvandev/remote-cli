@@ -219,6 +219,11 @@ async fn session(
                             }
                         }
                     }
+                    Some(server_message::Msg::ControlIndicator(c)) => {
+                        if let Err(e) = platform.set_control_indicator(c.on) {
+                            tracing::warn!("cannot set the control indicator: {e:#}");
+                        }
+                    }
                     // Later tickets handle more requests from the Server here.
                     Some(_) => {}
                 }

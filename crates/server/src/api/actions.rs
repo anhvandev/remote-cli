@@ -140,6 +140,8 @@ async fn act(
     let Json(mut params) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
     let body: ActBody = serde_json::from_value(params.clone())
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?;
+    // Every request from the holder, observe-only included, restarts the idle timer.
+    control_lock::touch(&state, device, &user).await?;
     if !body.actions.is_empty() {
         control_lock::check(&state, device, &user).await?;
     }

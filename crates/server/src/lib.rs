@@ -65,6 +65,7 @@ pub struct AppState {
     pub maintenance: history::Maintenance,
     /// Signalled on every rollout so live Device sessions offer the update.
     pub rollouts: tokio::sync::watch::Sender<()>,
+    pub lock_watchers: control_lock::Watchers,
 }
 
 /// A running Server. Dropping it stops the listeners.
@@ -103,6 +104,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
         agents: Default::default(),
         maintenance: Default::default(),
         rollouts: tokio::sync::watch::Sender::new(()),
+        lock_watchers: Default::default(),
     });
     let acceptor = agent_link::acceptor(&state)?;
     let router = api::router(state.clone());
@@ -113,6 +115,19 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
             }
         }),
         tokio::spawn(agent_link::serve(agents, acceptor, state.clone())),
+        tokio::spawn({
+            let state = state.clone();
+            async move {
+                // Expired locks are also ended lazily on every read; this hides the Device indicator on time.
+                let mut every_second = tokio::time::interval(std::time::Duration::from_secs(1));
+                loop {
+                    every_second.tick().await;
+                    if let Err(e) = control_lock::expire(&state).await {
+                        tracing::error!("Control Lock expiry failed: {e:?}");
+                    }
+                }
+            }
+        }),
         tokio::spawn(async move {
             let mut every_minute = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
