@@ -1,7 +1,10 @@
 "use client";
 // Live view: the browser is a WebRTC peer of the Device's Agent. Signaling goes through this app's route handlers
 // (app/api/...) to the Server; media flows peer-to-peer, or through TURN when NAT blocks a direct path.
-import { useEffect, useRef, useState } from "react";
+// While the person holds the Control Lock, their mouse and keyboard on the view become Actions (POST .../actions),
+// which the Server checks against the lock and audits like any Controller's.
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type WheelEvent } from "react";
+import { useHolding } from "./control";
 
 /** Waits until all ICE candidates are in the offer (the Server relays one offer, no trickle); gives up after 5 s. */
 function gathered(pc: RTCPeerConnection) {
@@ -18,9 +21,20 @@ async function json(res: Response) {
   return body;
 }
 
+/** Browser key -> Action key combo ("ctrl+enter"); plain characters are typed as text instead. */
+function keys(e: KeyboardEvent) {
+  const mods = [e.ctrlKey && "ctrl", e.altKey && "alt", e.shiftKey && "shift", e.metaKey && "meta"].filter(Boolean);
+  const key = e.key === " " ? "space" : e.key.replace(/^Arrow/, "").toLowerCase();
+  return [...mods, key].join("+");
+}
+
 export function LiveView({ device, name }: { device: string; name: string }) {
+  const holding = useHolding();
   const [state, setState] = useState<"idle" | "connecting" | "live">("idle");
   const [error, setError] = useState<string>();
+  const [inputError, setInputError] = useState<string>();
+  const queue = useRef(Promise.resolve());
+  const click = useRef<{ timer?: ReturnType<typeof setTimeout>; send?: () => void; down?: { x: number; y: number }; dragged?: boolean }>({});
   const [stream, setStream] = useState<MediaStream>();
   const live = useRef<{ pc: RTCPeerConnection; session?: string }>(undefined);
   const video = useRef<HTMLVideoElement>(null);
@@ -68,6 +82,83 @@ export function LiveView({ device, name }: { device: string; name: string }) {
     }
   }
 
+  /** Sends one input Action; requests go out one at a time so the Device sees them in order. */
+  function act(action: object) {
+    flushClick();
+    queue.current = queue.current.then(async () => {
+      const res = await fetch(`/api/devices/${encodeURIComponent(device)}/actions`, {
+        method: "POST",
+        body: JSON.stringify({ actions: [action], observe: "none" }),
+      });
+      if (!res.ok) setInputError((await res.json().catch(() => null))?.error?.message ?? res.statusText);
+    }).catch((e) => setInputError(String(e)));
+  }
+
+  // A single click waits briefly in case it is the first half of a double click.
+  function flushClick() {
+    const c = click.current;
+    clearTimeout(c.timer);
+    const send = c.send;
+    c.send = undefined;
+    send?.();
+  }
+
+  /** Mouse position in Observation image space (the video is exactly that size; display 0 = streamed primary).
+   * shortcut: assumes the primary display is index 0; pass the streamed display once the view can pick one. */
+  function at(e: MouseEvent<HTMLVideoElement>) {
+    const v = e.currentTarget;
+    const x = Math.min(v.videoWidth - 1, Math.floor((e.nativeEvent.offsetX * v.videoWidth) / v.clientWidth));
+    const y = Math.min(v.videoHeight - 1, Math.floor((e.nativeEvent.offsetY * v.videoHeight) / v.clientHeight));
+    return { display: 0, x: Math.max(0, x), y: Math.max(0, y) };
+  }
+
+  const control = holding && state === "live";
+  const input = control
+    ? {
+        tabIndex: 0,
+        onMouseDown: (e: MouseEvent<HTMLVideoElement>) => {
+          if (e.button === 0) click.current.down = at(e);
+        },
+        onMouseUp: (e: MouseEvent<HTMLVideoElement>) => {
+          const from = click.current.down;
+          click.current.down = undefined;
+          const to = at(e);
+          if (e.button === 0 && from && Math.hypot(to.x - from.x, to.y - from.y) > 4) {
+            click.current.dragged = true;
+            act({ type: "drag", ...from, to });
+          }
+        },
+        onClick: (e: MouseEvent<HTMLVideoElement>) => {
+          if (click.current.dragged) return void (click.current.dragged = false);
+          if (e.detail > 1) return;
+          const p = at(e);
+          flushClick();
+          click.current.send = () => act({ type: "click", ...p });
+          click.current.timer = setTimeout(flushClick, 250);
+        },
+        onDoubleClick: (e: MouseEvent<HTMLVideoElement>) => {
+          clearTimeout(click.current.timer);
+          click.current.send = undefined;
+          act({ type: "double_click", ...at(e) });
+        },
+        onContextMenu: (e: MouseEvent<HTMLVideoElement>) => {
+          e.preventDefault();
+          act({ type: "right_click", ...at(e) });
+        },
+        onWheel: (e: WheelEvent<HTMLVideoElement>) => {
+          // One wheel notch is about 100 px of deltaY.
+          const notches = (d: number) => (d === 0 ? 0 : Math.sign(d) * Math.max(1, Math.round(Math.abs(d) / 100)));
+          act({ type: "scroll", ...at(e), dx: notches(e.deltaX), dy: notches(e.deltaY) });
+        },
+        onKeyDown: (e: KeyboardEvent<HTMLVideoElement>) => {
+          if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
+          e.preventDefault();
+          const plain = e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey;
+          act(plain ? { type: "type", text: e.key } : { type: "key", keys: keys(e) });
+        },
+      }
+    : {};
+
   useEffect(() => {
     if (video.current) video.current.srcObject = stream ?? null;
   }, [stream, state]);
@@ -90,8 +181,18 @@ export function LiveView({ device, name }: { device: string; name: string }) {
       </div>
       {error && <p className="muted">Không xem được: {error}</p>}
       {state === "connecting" && <p className="muted">Đang kết nối…</p>}
+      {state === "live" && !holding && <p className="muted">Chỉ xem: cần giữ Control Lock để điều khiển.</p>}
+      {control && inputError && <p className="muted">Không điều khiển được: {inputError}</p>}
       {state !== "idle" && (
-        <video ref={video} aria-label={`Màn hình ${name}`} autoPlay muted playsInline style={{ width: "100%", background: "#000" }} />
+        <video
+          ref={video}
+          aria-label={`Màn hình ${name}`}
+          autoPlay
+          muted
+          playsInline
+          style={{ width: "100%", background: "#000", cursor: control ? "crosshair" : undefined }}
+          {...input}
+        />
       )}
     </section>
   );
