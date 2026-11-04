@@ -182,7 +182,8 @@ impl Platform for FakePlatform {
         let d = s.displays.iter().find(|d| d.index == display).ok_or_else(|| anyhow::anyhow!("no display {display}"))?;
         let animating = s.animating_until.is_some_and(|t| Instant::now() < t);
         let frame_no = if animating { s.captures } else { 0 };
-        let pixel = [s.session as u8 * 60, s.inputs.len() as u8, (frame_no % 251) as u8, 255];
+        // Steps of 40 so every change is noticeable to `frames`.
+        let pixel = [s.session as u8 * 60, (s.inputs.len() * 40) as u8, (frame_no % 6 * 40) as u8, 255];
         Ok(Frame { width: d.width, height: d.height, rgba: pixel.repeat((d.width * d.height) as usize) })
     }
 

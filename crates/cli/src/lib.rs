@@ -70,7 +70,7 @@ enum Command {
         /// Display the coordinates refer to.
         #[arg(long, global = true, default_value_t = 0)]
         display: u32,
-        /// Observation mode: shot or none.
+        /// Observation mode: shot, frames or none.
         #[arg(long, global = true, default_value = "shot")]
         observe: String,
         /// Display to observe, index or `all`; default: the display acted on.
@@ -78,6 +78,22 @@ enum Command {
         observe_display: Option<String>,
         /// Directory to save images in.
         #[arg(long, global = true, default_value = ".")]
+        out: PathBuf,
+    },
+    /// Send an Action Batch from JSON (needs the Control Lock): a list of Actions as in the API
+    /// (plus `{"type":"wait","ms":N}`), or a whole request body, which is sent as-is.
+    Batch {
+        device: String,
+        /// JSON file; `-` reads stdin.
+        file: PathBuf,
+        /// Observation mode: shot, frames or none.
+        #[arg(long, default_value = "shot")]
+        observe: String,
+        /// Display to observe, index or `all`; default: the display last acted on.
+        #[arg(long)]
+        display: Option<String>,
+        /// Directory to save images in.
+        #[arg(long, default_value = ".")]
         out: PathBuf,
     },
 }
@@ -145,8 +161,8 @@ fn display_sel(s: Option<String>) -> anyhow::Result<Value> {
     })
 }
 
-/// Saves each image as `<out>/display-<N>.jpg`; one line per image.
-fn save_observation(obs: &Value, out: &Path) -> anyhow::Result<String> {
+/// Saves each image as `<out>/display-<N>.jpg` (frames: `display-<N>-<at_ms>ms.jpg`); one line per image.
+fn save_observation(obs: &Value, out: &Path, frames: bool) -> anyhow::Result<String> {
     let mut text = String::new();
     for i in obs["images"].as_array().into_iter().flatten() {
         let display = &i["display"];
@@ -156,9 +172,13 @@ fn save_observation(obs: &Value, out: &Path) -> anyhow::Result<String> {
         }
         let data = base64::engine::general_purpose::STANDARD.decode(str_of(&i["data"]))?;
         std::fs::create_dir_all(out)?;
-        let path = out.join(format!("display-{display}.jpg"));
+        let (name, label) = match frames {
+            true => (format!("display-{display}-{}ms.jpg", i["at_ms"]), format!("display {display} +{}ms", i["at_ms"])),
+            false => (format!("display-{display}.jpg"), format!("display {display}")),
+        };
+        let path = out.join(name);
         std::fs::write(&path, data)?;
-        text += &format!("display {display}: {}x{} {}\n", i["width"], i["height"], path.display());
+        text += &format!("{label}: {}x{} {}\n", i["width"], i["height"], path.display());
     }
     if text.is_empty() {
         text = "ok\n".into();
@@ -376,7 +396,7 @@ where
         Command::Shot { device, display, out } => {
             let body = json!({ "actions": [], "display": display_sel(display)? });
             let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
-            let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
+            let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
             (obs, text)
         }
         Command::Act { device, action, display, observe, observe_display, out } => {
@@ -386,7 +406,21 @@ where
                 "display": display_sel(observe_display)?,
             });
             let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
-            let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
+            let text = if cli.json { String::new() } else { save_observation(&obs, &out, observe == "frames")? };
+            (obs, text)
+        }
+        Command::Batch { device, file, observe, display, out } => {
+            let json = match file.to_str() {
+                Some("-") => std::io::read_to_string(std::io::stdin())?,
+                _ => std::fs::read_to_string(&file)?,
+            };
+            let body = match serde_json::from_str(&json)? {
+                Value::Array(actions) => json!({ "actions": actions, "observe": observe, "display": display_sel(display)? }),
+                body => body,
+            };
+            let frames = body["observe"] == "frames";
+            let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
+            let text = if cli.json { String::new() } else { save_observation(&obs, &out, frames)? };
             (obs, text)
         }
         Command::Update(UpdateCommand::Keygen { .. }) => unreachable!("handled before connecting"),
@@ -471,7 +505,8 @@ impl Api {
         let body: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
             let e = &body["error"];
-            anyhow::bail!("{} ({}): {}", str_of(&e["code"]), status, str_of(&e["message"]));
+            let step = e["step"].as_u64().map(|s| format!(" (step {s})")).unwrap_or_default();
+            anyhow::bail!("{} ({}): {}{step}", str_of(&e["code"]), status, str_of(&e["message"]));
         }
         Ok(body)
     }

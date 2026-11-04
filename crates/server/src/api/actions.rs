@@ -20,7 +20,8 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/devices/{id}/displays", get(displays))
 }
 
-/// `{"actions": [...], "observe": "shot" | "none", "display": N | "all"}`. No Actions = observe only (no lock).
+/// `{"actions": [...], "observe": "shot" | "none" | "frames", "display": N | "all", "max_frames": N}`.
+/// No Actions = observe only (no lock). Several Actions = an Action Batch, run in order.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ActBody {
@@ -30,7 +31,14 @@ struct ActBody {
     observe: Observe,
     /// Unset = the display last acted on.
     display: Option<DisplaySel>,
+    /// `frames`: at most this many per display (default 10).
+    max_frames: Option<u32>,
 }
+
+/// Upper bound of `max_frames`.
+const MAX_FRAMES: u32 = 30;
+/// Upper bound of all waits in one batch, so the Agent answers well within its request timeout.
+const MAX_TOTAL_WAIT_MS: u64 = 5_000;
 
 #[derive(Deserialize, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -38,6 +46,7 @@ enum Observe {
     #[default]
     Shot,
     None,
+    Frames,
 }
 
 #[derive(Deserialize)]
@@ -89,6 +98,10 @@ enum Action {
     Key {
         keys: String,
     },
+    /// Action Batch pause, in milliseconds.
+    Wait {
+        ms: u32,
+    },
 }
 
 impl From<Point> for proto::Point {
@@ -108,6 +121,7 @@ impl From<Action> for proto::Action {
             Action::Scroll { at, dx, dy } => Kind::Scroll(proto::Scroll { at: Some(at.into()), dx, dy }),
             Action::Type { text } => Kind::TypeText(text),
             Action::Key { keys } => Kind::Key(keys),
+            Action::Wait { ms } => Kind::WaitMs(ms),
         };
         Self { kind: Some(kind) }
     }
@@ -120,6 +134,10 @@ impl From<RequestError> for ApiError {
             RequestError::Timeout => ApiError::new(StatusCode::GATEWAY_TIMEOUT, "agent_timeout", "the Agent did not answer in time"),
         }
     }
+}
+
+fn invalid(message: impl Into<String>) -> ApiError {
+    ApiError::new(StatusCode::BAD_REQUEST, "invalid_action", message)
 }
 
 fn agent_error(e: proto::Error) -> ApiError {
@@ -137,6 +155,14 @@ async fn act(
 ) -> Result<Json<Value>, ApiError> {
     let device = resolve(&state, &id).await?;
     let Json(body) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let waits: u64 = body.actions.iter().map(|a| if let Action::Wait { ms } = a { u64::from(*ms) } else { 0 }).sum();
+    if waits > MAX_TOTAL_WAIT_MS {
+        return Err(invalid(format!("waits add up to {waits} ms; at most {MAX_TOTAL_WAIT_MS} ms per request")));
+    }
+    let max_frames = body.max_frames.unwrap_or(10);
+    if !(1..=MAX_FRAMES).contains(&max_frames) {
+        return Err(invalid(format!("max_frames must be 1 to {MAX_FRAMES}")));
+    }
     if !body.actions.is_empty() {
         control_lock::check(&state, device, &user).await?;
     }
@@ -147,6 +173,7 @@ async fn act(
             observe: match body.observe {
                 Observe::Shot => proto::ObserveMode::Shot,
                 Observe::None => proto::ObserveMode::None,
+                Observe::Frames => proto::ObserveMode::Frames,
             }
             .into(),
             display: match body.display {
@@ -155,20 +182,25 @@ async fn act(
             },
             all_displays: matches!(body.display, Some(DisplaySel::All(_))),
             controller: user.id.to_string(),
+            max_frames,
         })
     };
     let agent_message::Msg::ActResult(result) = state.agents.request(device, req).await? else {
         return Err(anyhow::anyhow!("unexpected reply to ActRequest").into());
     };
     if let Some(e) = result.error {
-        return Err(agent_error(e));
+        let err = agent_error(e);
+        return Err(match result.failed_step {
+            Some(step) => err.with("step", step),
+            None => err,
+        });
     }
     let images: Vec<Value> = result
         .images
         .into_iter()
         .map(|i| {
             let data = (!i.unchanged).then(|| base64::engine::general_purpose::STANDARD.encode(&i.data));
-            json!({ "display": i.display, "width": i.width, "height": i.height, "unchanged": i.unchanged, "mime": i.mime, "data": data })
+            json!({ "display": i.display, "width": i.width, "height": i.height, "unchanged": i.unchanged, "mime": i.mime, "data": data, "at_ms": i.at_ms })
         })
         .collect();
     Ok(Json(json!({ "images": images })))
