@@ -1,4 +1,4 @@
-# Server + Postgres. Set RCLI_BOOTSTRAP_ADMIN_TOKEN (and POSTGRES_PASSWORD) in the environment or .env.
+# Server + Postgres + Dashboard. Set RCLI_BOOTSTRAP_ADMIN_TOKEN (and POSTGRES_PASSWORD) in the environment or .env.
 services:
   postgres:
     image: postgres:16-alpine
@@ -28,6 +28,14 @@ services:
     ports:
       - "8080:8080" # Controller API
       - "8443:8443" # Agent connections (TLS / mTLS)
+
+  dashboard:
+    build: ./dashboard
+    depends_on: [server]
+    environment:
+      RCLI_API_URL: http://server:8080
+    ports:
+      - "3000:3000" # Dashboard (put TLS in front of it outside localhost)
 
 volumes:
   pgdata:
