@@ -34,6 +34,9 @@ enum Command {
     /// One Device: inventory, current resources, processes.
     #[command(subcommand)]
     Device(DeviceCommand),
+    /// Resource history of Devices.
+    #[command(subcommand)]
+    Metrics(MetricsCommand),
     /// Manage Enrollment Codes (admin).
     #[command(subcommand)]
     EnrollmentCode(EnrollmentCodeCommand),
@@ -254,6 +257,23 @@ enum DeviceCommand {
 }
 
 #[derive(Subcommand)]
+enum MetricsCommand {
+    /// Resource samples of a Device (id or name) over time; `--json` has every field.
+    History {
+        device: String,
+        /// Start, RFC 3339 (e.g. 2026-01-01T00:00:00Z). Default: one hour before --to.
+        #[arg(long)]
+        from: Option<String>,
+        /// End, RFC 3339. Default: now.
+        #[arg(long)]
+        to: Option<String>,
+        /// 5s (raw, last 7 days) or 1m (rollups, last 90 days). Default: 5s unless --from is older than 7 days.
+        #[arg(long)]
+        resolution: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum EnrollmentCodeCommand {
     /// Create a single-use Enrollment Code.
     Create,
@@ -333,6 +353,30 @@ where
                 );
             }
             (procs, text)
+        }
+        Command::Metrics(MetricsCommand::History { device, from, to, resolution }) => {
+            let query: Vec<String> = [("from", from), ("to", to), ("resolution", resolution)]
+                .into_iter()
+                .filter_map(|(k, v)| Some(format!("{k}={}", path_segment(&v?))))
+                .collect();
+            let path = format!("/api/v1/devices/{}/history?{}", path_segment(&device), query.join("&"));
+            let history = api.call(reqwest::Method::GET, &path, None).await?;
+            let mut text = format!(
+                "{:<20}  {:>6}  {:>14}  {:>12}  {:>12}\n",
+                "AT", "CPU%", "RAM USED BYTES", "NET UP B/S", "NET DOWN B/S"
+            );
+            for s in history["samples"].as_array().into_iter().flatten() {
+                let (r, num) = (&s["resources"], |v: &Value| v.as_f64().map_or("-".into(), |n| format!("{n:.0}")));
+                text += &format!(
+                    "{:<20}  {:>6}  {:>14}  {:>12}  {:>12}\n",
+                    str_of(&s["at"]),
+                    r["cpu_percent"].as_f64().map_or("-".into(), |c| format!("{c:.1}")),
+                    num(&r["ram_used_bytes"]),
+                    num(&r["net_up_bytes_per_sec"]),
+                    num(&r["net_down_bytes_per_sec"]),
+                );
+            }
+            (history, text)
         }
         Command::EnrollmentCode(EnrollmentCodeCommand::Create) => {
             let created = api.call(reqwest::Method::POST, "/api/v1/enrollment-codes", None).await?;

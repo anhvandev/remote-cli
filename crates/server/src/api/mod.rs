@@ -5,6 +5,7 @@ mod audit;
 mod control_lock;
 mod devices;
 mod enrollment;
+mod history;
 mod updates;
 mod users;
 
@@ -28,6 +29,7 @@ pub fn router(state: State) -> Router {
         .route("/api/v1/server-ca", get(|s: axum::extract::State<State>| async move { s.ca.cert_pem.clone() }))
         .merge(devices::routes())
         .merge(enrollment::routes())
+        .merge(history::routes())
         .merge(updates::routes())
         .merge(users::routes())
         .merge(control_lock::routes())

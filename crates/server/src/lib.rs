@@ -10,6 +10,7 @@ pub mod auth;
 pub mod clock;
 pub mod control_lock;
 pub mod enrollment;
+pub mod history;
 pub mod metrics;
 pub mod pki;
 pub mod registry;
@@ -61,6 +62,7 @@ pub struct AppState {
     pub connections: registry::Connections,
     pub resources: metrics::CurrentResources,
     pub agents: agent_link::Agents,
+    pub maintenance: history::Maintenance,
     /// Signalled on every rollout so live Device sessions offer the update.
     pub rollouts: tokio::sync::watch::Sender<()>,
 }
@@ -99,6 +101,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
         connections: Default::default(),
         resources: Default::default(),
         agents: Default::default(),
+        maintenance: Default::default(),
         rollouts: tokio::sync::watch::Sender::new(()),
     });
     let acceptor = agent_link::acceptor(&state)?;
@@ -109,7 +112,16 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
                 tracing::error!("controller API stopped: {e}");
             }
         }),
-        tokio::spawn(agent_link::serve(agents, acceptor, state)),
+        tokio::spawn(agent_link::serve(agents, acceptor, state.clone())),
+        tokio::spawn(async move {
+            let mut every_minute = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                every_minute.tick().await;
+                if let Err(e) = history::maintain(&state).await {
+                    tracing::error!("history rollup/retention failed: {e:#}");
+                }
+            }
+        }),
     ];
     Ok(Server { http_addr, agent_addr, ca_pem, tasks })
 }

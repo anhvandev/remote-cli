@@ -11,11 +11,12 @@ message AgentMessage {
     AgentHello hello = 17;
     UpdateFailed update_failed = 170;
     Inventory inventory = 3;
-    Resources resources = 30;
     ProcessList processes = 31;
+    ResourceSample sample = 40;
     ActResult act_result = 5;
     DisplayList displays = 50;
   }
+  reserved 30; // was a bare Resources delta; now ResourceSample
 }
 
 message ServerMessage {
@@ -131,6 +132,14 @@ message Resources {
   optional double cpu_temp_celsius = 12;
   optional double battery_percent = 13;
   optional bool battery_charging = 14;
+}
+
+// One 5-second sample, sent live or (after an outage) as backfill, oldest first.
+// `resources` is a delta against the previous sample sent in this session (the first one is complete).
+// `age_ms` = how long ago the Agent took it (monotonic), so the Server stamps it with its own clock: now - age.
+message ResourceSample {
+  Resources resources = 1;
+  uint64 age_ms = 2;
 }
 
 // Answered with a ProcessList carrying the same request_id.
