@@ -14,6 +14,7 @@ pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, S
 use rcli_agent::{Credentials, ServerEndpoint};
 pub use rcli_server::clock::{Clock, ManualClock};
 pub use reqwest::StatusCode;
+pub use rmcp;
 use serde_json::Value;
 use testcontainers_modules::{
     postgres::Postgres,
@@ -112,6 +113,19 @@ impl TestSystem {
         let mut out = Vec::new();
         rcli::run(argv, &mut out).await?;
         Ok(String::from_utf8(out)?)
+    }
+
+    /// Starts `rcli mcp` in-process with the API token `token` (over an in-memory pipe instead of stdio)
+    /// and returns a connected MCP client. Dropping or cancelling the client ends the MCP server.
+    pub async fn mcp_as(&self, token: &str) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+        use rmcp::ServiceExt;
+        let (client, server) = tokio::io::duplex(1 << 20);
+        let (base, token) = (format!("http://{}", self.server.http_addr), token.to_owned());
+        tokio::spawn(async move {
+            let (read, write) = tokio::io::split(server);
+            rcli::mcp::serve(base, token, read, write).await
+        });
+        ().serve(client).await.expect("MCP handshake")
     }
 
     /// Creates a user with `role` ("admin" | "operator") and returns a fresh API token for it.
