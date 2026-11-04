@@ -1,0 +1,40 @@
+// Messages on the persistent Agent <-> Server TLS connection.
+// Each frame is a length-delimited (u32 BE) encoded AgentMessage or ServerMessage.
+// Extend by adding new oneof variants with fresh field numbers.
+syntax = "proto3";
+package rcli.agent.v1;
+
+message AgentMessage {
+  oneof msg {
+    EnrollRequest enroll = 1;
+    Heartbeat heartbeat = 2;
+  }
+}
+
+message ServerMessage {
+  oneof msg {
+    EnrollResponse enrolled = 1;
+    Error error = 2;
+  }
+}
+
+// Sent on a connection without a client certificate. The Server signs the CSR
+// and returns the Device's mTLS client certificate.
+message EnrollRequest {
+  string code = 1;
+  string csr_pem = 2;
+  string hostname = 3;
+}
+
+message EnrollResponse {
+  string device_id = 1;
+  string cert_pem = 2;
+}
+
+// Sent by an enrolled Agent so the Server can detect half-open connections.
+message Heartbeat {}
+
+message Error {
+  string code = 1;
+  string message = 2;
+}

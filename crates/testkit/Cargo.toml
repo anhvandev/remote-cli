@@ -1,0 +1,17 @@
+[package]
+name = "rcli-testkit"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+rcli.workspace = true
+rcli-agent.workspace = true
+rcli-server.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+testcontainers-modules.workspace = true
+tokio.workspace = true

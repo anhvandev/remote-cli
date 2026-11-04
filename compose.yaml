@@ -1,0 +1,31 @@
+# Server + Postgres. Set RCLI_BOOTSTRAP_ADMIN_TOKEN (and POSTGRES_PASSWORD) in the environment or .env.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rcli
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rcli}
+      POSTGRES_DB: rcli
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "rcli"]
+      interval: 2s
+      retries: 30
+
+  server:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://rcli:${POSTGRES_PASSWORD:-rcli}@postgres:5432/rcli
+      RCLI_BOOTSTRAP_ADMIN_TOKEN: ${RCLI_BOOTSTRAP_ADMIN_TOKEN:?set RCLI_BOOTSTRAP_ADMIN_TOKEN}
+      # Names Agents use to reach port 8443; must match what they pass to --server.
+      RCLI_AGENT_HOSTNAMES: ${RCLI_AGENT_HOSTNAMES:-localhost}
+    ports:
+      - "8080:8080" # Controller API
+      - "8443:8443" # Agent connections (TLS / mTLS)
+
+volumes:
+  pgdata:
