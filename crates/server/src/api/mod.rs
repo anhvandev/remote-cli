@@ -7,6 +7,7 @@ mod devices;
 mod enrollment;
 mod exec;
 mod history;
+mod power;
 mod live;
 mod sessions;
 mod shell;
@@ -43,6 +44,7 @@ pub fn router(state: State) -> Router {
         .merge(audit::routes())
         .merge(exec::routes())
         .merge(wake::routes())
+        .merge(power::routes())
         .merge(sessions::routes())
         .merge(vault::routes())
         .merge(live::routes())

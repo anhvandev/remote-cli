@@ -206,6 +206,7 @@ where
                 match msg.msg {
                     Some(agent_message::Msg::ActResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ActResult(r)),
                     Some(agent_message::Msg::WakeResult(w)) => state.agents.reply(device, w.request_id, agent_message::Msg::WakeResult(w)),
+                    Some(agent_message::Msg::PowerResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::PowerResult(r)),
                     Some(agent_message::Msg::LiveAnswer(a)) => state.agents.reply(device, a.request_id, agent_message::Msg::LiveAnswer(a)),
                     Some(agent_message::Msg::Displays(d)) => state.agents.reply(device, d.request_id, agent_message::Msg::Displays(d)),
                     Some(agent_message::Msg::ExecResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ExecResult(r)),

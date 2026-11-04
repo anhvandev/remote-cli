@@ -149,6 +149,7 @@ pub struct FakeState {
     displays: Vec<DisplayInfo>,
     inputs: Vec<Input>,
     wakes: Vec<[u8; 6]>,
+    powers: Vec<PowerAction>,
     /// After each input the screen changes on every capture for this long.
     animate: Duration,
     animating_until: Option<Instant>,
@@ -174,6 +175,7 @@ impl FakePlatform {
             displays: vec![display],
             inputs: vec![],
             wakes: vec![],
+            powers: vec![],
             animate: Duration::ZERO,
             animating_until: None,
             captures: 0,
@@ -213,6 +215,11 @@ impl FakePlatform {
 
     pub fn wakes_sent(&self) -> Vec<[u8; 6]> {
         self.state.lock().unwrap().wakes.clone()
+    }
+
+    /// Every power Action received, in order.
+    pub fn power_actions(&self) -> Vec<PowerAction> {
+        self.state.lock().unwrap().powers.clone()
     }
 
     /// Whether the control indicator is currently shown.
@@ -291,6 +298,7 @@ impl Platform for FakePlatform {
     }
 
     fn power(&self, action: PowerAction) -> anyhow::Result<()> {
+        self.state.lock().unwrap().powers.push(action);
         if action == PowerAction::Lock {
             self.set_session_state(SessionState::Locked);
         }

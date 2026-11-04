@@ -92,6 +92,13 @@ fn tools() -> Vec<Tool> {
             vec!["device", "command"],
         ),
         ("wake", "Wake an Offline Device through a Wake Relay on its LAN.", devices_only, vec!["device"]),
+        (
+            "power",
+            "Restart, shut down, sleep or lock the screen of a Device. While someone else holds the Control Lock, \
+             only lock works (admins excepted).",
+            json!({ "device": device, "action": { "type": "string", "enum": ["restart", "shutdown", "sleep", "lock"] } }),
+            vec!["device", "action"],
+        ),
     ]
     .into_iter()
     .map(|(name, description, properties, required)| {
@@ -153,14 +160,18 @@ impl Mcp {
                 self.watches.lock().unwrap().remove(name);
                 structured(lock)
             }
-            "observe" => observation(self.api.call(Method::POST, &format!("{dev}/actions"), Some(&act(json!([])))).await?),
-            "act" => observation(self.api.call(Method::POST, &format!("{dev}/actions"), Some(&act(json!([args["action"]])))).await?),
-            "batch" => observation(self.api.call(Method::POST, &format!("{dev}/actions"), Some(&act(args["actions"].clone()))).await?),
+            "observe" => observation(self.api.observe(name, &act(json!([]))).await?),
+            "act" => observation(self.api.observe(name, &act(json!([args["action"]]))).await?),
+            "batch" => observation(self.api.observe(name, &act(args["actions"].clone())).await?),
             "exec" => {
                 let body = Value::Object(pick(args, &["command", "as", "timeout_secs"]));
                 structured(self.api.call(Method::POST, &format!("{dev}/exec"), Some(&body)).await?)
             }
             "wake" => structured(self.api.call(Method::POST, &format!("{dev}/wake"), None).await?),
+            "power" => {
+                let body = Value::Object(pick(args, &["action"]));
+                structured(self.api.call(Method::POST, &format!("{dev}/power"), Some(&body)).await?)
+            }
             _ => anyhow::bail!("unknown tool {tool}"),
         })
     }

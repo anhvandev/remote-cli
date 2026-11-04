@@ -49,7 +49,7 @@ async fn an_agent_lists_devices_takes_the_lock_acts_and_observes_with_marks() {
     let mcp = sys.mcp_as(&sys.admin_token).await;
 
     let tools: Vec<String> = mcp.list_all_tools().await.unwrap().into_iter().map(|t| t.name.into_owned()).collect();
-    for t in ["devices", "device", "lock_acquire", "lock_release", "lock_status", "act", "batch", "observe", "exec", "wake"] {
+    for t in ["devices", "device", "lock_acquire", "lock_release", "lock_status", "act", "batch", "observe", "exec", "wake", "power"] {
         assert!(tools.contains(&t.to_owned()), "missing tool {t}: {tools:?}");
     }
 
@@ -135,4 +135,21 @@ async fn the_lock_ends_60_seconds_after_the_mcp_server_goes_away() {
     sys.advance(60);
     let (_, l) = sys.api.get("/api/v1/devices/lab-pc/lock").await;
     assert_eq!(l["holder"], Value::Null);
+}
+
+#[tokio::test]
+async fn an_agent_locks_the_screen_and_restart_is_refused_while_someone_else_holds_the_lock() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
+    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    bob.post("/api/v1/devices/lab-pc/lock").await;
+    let mcp = sys.mcp_as(&sys.create_user("alice", "operator").await).await;
+
+    let (r, _) = ok(&mcp, "power", json!({ "device": "lab-pc", "action": "lock" })).await;
+    assert_eq!(r, json!({ "action": "lock" }));
+    let refused = call(&mcp, "power", json!({ "device": "lab-pc", "action": "restart" })).await;
+    assert_eq!(refused.is_error, Some(true));
+    assert!(text(&refused).contains("control_lock_held") && text(&refused).contains("bob"), "{}", text(&refused));
+    assert_eq!(agent.platform.power_actions(), vec![rcli_testkit::platform::PowerAction::Lock]);
 }

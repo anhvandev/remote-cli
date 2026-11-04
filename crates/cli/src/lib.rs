@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod media;
+
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -59,6 +61,12 @@ enum Command {
     Displays { device: String },
     /// Wake an Offline Device through a Wake Relay on its LAN.
     Wake { device: String },
+    /// Restart, shut down, sleep or lock the screen of a Device (all but lock respect the Control Lock).
+    Power {
+        device: String,
+        #[arg(value_parser = ["restart", "shutdown", "sleep", "lock"])]
+        action: String,
+    },
     /// Observe a Device's screen (no Control Lock needed).
     Shot {
         device: String,
@@ -602,6 +610,12 @@ where
             let text = format!("waking {device} via {} ({})\n", str_of(&w["relay"]["name"]), str_of(&w["mac"]));
             (w, text)
         }
+        Command::Power { device, action } => {
+            let path = format!("/api/v1/devices/{}/power", path_segment(&device));
+            let p = api.call(reqwest::Method::POST, &path, Some(&json!({ "action": action }))).await?;
+            let text = format!("{device}: {action} sent\n");
+            (p, text)
+        }
         Command::Displays { device } => {
             let displays = api.call(reqwest::Method::GET, &format!("/api/v1/devices/{device}/displays"), None).await?;
             let mut text = format!("{:<5}  {:<11}  {:<5}  {:<11}  {}\n", "INDEX", "RESOLUTION", "SCALE", "POSITION", "PRIMARY");
@@ -619,7 +633,7 @@ where
         }
         Command::Shot { device, display, marks, out } => {
             let body = json!({ "actions": [], "display": display_sel(display)?, "marks": marks });
-            let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
+            let obs = api.observe(&device, &body).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
             (obs, text)
         }
@@ -692,7 +706,7 @@ where
                 "display": display_sel(observe_display)?,
                 "marks": marks,
             });
-            let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
+            let obs = api.observe(&device, &body).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, observe == "frames")? };
             (obs, text)
         }
@@ -706,7 +720,7 @@ where
                 body => body,
             };
             let frames = body["observe"] == "frames";
-            let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
+            let obs = api.observe(&device, &body).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, frames)? };
             (obs, text)
         }
@@ -876,13 +890,19 @@ fn str_of(v: &Value) -> &str {
     v.as_str().unwrap_or("")
 }
 
-struct Api {
+/// Controller API client (base URL + token).
+#[derive(Clone)]
+pub struct Api {
     base: String,
     token: String,
     http: reqwest::Client,
 }
 
 impl Api {
+    pub fn new(base: String, token: String) -> Self {
+        Self { base, token, http: reqwest::Client::new() }
+    }
+
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> anyhow::Result<Value> {
         let url = format!("{}{path}", self.base.trim_end_matches('/'));
         let mut req = self.http.request(method, url);
