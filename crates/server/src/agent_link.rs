@@ -24,7 +24,7 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 
-use crate::{enrollment, metrics, pki, registry, updates, AppState};
+use crate::{control_lock, enrollment, metrics, pki, registry, updates, AppState};
 
 /// How long a request to an Agent (e.g. the process list) may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -147,6 +147,7 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
             let (tx, rx) = mpsc::unbounded_channel();
             state.agents.senders.lock().unwrap().insert(id, tx.clone());
             registry::agent_connected(&state, id).await?;
+            control_lock::push_indicator(&state, id).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
             let result = session(&mut conn, rx, &state, id).await;
             {
                 let mut senders = state.agents.senders.lock().unwrap();

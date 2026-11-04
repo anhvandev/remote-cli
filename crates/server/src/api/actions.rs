@@ -20,7 +20,7 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/devices/{id}/displays", get(displays))
 }
 
-/// `{"actions": [...], "observe": "shot" | "none" | "frames", "display": N | "all", "max_frames": N}`.
+/// `{"actions": [...], "observe": "shot" | "none" | "frames" | "clip", "display": N | "all", "max_frames": N}`.
 /// No Actions = observe only (no lock). Several Actions = an Action Batch, run in order.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +50,7 @@ enum Observe {
     Shot,
     None,
     Frames,
+    Clip,
 }
 
 #[derive(Deserialize)]
@@ -193,6 +194,8 @@ async fn act(
     if !(1..=MAX_FRAMES).contains(&max_frames) {
         return Err(invalid(format!("max_frames must be 1 to {MAX_FRAMES}")));
     }
+    // Every request from the holder, observe-only included, restarts the idle timer.
+    control_lock::touch(&state, device, &user).await?;
     if !body.actions.is_empty() {
         control_lock::check(&state, device, &user).await?;
     }
@@ -250,6 +253,7 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
                 Observe::Shot => proto::ObserveMode::Shot,
                 Observe::None => proto::ObserveMode::None,
                 Observe::Frames => proto::ObserveMode::Frames,
+                Observe::Clip => proto::ObserveMode::Clip,
             }
             .into(),
             display: match body.display {
@@ -272,11 +276,16 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
             None => err,
         });
     }
+    let b64 = |data: &[u8]| base64::engine::general_purpose::STANDARD.encode(data);
+    // Relayed, never stored (spec: no media in the audit log).
+    let clip = result.clip.map(|c| {
+        json!({ "display": c.display, "width": c.width, "height": c.height, "mime": c.mime, "duration_ms": c.duration_ms, "data": b64(&c.data) })
+    });
     let images: Vec<Value> = result
         .images
         .into_iter()
         .map(|i| {
-            let data = (!i.unchanged).then(|| base64::engine::general_purpose::STANDARD.encode(&i.data));
+            let data = (!i.unchanged).then(|| b64(&i.data));
             json!({ "display": i.display, "width": i.width, "height": i.height, "unchanged": i.unchanged, "mime": i.mime, "data": data, "at_ms": i.at_ms })
         })
         .collect();
@@ -288,6 +297,9 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
             .iter()
             .map(|m| json!({ "number": m.number, "text": m.text, "role": m.role, "display": m.display, "x": m.x, "y": m.y, "width": m.width, "height": m.height }))
             .collect();
+    }
+    if let Some(clip) = clip {
+        reply["clip"] = clip;
     }
     Ok(Json(reply))
 }

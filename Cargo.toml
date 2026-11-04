@@ -17,6 +17,8 @@ data-encoding = "2"
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = { version = "0.28", default-features = false, features = ["windows"] }
 futures = "0.3"
+mp4 = "0.14"
+openh264 = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 prost = "0.13"
 prost-build = "0.13"
@@ -44,7 +46,14 @@ rcli-agent = { path = "crates/agent" }
 rcli = { path = "crates/cli" }
 
 # Observation encoding is too slow unoptimized for the system tests.
+# rcli-agent too: generic image/openh264 code (thumbnail, RGB->YUV) is compiled in the caller's crate.
 [profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.openh264-sys2]
+opt-level = 3
+[profile.dev.package.openh264]
+opt-level = 3
+[profile.dev.package.rcli-agent]
 opt-level = 3
 
 # Password hashing (PBKDF2) is ~10x slower unoptimized; keeps tests fast.

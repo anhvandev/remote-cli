@@ -1,11 +1,15 @@
 //! Executor: carries out the Actions of a request in order, then produces one Observation.
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
-use rcli_protocol::agent::{action::Kind, Action, ActRequest, ActResult, Error, Mark, ObserveMode, Point};
+use rcli_protocol::agent::{action::Kind, Action, ActRequest, ActResult, Clip, Error, Mark, ObserveMode, Point};
 
 use crate::{
-    coords, marks,
+    clip, coords, marks,
     observer::{self, Frames, Observer},
     platform::{Button, DisplayInfo, Input, Platform},
 };
@@ -37,18 +41,17 @@ impl Executor {
 
     fn run(&mut self, p: &dyn Platform, req: &ActRequest, failed_step: &mut Option<u32>) -> Result<ActResult, Error> {
         let displays = p.displays().map_err(|e| error("platform", e))?;
+        if req.observe() == ObserveMode::Clip {
+            let clip = self.record(p, &displays, req, failed_step)?;
+            return Ok(ActResult { clip: Some(clip), ..Default::default() });
+        }
         // `frames` watches every display; the observed ones are picked once the Actions are done.
         let mut frames = (req.observe() == ObserveMode::Frames)
             .then(|| Frames::new(displays.iter().map(|d| d.index).collect(), req.max_frames));
         if let Some(f) = frames.as_mut() {
             f.record(p, Duration::ZERO).map_err(|e| error("platform", e))?;
         }
-        for (i, action) in req.actions.iter().enumerate() {
-            if let Err(e) = self.step(p, &req.controller, &displays, frames.as_mut(), action) {
-                *failed_step = Some(i as u32);
-                return Err(e);
-            }
-        }
+        self.run_actions(p, &displays, req, frames.as_mut(), failed_step)?;
         if req.observe() == ObserveMode::None {
             return Ok(ActResult::default());
         }
@@ -94,6 +97,54 @@ impl Executor {
                 Ok(())
             }
         }
+    }
+
+    /// The Actions in order; on failure `failed_step` is the index of the failing one.
+    fn run_actions(
+        &mut self,
+        p: &dyn Platform,
+        displays: &[DisplayInfo],
+        req: &ActRequest,
+        mut frames: Option<&mut Frames>,
+        failed_step: &mut Option<u32>,
+    ) -> Result<(), Error> {
+        for (i, action) in req.actions.iter().enumerate() {
+            if let Err(e) = self.step(p, &req.controller, displays, frames.as_deref_mut(), action) {
+                *failed_step = Some(i as u32);
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs the Actions while recording one display: the requested one, else the first one acted on, else the default.
+    fn record(
+        &mut self,
+        p: &dyn Platform,
+        displays: &[DisplayInfo],
+        req: &ActRequest,
+        failed_step: &mut Option<u32>,
+    ) -> Result<Clip, Error> {
+        if req.all_displays {
+            return Err(error("invalid_action", "clip records one display"));
+        }
+        let first_acted = req.actions.iter().find_map(|a| match a.kind.as_ref()? {
+            Kind::Move(pt) | Kind::Click(pt) | Kind::DoubleClick(pt) | Kind::RightClick(pt) => Some(pt.display),
+            Kind::Drag(d) => d.from.as_ref().map(|pt| pt.display),
+            Kind::Scroll(s) => s.at.as_ref().map(|pt| pt.display),
+            Kind::TypeText(_) | Kind::Key(_) | Kind::WaitMs(_) => None,
+        });
+        let default = || self.last_display.or(displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0);
+        let display = find(displays, req.display.or(first_acted).unwrap_or_else(default))?.index;
+        let done = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            let recorder = s.spawn(|| clip::record(p, display, &done));
+            let ran = self.run_actions(p, displays, req, None, failed_step);
+            done.store(true, Ordering::SeqCst);
+            let clip = recorder.join().map_err(|_| error("platform", "clip recorder panicked"))?;
+            ran?;
+            clip.map_err(|e| error("platform", e))
+        })
     }
 
     /// The input primitives for one Action.

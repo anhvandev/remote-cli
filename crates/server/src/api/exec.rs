@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{devices::resolve, ApiError, Caller};
-use crate::audit;
+use crate::{audit, control_lock};
 
 pub fn routes() -> Router<super::State> {
     Router::new().route("/api/v1/devices/{id}/exec", post(exec))
@@ -47,6 +47,8 @@ async fn exec(
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let device = resolve(&state, &id).await?;
+    // A command from the Control Lock holder counts as an Action: restarts their idle timer.
+    control_lock::touch(&state, device, &user).await?;
     let Json(params) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
     let body: ExecBody = serde_json::from_value(params.clone())
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?;

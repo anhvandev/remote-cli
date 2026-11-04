@@ -309,6 +309,18 @@ impl ApiClient {
         self.send(self.http.put(format!("{}{path}", self.base)).body(body)).await
     }
 
+    /// Opens a streaming GET (e.g. the Control Lock `watch`) and waits for its first chunk. Drop it to disconnect.
+    pub async fn watch(&self, path: &str) -> reqwest::Response {
+        let mut req = self.http.get(format!("{}{path}", self.base));
+        if let Some(t) = &self.token {
+            req = req.bearer_auth(t);
+        }
+        let mut resp = req.send().await.expect("controller API request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        resp.chunk().await.expect("first chunk").expect("stream ended");
+        resp
+    }
+
     async fn send(&self, mut req: reqwest::RequestBuilder) -> (StatusCode, Value) {
         if let Some(t) = &self.token {
             req = req.bearer_auth(t);

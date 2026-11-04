@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::{devices::resolve, ApiError, Caller};
-use crate::audit;
+use crate::{audit, control_lock};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -72,6 +72,8 @@ async fn open(
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let device = resolve(&state, &id).await?;
+    // Terminal use by the Control Lock holder counts as an Action: restarts their idle timer.
+    control_lock::touch(&state, device, &user).await?;
     let Json(params) = body.map_err(|e| bad_request(e.body_text()))?;
     let body: OpenBody = serde_json::from_value(params).map_err(bad_request)?;
     let (cols, rows) = (body.cols.unwrap_or(80), body.rows.unwrap_or(24));
@@ -175,6 +177,7 @@ async fn input(
     data: Bytes,
 ) -> Result<StatusCode, ApiError> {
     let (session, device) = session_device(&state, &id, user.id)?;
+    control_lock::touch(&state, device, &user).await?;
     let msg = proto::ShellInput { session: session.to_string(), data: data.to_vec() };
     state.agents.send(device, server_message::Msg::ShellInput(msg));
     Ok(StatusCode::NO_CONTENT)

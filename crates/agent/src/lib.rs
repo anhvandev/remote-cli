@@ -2,6 +2,7 @@
 
 pub mod backlog;
 pub mod contract;
+mod clip;
 mod coords;
 mod executor;
 mod marks;
@@ -254,6 +255,11 @@ async fn session(
                                 let failed = UpdateFailed { version: update.version, reason: format!("{e:#}") };
                                 conn.send(&send(agent_message::Msg::UpdateFailed(failed))).await?;
                             }
+                        }
+                    }
+                    Some(server_message::Msg::ControlIndicator(c)) => {
+                        if let Err(e) = platform.set_control_indicator(c.on) {
+                            tracing::warn!("cannot set the control indicator: {e:#}");
                         }
                     }
                     // Later tickets handle more requests from the Server here.

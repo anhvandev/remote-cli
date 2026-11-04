@@ -36,6 +36,7 @@ message ServerMessage {
     ShellInput shell_input = 120;
     ShellResize shell_resize = 121;
     ShellClose shell_close = 122;
+    ControlIndicator control_indicator = 7;
   }
 }
 
@@ -194,6 +195,7 @@ enum ObserveMode {
   OBSERVE_MODE_NONE = 1;
   // Change-triggered, timestamped frames captured while the Actions run.
   OBSERVE_MODE_FRAMES = 8;
+  OBSERVE_MODE_CLIP = 9;
 }
 
 // Coordinates are in Observation image space of `display`; the Agent's Coordinate Mapper converts them.
@@ -246,6 +248,18 @@ message ActResult {
   // Set when Marks were requested: this Observation's id and its Mark table.
   uint64 observation = 10;
   repeated Mark marks = 11;
+  // Set for OBSERVE_MODE_CLIP (then `images` is empty).
+  Clip clip = 9;
+}
+
+// An H.264 recording (MP4) of one display from the first Action until the screen settled, capped in length.
+message Clip {
+  uint32 display = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  string mime = 4;
+  bytes data = 5;
+  uint32 duration_ms = 6;
 }
 
 // A numbered on-screen element; the box is in Observation image space of `display`.
@@ -365,4 +379,10 @@ message ShellOutput {
 message ShellExit {
   string session = 1;
   int32 exit_code = 2;
+}
+
+// Show (on) or hide the on-Device indicator that the Device is being controlled.
+// Sent whenever it changes and at the start of every Device session.
+message ControlIndicator {
+  bool on = 1;
 }
