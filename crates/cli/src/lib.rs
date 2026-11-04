@@ -181,6 +181,8 @@ enum UnlockPasswordCommand {
 
 #[derive(Subcommand)]
 enum LockCommand {
+    /// Take the Control Lock. The CLI keeps no `lock/watch` open, so the lock ends only after 10 minutes without
+    /// an Action (or on release); the 60 s disconnect grace applies to watching clients (`rcli mcp`, Dashboard).
     Acquire { device: String },
     Release { device: String },
     Status { device: String },
