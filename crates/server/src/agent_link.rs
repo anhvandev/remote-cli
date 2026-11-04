@@ -24,7 +24,7 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 
-use crate::{enrollment, metrics, pki, registry, updates, AppState};
+use crate::{control_lock, enrollment, metrics, pki, registry, updates, AppState};
 
 /// How long a request to an Agent (e.g. the process list) may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -88,6 +88,13 @@ impl Agents {
         }
     }
 
+    /// Fire-and-forget message to a connected Agent; dropped if it is not connected.
+    pub fn send(&self, device: uuid::Uuid, msg: server_message::Msg) {
+        if let Some(s) = self.senders.lock().unwrap().get(&device) {
+            let _ = s.send(ServerMessage { msg: Some(msg) });
+        }
+    }
+
     fn reply(&self, device: uuid::Uuid, request_id: u64, msg: agent_message::Msg) {
         if let Some(tx) = self.pending.lock().unwrap().remove(&(device, request_id)) {
             let _ = tx.send(msg);
@@ -140,6 +147,7 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
             let (tx, rx) = mpsc::unbounded_channel();
             state.agents.senders.lock().unwrap().insert(id, tx.clone());
             registry::agent_connected(&state, id).await?;
+            control_lock::push_indicator(&state, id).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
             let result = session(&mut conn, rx, &state, id).await;
             {
                 let mut senders = state.agents.senders.lock().unwrap();

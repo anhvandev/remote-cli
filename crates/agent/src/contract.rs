@@ -12,11 +12,12 @@ pub const WAKE_TEST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x27];
 const SCREEN_CHANGE_TIMEOUT: Duration = Duration::from_secs(1);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(3);
 const SHELL_TIMEOUT: Duration = Duration::from_secs(5);
-const CHECKS: [&str; 14] = [
+const CHECKS: [&str; 15] = [
     "displays",
     "capture",
     "key shows on screen",
     "session state",
+    "control indicator",
     "text recognition",
     "accessibility tree",
     "metrics",
@@ -183,6 +184,11 @@ fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Rep
         Ok(())
     });
     r.check("session state", env, || wait_for_state(p, expected, Duration::ZERO));
+    // shortcut: only checks that show/hide succeed here; whether it is visible is checked by eye on a real machine.
+    r.check("control indicator", env, || {
+        p.set_control_indicator(true)?;
+        p.set_control_indicator(false)
+    });
     // Every screen shows some text (a clock, a user name), and OCR is the Mark fallback where there is no tree.
     r.check("text recognition", env, || {
         anyhow::ensure!(!p.recognize_text(&p.capture(primary(p)?)?)?.is_empty(), "no text recognized");

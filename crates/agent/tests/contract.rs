@@ -45,6 +45,7 @@ fn fake_platform_passes_every_check_in_every_environment() {
 | capture | ✅ | ✅ | ✅ |
 | key shows on screen | ✅ | ✅ | ✅ |
 | session state | ✅ | ✅ | ✅ |
+| control indicator | ✅ | ✅ | ✅ |
 | text recognition | ✅ | ✅ | ✅ |
 | accessibility tree | ✅ | | |
 | metrics | ✅ | | |
@@ -117,6 +118,9 @@ impl Platform for Broken {
     }
     fn install_update(&self, version: &str, build: &[u8]) -> anyhow::Result<()> {
         self.fake.install_update(version, build)
+    }
+    fn set_control_indicator(&self, on: bool) -> anyhow::Result<()> {
+        self.fake.set_control_indicator(on)
     }
 }
 

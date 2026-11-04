@@ -139,6 +139,8 @@ enum LockCommand {
     Acquire { device: String },
     Release { device: String },
     Status { device: String },
+    /// Admin: end someone else's lock (audited).
+    ForceRelease { device: String },
 }
 
 #[derive(Subcommand)]
@@ -259,7 +261,7 @@ fn save_observation(obs: &Value, out: &Path, frames: bool) -> anyhow::Result<Str
 
 fn lock_text(lock: &Value) -> String {
     match lock["holder"].as_str() {
-        Some(h) => format!("held by {h} since {}\n", str_of(&lock["acquired_at"])),
+        Some(h) => format!("held by {h} since {}, expires {}\n", str_of(&lock["acquired_at"]), str_of(&lock["expires_at"])),
         None => "free\n".into(),
     }
 }
@@ -531,6 +533,7 @@ where
                 LockCommand::Acquire { device } => (reqwest::Method::POST, device, ""),
                 LockCommand::Release { device } => (reqwest::Method::POST, device, "/release"),
                 LockCommand::Status { device } => (reqwest::Method::GET, device, ""),
+                LockCommand::ForceRelease { device } => (reqwest::Method::POST, device, "/force-release"),
             };
             let lock = api.call(method, &format!("/api/v1/devices/{device}/lock{suffix}"), None).await?;
             let text = lock_text(&lock);

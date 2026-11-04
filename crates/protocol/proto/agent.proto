@@ -29,6 +29,7 @@ message ServerMessage {
     ActRequest act = 5;
     DisplaysRequest list_displays = 50;
     ExecRequest exec = 11;
+    ControlIndicator control_indicator = 7;
   }
 }
 
@@ -310,4 +311,10 @@ message ExecResult {
   bool timed_out = 5;
   bool as_root = 6; // who it actually ran as
   Error error = 7;
+}
+
+// Show (on) or hide the on-Device indicator that the Device is being controlled.
+// Sent whenever it changes and at the start of every Device session.
+message ControlIndicator {
+  bool on = 1;
 }

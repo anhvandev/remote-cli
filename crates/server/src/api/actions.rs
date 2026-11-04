@@ -193,6 +193,8 @@ async fn act(
     if !(1..=MAX_FRAMES).contains(&max_frames) {
         return Err(invalid(format!("max_frames must be 1 to {MAX_FRAMES}")));
     }
+    // Every request from the holder, observe-only included, restarts the idle timer.
+    control_lock::touch(&state, device, &user).await?;
     if !body.actions.is_empty() {
         control_lock::check(&state, device, &user).await?;
     }
