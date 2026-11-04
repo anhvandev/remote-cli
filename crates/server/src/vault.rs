@@ -34,25 +34,34 @@ impl MasterKey {
     }
 
     fn seal(&self, device: Uuid, secret: &str) -> anyhow::Result<Vec<u8>> {
+        self.seal_bytes(device.as_bytes(), secret.as_bytes())
+    }
+
+    fn open(&self, device: Uuid, sealed: &[u8]) -> anyhow::Result<String> {
+        Ok(String::from_utf8(self.open_bytes(device.as_bytes(), sealed)?)?)
+    }
+
+    /// nonce || ciphertext || tag. `aad` binds the result to its owner (e.g. a row id): it only opens with the same `aad`.
+    pub fn seal_bytes(&self, aad: &[u8], plain: &[u8]) -> anyhow::Result<Vec<u8>> {
         let mut nonce = [0u8; NONCE_LEN];
         SystemRandom::new().fill(&mut nonce).map_err(|_| anyhow::anyhow!("no randomness"))?;
-        let mut data = secret.as_bytes().to_vec();
+        let mut data = plain.to_vec();
         self.key()
-            .seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::from(device.as_bytes()), &mut data)
+            .seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::from(aad), &mut data)
             .map_err(|_| anyhow::anyhow!("seal failed"))?;
         Ok([nonce.as_slice(), &data].concat())
     }
 
-    fn open(&self, device: Uuid, sealed: &[u8]) -> anyhow::Result<String> {
+    pub fn open_bytes(&self, aad: &[u8], sealed: &[u8]) -> anyhow::Result<Vec<u8>> {
         anyhow::ensure!(sealed.len() > NONCE_LEN, "sealed secret too short");
         let (nonce, data) = sealed.split_at(NONCE_LEN);
         let mut data = data.to_vec();
         let nonce = Nonce::try_assume_unique_for_key(nonce).map_err(|_| anyhow::anyhow!("bad nonce"))?;
         let plain = self
             .key()
-            .open_in_place(nonce, Aad::from(device.as_bytes()), &mut data)
-            .map_err(|_| anyhow::anyhow!("cannot decrypt unlock password (wrong RCLI_MASTER_KEY?)"))?;
-        Ok(String::from_utf8(plain.to_vec())?)
+            .open_in_place(nonce, Aad::from(aad), &mut data)
+            .map_err(|_| anyhow::anyhow!("cannot decrypt a sealed secret (wrong RCLI_MASTER_KEY?)"))?;
+        Ok(plain.to_vec())
     }
 }
 

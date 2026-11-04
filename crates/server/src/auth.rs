@@ -227,17 +227,24 @@ pub async fn set_credentials(state: &AppState, name: &str, password: &str) -> Re
         return Err(Error::BadRequest("password must be at least 8 characters".into()));
     }
     let secret = random::<20>();
-    let updated = sqlx::query(
-        "UPDATE users SET password_hash = $2, totp_secret = $3, totp_last_step = NULL WHERE name = $1",
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+        .bind(name)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(Error::NotFound)?;
+    let (stored, sealed) = match &state.config.master_key {
+        Some(key) => (key.seal_bytes(id.as_bytes(), &secret)?, true),
+        None => (secret.to_vec(), false),
+    };
+    sqlx::query(
+        "UPDATE users SET password_hash = $2, totp_secret = $3, totp_sealed = $4, totp_last_step = NULL WHERE id = $1",
     )
-    .bind(name)
+    .bind(id)
     .bind(hash_password(password))
-    .bind(&secret[..])
+    .bind(stored)
+    .bind(sealed)
     .execute(&state.db)
     .await?;
-    if updated.rows_affected() == 0 {
-        return Err(Error::NotFound);
-    }
     let secret = data_encoding::BASE32_NOPAD.encode(&secret);
     // `name` is URL-safe (validated in create_user).
     let url = format!("otpauth://totp/Remote%20CLI:{name}?secret={secret}&issuer=Remote%20CLI");
@@ -265,13 +272,14 @@ pub async fn sign_in(
     password: &str,
     code: &str,
 ) -> anyhow::Result<Result<(User, String), SignInError>> {
-    let row: Option<(Uuid, Option<String>, Option<Vec<u8>>, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
-        "SELECT id, password_hash, totp_secret, sign_in_locked_until FROM users WHERE name = $1 AND disabled_at IS NULL",
+    type Row = (Uuid, Option<String>, Option<Vec<u8>>, bool, Option<chrono::DateTime<chrono::Utc>>);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT id, password_hash, totp_secret, totp_sealed, sign_in_locked_until FROM users WHERE name = $1 AND disabled_at IS NULL",
     )
     .bind(name)
     .fetch_optional(&state.db)
     .await?;
-    let (id, Some(stored), Some(secret), locked_until) = row.unwrap_or_default() else {
+    let (id, Some(stored), Some(secret), sealed, locked_until) = row.unwrap_or_default() else {
         // Same cost as a real check, so timing does not reveal which names exist.
         let _ = pbkdf2(password, b"no-such-user-salt", PBKDF2_ITERATIONS);
         return Ok(Err(SignInError::Invalid));
@@ -283,6 +291,11 @@ pub async fn sign_in(
     if !verify_password(password, &stored) {
         return failed(state, id).await;
     }
+    let secret = match (sealed, &state.config.master_key) {
+        (false, _) => secret,
+        (true, Some(key)) => key.open_bytes(id.as_bytes(), &secret)?,
+        (true, None) => anyhow::bail!("TOTP secrets are sealed: RCLI_MASTER_KEY is required"),
+    };
     let step = now.timestamp().div_euclid(TOTP_STEP_SECS);
     let Some(step) = [step, step - 1].into_iter().find(|s| code == format!("{:06}", totp_at_step(&secret, *s))) else {
         return failed(state, id).await;
@@ -314,6 +327,20 @@ pub async fn sign_in(
         .fetch_one(&state.db)
         .await?;
     Ok(Ok((user, token)))
+}
+
+/// Seals TOTP secrets still stored in plaintext (from before the master key was configured).
+pub async fn seal_totp_secrets(db: &sqlx::PgPool, key: &crate::vault::MasterKey) -> anyhow::Result<()> {
+    let plain: Vec<(Uuid, Vec<u8>)> =
+        sqlx::query_as("SELECT id, totp_secret FROM users WHERE totp_secret IS NOT NULL AND NOT totp_sealed").fetch_all(db).await?;
+    for (id, secret) in plain {
+        sqlx::query("UPDATE users SET totp_secret = $2, totp_sealed = TRUE WHERE id = $1 AND NOT totp_sealed")
+            .bind(id)
+            .bind(key.seal_bytes(id.as_bytes(), &secret)?)
+            .execute(db)
+            .await?;
+    }
+    Ok(())
 }
 
 /// Counts a failed sign-in; the one that reaches `MAX_FAILED_SIGN_INS` starts the lockout (and resets the count).

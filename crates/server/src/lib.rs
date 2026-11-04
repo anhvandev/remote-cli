@@ -100,7 +100,11 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
     let _ = rustls::crypto::ring::default_provider().install_default();
     let db = sqlx::postgres::PgPoolOptions::new().max_connections(10).connect(&config.database_url).await?;
     sqlx::migrate!("./migrations").run(&db).await?;
-    let ca = pki::Ca::load_or_create(&db).await?;
+    let ca = pki::Ca::load_or_create(&db, config.master_key.as_ref()).await?;
+    match &config.master_key {
+        Some(key) => auth::seal_totp_secrets(&db, key).await?,
+        None => tracing::warn!("no RCLI_MASTER_KEY: the CA private key and TOTP secrets are stored unencrypted"),
+    }
     let ca_pem = ca.cert_pem.clone();
 
     let http = tokio::net::TcpListener::bind(config.http_addr).await?;

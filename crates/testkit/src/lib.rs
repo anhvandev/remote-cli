@@ -39,6 +39,8 @@ pub struct TestSystem {
     update_public_key: Vec<u8>,
     /// The TURN relay the Server hands out, if started with `start_with_turn`.
     pub turn: Option<TestTurn>,
+    /// The running Server's config (`database_url` reaches its Postgres).
+    pub config: rcli_server::Config,
     _postgres: ContainerAsync<Postgres>,
 }
 
@@ -49,15 +51,33 @@ impl TestSystem {
 
     /// Like `start`, with a TURN relay configured as the Server's ICE server.
     pub async fn start_with_turn() -> Self {
-        Self::start_inner("127.0.0.1:0".parse().unwrap(), Some(TestTurn::start(TURN_SECRET).await)).await
+        Self::start_inner("127.0.0.1:0".parse().unwrap(), Some(TestTurn::start(TURN_SECRET).await), Some(Self::master_key())).await
     }
 
     /// Like `start`, with the Controller API on a fixed address (the Dashboard's Playwright stack).
     pub async fn start_on(http_addr: std::net::SocketAddr) -> Self {
-        Self::start_inner(http_addr, None).await
+        Self::start_inner(http_addr, None, Some(Self::master_key())).await
     }
 
-    async fn start_inner(http_addr: std::net::SocketAddr, turn: Option<TestTurn>) -> Self {
+    /// Like `start`, without `RCLI_MASTER_KEY`: the vault is off and secrets are stored in plaintext.
+    pub async fn start_without_master_key() -> Self {
+        Self::start_inner("127.0.0.1:0".parse().unwrap(), None, None).await
+    }
+
+    /// The `RCLI_MASTER_KEY` test Servers use.
+    pub fn master_key() -> rcli_server::vault::MasterKey {
+        "42".repeat(32).parse().unwrap()
+    }
+
+    /// Stops the Server and starts it again on the same database with `master_key` (API on a new port).
+    pub async fn restart(&mut self, master_key: Option<rcli_server::vault::MasterKey>) {
+        self.config.master_key = master_key;
+        self.config.http_addr = "127.0.0.1:0".parse().unwrap();
+        self.server = rcli_server::start(self.config.clone(), self.clock.clone()).await.expect("restart server");
+        self.api = ApiClient::new(format!("http://{}", self.server.http_addr), Some(&self.admin_token));
+    }
+
+    async fn start_inner(http_addr: std::net::SocketAddr, turn: Option<TestTurn>, master_key: Option<rcli_server::vault::MasterKey>) -> Self {
         let postgres = Postgres::default().with_tag("16-alpine").start().await.expect("start postgres container");
         let port = postgres.get_host_port_ipv4(5432).await.unwrap();
         let clock = Arc::new(ManualClock::default());
@@ -67,11 +87,11 @@ impl TestSystem {
             agent_addr: "127.0.0.1:0".parse().unwrap(),
             agent_hostnames: vec!["localhost".into()],
             bootstrap_admin_token: BOOTSTRAP_TOKEN.into(),
-            master_key: Some("42".repeat(32).parse().unwrap()),
+            master_key,
             ice_urls: turn.iter().map(|t| format!("turn:{}?transport=udp", t.addr)).collect(),
             turn_secret: turn.as_ref().map(|_| TURN_SECRET.into()),
         };
-        let server = rcli_server::start(config, clock.clone()).await.expect("start server");
+        let server = rcli_server::start(config.clone(), clock.clone()).await.expect("start server");
         let (update_signing_key, update_public_key) = rcli_protocol::update::generate_key().unwrap();
         let mut sys = Self {
             clock,
@@ -81,6 +101,7 @@ impl TestSystem {
             update_signing_key,
             update_public_key,
             turn,
+            config,
             _postgres: postgres,
         };
         sys.admin_token = sys.create_user("admin", "admin").await;
