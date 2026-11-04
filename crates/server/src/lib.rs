@@ -7,6 +7,7 @@ pub mod agent_link;
 pub mod api;
 pub mod auth;
 pub mod clock;
+pub mod control_lock;
 pub mod enrollment;
 pub mod history;
 pub mod metrics;

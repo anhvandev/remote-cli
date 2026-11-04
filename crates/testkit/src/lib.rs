@@ -6,7 +6,7 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
-pub use rcli_agent::platform::{self, FakePlatform};
+pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input};
 use rcli_agent::{Credentials, ServerEndpoint};
 pub use rcli_server::clock::ManualClock;
 pub use reqwest::StatusCode;
@@ -108,7 +108,11 @@ impl TestSystem {
 
     /// Enrolls a new Device named `hostname` and starts its Agent.
     pub async fn start_agent(&self, hostname: &str) -> TestAgent {
-        let platform = FakePlatform::new(hostname);
+        self.start_agent_on(FakePlatform::new(hostname)).await
+    }
+
+    /// Enrolls a new Device and starts its Agent on `platform` (keep a clone to script it).
+    pub async fn start_agent_on(&self, platform: FakePlatform) -> TestAgent {
         let code = self.create_enrollment_code().await;
         let creds = self.enroll(&code, &platform).await.expect("enroll");
         let mut agent = TestAgent::new(self.endpoint(), platform, creds);

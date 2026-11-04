@@ -1,10 +1,15 @@
 //! `rcli`: a thin client over the Controller API. `run` is the whole CLI, so tests call it in-process.
 //! Add a command: a `Command` variant plus a `match` arm; print human text, or the API JSON with `--json`.
 
-use std::{ffi::OsString, io::Write};
+use std::{
+    ffi::OsString,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
+use base64::Engine;
 use clap::{Parser, Subcommand};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Parser)]
 #[command(name = "rcli", about = "Remote CLI controller")]
@@ -44,6 +49,131 @@ enum Command {
     /// Signed Agent builds and rollouts (admin).
     #[command(subcommand)]
     Update(UpdateCommand),
+    /// Control Lock: needed to send input Actions to a Device.
+    #[command(subcommand)]
+    Lock(LockCommand),
+    /// List a Device's displays with resolution and arrangement.
+    Displays { device: String },
+    /// Observe a Device's screen (no Control Lock needed).
+    Shot {
+        device: String,
+        /// Display index or `all`; default: the display last acted on.
+        #[arg(long)]
+        display: Option<String>,
+        /// Directory to save images in.
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+    },
+    /// Send one Action (needs the Control Lock) and get an Observation back.
+    /// Coordinates are in the Observation image space of `--display`.
+    Act {
+        device: String,
+        #[command(subcommand)]
+        action: ActCommand,
+        /// Display the coordinates refer to.
+        #[arg(long, global = true, default_value_t = 0)]
+        display: u32,
+        /// Observation mode: shot or none.
+        #[arg(long, global = true, default_value = "shot")]
+        observe: String,
+        /// Display to observe, index or `all`; default: the display acted on.
+        #[arg(long, global = true)]
+        observe_display: Option<String>,
+        /// Directory to save images in.
+        #[arg(long, global = true, default_value = ".")]
+        out: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum LockCommand {
+    Acquire { device: String },
+    Release { device: String },
+    Status { device: String },
+}
+
+#[derive(Subcommand)]
+enum ActCommand {
+    Move { x: u32, y: u32 },
+    Click { x: u32, y: u32 },
+    DoubleClick { x: u32, y: u32 },
+    RightClick { x: u32, y: u32 },
+    /// Drag with the left button from (x, y) to (to_x, to_y).
+    Drag { x: u32, y: u32, to_x: u32, to_y: u32 },
+    /// Scroll at (x, y); positive --dy scrolls down.
+    Scroll {
+        x: u32,
+        y: u32,
+        #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
+        dx: i32,
+        #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
+        dy: i32,
+    },
+    /// Type text.
+    Type { text: String },
+    /// Press a key combination, e.g. ctrl+shift+t.
+    Key { keys: String },
+}
+
+impl ActCommand {
+    fn json(self, display: u32) -> Value {
+        let point = |kind: &str, x, y| json!({ "type": kind, "display": display, "x": x, "y": y });
+        match self {
+            ActCommand::Move { x, y } => point("move", x, y),
+            ActCommand::Click { x, y } => point("click", x, y),
+            ActCommand::DoubleClick { x, y } => point("double_click", x, y),
+            ActCommand::RightClick { x, y } => point("right_click", x, y),
+            ActCommand::Drag { x, y, to_x, to_y } => {
+                let mut v = point("drag", x, y);
+                v["to"] = json!({ "display": display, "x": to_x, "y": to_y });
+                v
+            }
+            ActCommand::Scroll { x, y, dx, dy } => {
+                let mut v = point("scroll", x, y);
+                (v["dx"], v["dy"]) = (dx.into(), dy.into());
+                v
+            }
+            ActCommand::Type { text } => json!({ "type": "type", "text": text }),
+            ActCommand::Key { keys } => json!({ "type": "key", "keys": keys }),
+        }
+    }
+}
+
+/// `--display` value: an index or "all".
+fn display_sel(s: Option<String>) -> anyhow::Result<Value> {
+    Ok(match s.as_deref() {
+        None => Value::Null,
+        Some("all") => json!("all"),
+        Some(n) => json!(n.parse::<u32>().map_err(|_| anyhow::anyhow!("--display must be an index or `all`"))?),
+    })
+}
+
+/// Saves each image as `<out>/display-<N>.jpg`; one line per image.
+fn save_observation(obs: &Value, out: &Path) -> anyhow::Result<String> {
+    let mut text = String::new();
+    for i in obs["images"].as_array().into_iter().flatten() {
+        let display = &i["display"];
+        if i["unchanged"] == true {
+            text += &format!("display {display}: unchanged\n");
+            continue;
+        }
+        let data = base64::engine::general_purpose::STANDARD.decode(str_of(&i["data"]))?;
+        std::fs::create_dir_all(out)?;
+        let path = out.join(format!("display-{display}.jpg"));
+        std::fs::write(&path, data)?;
+        text += &format!("display {display}: {}x{} {}\n", i["width"], i["height"], path.display());
+    }
+    if text.is_empty() {
+        text = "ok\n".into();
+    }
+    Ok(text)
+}
+
+fn lock_text(lock: &Value) -> String {
+    match lock["holder"].as_str() {
+        Some(h) => format!("held by {h} since {}\n", str_of(&lock["acquired_at"])),
+        None => "free\n".into(),
+    }
 }
 
 #[derive(Subcommand)]
@@ -261,6 +391,47 @@ where
         Command::Token(TokenCommand::Revoke { id }) => {
             let body = api.call(reqwest::Method::POST, &format!("/api/v1/tokens/{id}/revoke"), None).await?;
             (body, format!("revoked {id}\n"))
+        }
+        Command::Lock(cmd) => {
+            let (method, device, suffix) = match cmd {
+                LockCommand::Acquire { device } => (reqwest::Method::POST, device, ""),
+                LockCommand::Release { device } => (reqwest::Method::POST, device, "/release"),
+                LockCommand::Status { device } => (reqwest::Method::GET, device, ""),
+            };
+            let lock = api.call(method, &format!("/api/v1/devices/{device}/lock{suffix}"), None).await?;
+            let text = lock_text(&lock);
+            (lock, text)
+        }
+        Command::Displays { device } => {
+            let displays = api.call(reqwest::Method::GET, &format!("/api/v1/devices/{device}/displays"), None).await?;
+            let mut text = format!("{:<5}  {:<11}  {:<5}  {:<11}  {}\n", "INDEX", "RESOLUTION", "SCALE", "POSITION", "PRIMARY");
+            for d in displays.as_array().into_iter().flatten() {
+                text += &format!(
+                    "{:<5}  {:<11}  {:<5}  {:<11}  {}\n",
+                    d["index"],
+                    format!("{}x{}", d["width"], d["height"]),
+                    d["scale"],
+                    format!("{},{}", d["x"], d["y"]),
+                    if d["primary"] == true { "yes" } else { "" },
+                );
+            }
+            (displays, text)
+        }
+        Command::Shot { device, display, out } => {
+            let body = json!({ "actions": [], "display": display_sel(display)? });
+            let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
+            let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
+            (obs, text)
+        }
+        Command::Act { device, action, display, observe, observe_display, out } => {
+            let body = json!({
+                "actions": [action.json(display)],
+                "observe": observe,
+                "display": display_sel(observe_display)?,
+            });
+            let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
+            let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
+            (obs, text)
         }
         Command::Update(UpdateCommand::Keygen { .. }) => unreachable!("handled before connecting"),
         Command::Update(UpdateCommand::Publish { file, version, target, key }) => {
