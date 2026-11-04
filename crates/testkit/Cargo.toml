@@ -20,3 +20,4 @@ tokio.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
+mp4.workspace = true

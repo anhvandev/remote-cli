@@ -2,6 +2,7 @@
 
 pub mod backlog;
 pub mod contract;
+mod clip;
 mod coords;
 mod executor;
 mod marks;
