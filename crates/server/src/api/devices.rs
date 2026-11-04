@@ -1,21 +1,78 @@
 use axum::{
-    extract::{Path, State},
+    extract::{rejection::JsonRejection, Path, State},
     http::StatusCode,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use rcli_protocol::agent::{agent_message, server_message, Inventory, Process, ProcessListRequest, Resources};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{ApiError, Caller};
+use super::{Admin, ApiError, Caller};
 use crate::{agent_link::RequestError, metrics, registry};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
         .route("/api/v1/devices", get(list))
-        .route("/api/v1/devices/{device}", get(show))
+        .route("/api/v1/devices/{device}", get(show).patch(rename).delete(delete))
         .route("/api/v1/devices/{device}/processes", get(processes))
+        .route("/api/v1/devices/{device}/revoke", post(revoke))
+        .route("/api/v1/devices/{device}/merge", post(merge))
+}
+
+#[derive(Deserialize)]
+struct Rename {
+    name: String,
+}
+
+async fn rename(
+    _: Admin,
+    State(state): State<super::State>,
+    Path(key): Path<String>,
+    body: Result<Json<Rename>, JsonRejection>,
+) -> Result<Json<registry::Device>, ApiError> {
+    let Json(body) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let id = resolve(&state, &key).await?;
+    registry::rename(&state, id, &body.name).await?.map_err(|m| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", m))?;
+    Ok(Json(registry::get(&state, id).await?))
+}
+
+async fn delete(_: Admin, State(state): State<super::State>, Path(key): Path<String>) -> Result<StatusCode, ApiError> {
+    let id = resolve(&state, &key).await?;
+    registry::delete(&state, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct Merge {
+    /// The old Device (id or name) whose history moves here; it is deleted afterwards.
+    from: String,
+}
+
+async fn merge(
+    _: Admin,
+    State(state): State<super::State>,
+    Path(key): Path<String>,
+    body: Result<Json<Merge>, JsonRejection>,
+) -> Result<Json<registry::Device>, ApiError> {
+    let Json(body) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let new = resolve(&state, &key).await?;
+    let old = resolve(&state, &body.from).await?;
+    if old == new {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_request", "cannot merge a Device into itself"));
+    }
+    registry::merge(&state, old, new).await?;
+    Ok(Json(registry::get(&state, new).await?))
+}
+
+async fn revoke(
+    _: Admin,
+    State(state): State<super::State>,
+    Path(key): Path<String>,
+) -> Result<Json<registry::Device>, ApiError> {
+    let id = resolve(&state, &key).await?;
+    registry::revoke(&state, id).await?;
+    Ok(Json(registry::get(&state, id).await?))
 }
 
 async fn list(_: Caller, State(state): State<super::State>) -> Result<Json<Vec<registry::Device>>, ApiError> {

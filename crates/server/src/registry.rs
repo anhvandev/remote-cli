@@ -32,6 +32,8 @@ pub struct Device {
     pub agent_version: Option<String>,
     /// The Agent update rolled out to this Device, if any.
     pub update: Option<Update>,
+    /// When an admin revoked the Device's credential; a revoked Device can no longer connect.
+    pub revoked_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, Debug)]
@@ -62,9 +64,11 @@ fn status(connected: bool, last_seen_at: Option<DateTime<Utc>>, now: DateTime<Ut
 }
 
 pub async fn list(state: &AppState) -> anyhow::Result<Vec<Device>> {
-    type Row = (Uuid, String, Option<DateTime<Utc>>, Option<String>, Option<String>, Option<String>);
+    type Row =
+        (Uuid, String, Option<DateTime<Utc>>, Option<String>, Option<String>, Option<String>, Option<DateTime<Utc>>);
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT id, name, last_seen_at, agent_version, update_version, update_error FROM devices ORDER BY enrolled_at, id",
+        "SELECT id, name, last_seen_at, agent_version, update_version, update_error, revoked_at
+         FROM devices ORDER BY enrolled_at, id",
     )
     .fetch_all(&state.db)
     .await?;
@@ -72,15 +76,20 @@ pub async fn list(state: &AppState) -> anyhow::Result<Vec<Device>> {
     let connected = state.connections.0.lock().unwrap();
     Ok(rows
         .into_iter()
-        .map(|(id, name, last_seen_at, agent_version, update_version, update_error)| Device {
+        .map(|(id, name, last_seen_at, agent_version, update_version, update_error, revoked_at)| Device {
             id,
             name,
             status: status(connected.contains_key(&id), last_seen_at, now),
             last_seen_at,
             update: update(agent_version.as_deref(), update_version, update_error),
             agent_version,
+            revoked_at,
         })
         .collect())
+}
+
+pub async fn get(state: &AppState, id: Uuid) -> anyhow::Result<Device> {
+    list(state).await?.into_iter().find(|d| d.id == id).ok_or_else(|| anyhow::anyhow!("device {id} vanished"))
 }
 
 /// Finds a Device by id or by name. `Ok(None)` if none; an error message if the name is ambiguous.
@@ -96,11 +105,70 @@ pub async fn resolve(state: &AppState, key: &str) -> anyhow::Result<Result<Optio
     })
 }
 
+/// The Device holding this certificate, unless it was revoked.
 pub async fn find_by_cert_fingerprint(state: &AppState, fp: &[u8]) -> anyhow::Result<Option<Uuid>> {
-    Ok(sqlx::query_scalar("SELECT id FROM devices WHERE cert_fingerprint = $1")
+    Ok(sqlx::query_scalar("SELECT id FROM devices WHERE cert_fingerprint = $1 AND revoked_at IS NULL")
         .bind(fp)
         .fetch_optional(&state.db)
         .await?)
+}
+
+/// Revokes the Device's credential and drops its connection. Revoking again keeps the first time.
+pub async fn revoke(state: &AppState, id: Uuid) -> anyhow::Result<()> {
+    sqlx::query("UPDATE devices SET revoked_at = COALESCE(revoked_at, $2) WHERE id = $1")
+        .bind(id)
+        .bind(state.clock.now())
+        .execute(&state.db)
+        .await?;
+    state.agents.disconnect(id, "credential_revoked", "this Device's credential was revoked");
+    Ok(())
+}
+
+/// Renames the Device; `Err` with a message if the name is not 1-255 characters.
+pub async fn rename(state: &AppState, id: Uuid, name: &str) -> anyhow::Result<Result<(), String>> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 255 {
+        return Ok(Err("name must be 1-255 characters".into()));
+    }
+    sqlx::query("UPDATE devices SET name = $2 WHERE id = $1").bind(id).bind(name).execute(&state.db).await?;
+    Ok(Ok(()))
+}
+
+/// Deletes the Device with its history and drops its connection; its certificate no longer gets in.
+pub async fn delete(state: &AppState, id: Uuid) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM devices WHERE id = $1").bind(id).execute(&state.db).await?;
+    state.agents.disconnect(id, "device_deleted", "this Device was deleted");
+    Ok(())
+}
+
+/// Moves `old`'s resource history and audit entries to `new` (where both have a rollup for the same minute, `new`'s wins),
+/// then deletes `old`. Never done automatically: an admin decides two Devices are the same machine.
+pub async fn merge(state: &AppState, old: Uuid, new: Uuid) -> anyhow::Result<()> {
+    state.agents.disconnect(old, "device_deleted", "this Device was merged into another");
+    // No rollup may run while samples change owner.
+    let _maintenance = state.maintenance.0.lock().await;
+    let mut tx = state.db.begin().await?;
+    sqlx::query("UPDATE resource_samples SET device_id = $2 WHERE device_id = $1")
+        .bind(old)
+        .bind(new)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE resource_rollups o SET device_id = $2 WHERE device_id = $1
+         AND NOT EXISTS (SELECT 1 FROM resource_rollups n WHERE n.device_id = $2 AND n.minute = o.minute)",
+    )
+    .bind(old)
+    .bind(new)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE audit_log SET device_id = $2 WHERE device_id = $1")
+        .bind(old)
+        .bind(new)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM devices WHERE id = $1").bind(old).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 pub async fn agent_connected(state: &AppState, id: Uuid) -> anyhow::Result<()> {
