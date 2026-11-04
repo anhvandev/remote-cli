@@ -1,7 +1,6 @@
 //! Executor: carries out the Actions of a request in order, then produces one Observation.
 
 use std::{
-    collections::HashMap,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
@@ -10,7 +9,7 @@ use rcli_protocol::agent::{action::Kind, Action, ActRequest, ActResult, Clip, Er
 
 use crate::{
     clip, coords, marks,
-    observer::{self, Frames, Observer},
+    observer::{self, Frames, Observer, PerController},
     platform::{Button, DisplayInfo, Input, Platform},
 };
 
@@ -20,8 +19,7 @@ pub struct Executor {
     last_display: Option<u32>,
     observer: Observer,
     /// Each Controller's latest Observation with Marks: (id, Mark table). Mark targets must come from it.
-    // shortcut: like `Observer::last`, never evicted.
-    marks: HashMap<String, (u64, Vec<Mark>)>,
+    marks: PerController<(u64, Vec<Mark>)>,
     last_observation: u64,
 }
 
@@ -69,7 +67,7 @@ impl Executor {
             return Ok(ActResult { images, ..Default::default() });
         }
         self.last_observation += 1;
-        self.marks.insert(req.controller.clone(), (self.last_observation, marks.clone()));
+        *self.marks.entry(&req.controller) = (self.last_observation, marks.clone());
         Ok(ActResult { images, observation: self.last_observation, marks, ..Default::default() })
     }
 

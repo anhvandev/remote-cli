@@ -22,9 +22,43 @@ const JPEG_QUALITY: u8 = 70;
 
 #[derive(Default)]
 pub struct Observer {
-    /// Last image sent per (Controller, display), to answer "unchanged".
-    // shortcut: grows with every Controller that ever observed; fine for a handful of users, evict when that changes.
-    last: HashMap<(String, u32), Vec<u8>>,
+    /// Last image sent per Controller and display, to answer "unchanged".
+    last: PerController<HashMap<u32, Vec<u8>>>,
+}
+
+/// Controllers whose per-Controller state (last images, Mark table) is kept.
+const MAX_CONTROLLERS: usize = 64;
+
+/// Per-Controller state for the `MAX_CONTROLLERS` most recently updated Controllers; older ones are forgotten
+/// (their next shot is sent in full, old Mark references go stale).
+// shortcut: evicts by a linear scan of at most 64 entries; switch to an LRU structure if the cap grows a lot.
+pub struct PerController<V> {
+    map: HashMap<String, (u64, V)>,
+    tick: u64,
+}
+
+impl<V> Default for PerController<V> {
+    fn default() -> Self {
+        Self { map: HashMap::new(), tick: 0 }
+    }
+}
+
+impl<V: Default> PerController<V> {
+    pub fn get(&self, controller: &str) -> Option<&V> {
+        self.map.get(controller).map(|(_, v)| v)
+    }
+
+    /// The Controller's state for updating; marks it most recent.
+    pub fn entry(&mut self, controller: &str) -> &mut V {
+        if !self.map.contains_key(controller) && self.map.len() >= MAX_CONTROLLERS {
+            let oldest = self.map.iter().min_by_key(|(_, (t, _))| *t).map(|(k, _)| k.clone());
+            self.map.remove(&oldest.unwrap_or_default());
+        }
+        self.tick += 1;
+        let e = self.map.entry(controller.to_owned()).or_default();
+        e.0 = self.tick;
+        &mut e.1
+    }
 }
 
 impl Observer {
@@ -50,13 +84,12 @@ impl Observer {
         let mut small = scale(frame, width, height)?;
         marks::annotate(&mut small, &new_marks);
         let data = jpeg(small)?;
-        let key = (controller.to_owned(), display);
-        let unchanged = self.last.get(&key) == Some(&data);
+        let unchanged = self.last.get(controller).and_then(|l| l.get(&display)) == Some(&data);
         let mime = "image/jpeg".to_owned();
         if unchanged {
             return Ok(Image { display, width, height, unchanged, mime, data: vec![], at_ms: 0, p2p: 0 });
         }
-        self.last.insert(key, data.clone());
+        self.last.entry(controller).insert(display, data.clone());
         Ok(Image { display, width, height, unchanged, mime, data, at_ms: 0, p2p: 0 })
     }
 
@@ -79,7 +112,7 @@ impl Observer {
             }
             if let Some(last) = images.last().filter(|i| i.display == track.display) {
                 // A later `shot` of this same screen can then answer "unchanged".
-                self.last.insert((controller.to_owned(), track.display), last.data.clone());
+                self.last.entry(controller).insert(track.display, last.data.clone());
             }
         }
         Ok(images)
@@ -208,6 +241,19 @@ mod tests {
         let mut img = RgbaImage::from_pixel(2560, 1440, image::Rgba([255, 255, 255, 255]));
         edit(&mut img);
         shrink(&img, COMPARE_EDGE)
+    }
+
+    #[test]
+    fn only_the_most_recent_controllers_are_remembered() {
+        let mut t = PerController::<u32>::default();
+        for i in 0..=MAX_CONTROLLERS {
+            *t.entry(&format!("c{i}")) = 1;
+            *t.entry("c0") = 2; // c0 stays recent
+        }
+        assert_eq!(t.get("c0"), Some(&2));
+        assert_eq!(t.get("c1"), None, "the least recently updated is forgotten");
+        assert_eq!(t.get(&format!("c{MAX_CONTROLLERS}")), Some(&1));
+        assert_eq!(t.map.len(), MAX_CONTROLLERS);
     }
 
     #[test]
