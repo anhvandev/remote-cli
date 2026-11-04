@@ -153,3 +153,25 @@ async fn an_agent_locks_the_screen_and_restart_is_refused_while_someone_else_hol
     assert!(text(&refused).contains("control_lock_held") && text(&refused).contains("bob"), "{}", text(&refused));
     assert_eq!(agent.platform.power_actions(), vec![rcli_testkit::platform::PowerAction::Lock]);
 }
+
+#[tokio::test]
+async fn releasing_by_id_a_lock_taken_by_name_closes_its_watch() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    let dev = agent.device_id().to_owned();
+    sys.wait_device(&dev, |d| d["status"] == "Online").await;
+    let mcp = sys.mcp_as(&sys.admin_token).await;
+    ok(&mcp, "lock_acquire", json!({ "device": "lab-pc" })).await;
+    ok(&mcp, "lock_release", json!({ "device": dev })).await;
+
+    // The same user takes the lock again elsewhere (e.g. the Dashboard) and closes that watch: with no
+    // leftover MCP watch they count as disconnected, so the 60 s grace applies.
+    sys.api.post("/api/v1/devices/lab-pc/lock").await;
+    drop(sys.api.watch("/api/v1/devices/lab-pc/lock/watch").await);
+    let time = |v: &Value| v.as_str().unwrap().parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+    eventually(|| async {
+        let (_, l) = sys.api.get("/api/v1/devices/lab-pc/lock").await;
+        (time(&l["expires_at"]) - sys.clock.now() <= chrono::Duration::seconds(60)).then_some(())
+    })
+    .await;
+}

@@ -29,7 +29,7 @@ where
 
 struct Mcp {
     api: Api,
-    /// Open `lock/watch` streams per Device argument while we hold its Control Lock: if this process dies the
+    /// Open `lock/watch` streams per Device id while we hold its Control Lock: if this process dies the
     /// Server sees the holder disconnect and frees the lock after 60 s instead of the 10 min idle timer.
     watches: Mutex<HashMap<String, reqwest::Response>>,
 }
@@ -151,13 +151,15 @@ impl Mcp {
                 let lock = self.api.call(Method::POST, &format!("{dev}/lock"), None).await?;
                 // Without the watch the lock still works, just with the 10 min idle timer only.
                 if let Ok(watch) = self.watch(&format!("{dev}/lock/watch")).await {
-                    self.watches.lock().unwrap().insert(name.to_owned(), watch);
+                    let id = self.device_id(&dev).await?;
+                    self.watches.lock().unwrap().insert(id, watch);
                 }
                 structured(lock)
             }
             "lock_release" => {
                 let lock = self.api.call(Method::POST, &format!("{dev}/lock/release"), None).await?;
-                self.watches.lock().unwrap().remove(name);
+                let id = self.device_id(&dev).await?;
+                self.watches.lock().unwrap().remove(&id);
                 structured(lock)
             }
             "observe" => observation(self.api.observe(name, &act(json!([]))).await?),
@@ -174,6 +176,12 @@ impl Mcp {
             }
             _ => anyhow::bail!("unknown tool {tool}"),
         })
+    }
+
+    /// The id of the Device at `dev` (`/api/v1/devices/{id or name}`), so a name and an id share one watch.
+    async fn device_id(&self, dev: &str) -> anyhow::Result<String> {
+        let d = self.api.call(reqwest::Method::GET, dev, None).await?;
+        Ok(d["id"].as_str().unwrap_or_default().to_owned())
     }
 
     /// Opens the NDJSON lock watch and waits for its first line, so the Server counts us as connected.
