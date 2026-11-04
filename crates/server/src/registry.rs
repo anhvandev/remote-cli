@@ -141,7 +141,7 @@ pub async fn delete(state: &AppState, id: Uuid) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Moves `old`'s resource history to `new` (where both have a rollup for the same minute, `new`'s wins),
+/// Moves `old`'s resource history and audit entries to `new` (where both have a rollup for the same minute, `new`'s wins),
 /// then deletes `old`. Never done automatically: an admin decides two Devices are the same machine.
 pub async fn merge(state: &AppState, old: Uuid, new: Uuid) -> anyhow::Result<()> {
     state.agents.disconnect(old, "device_deleted", "this Device was merged into another");
@@ -161,6 +161,11 @@ pub async fn merge(state: &AppState, old: Uuid, new: Uuid) -> anyhow::Result<()>
     .bind(new)
     .execute(&mut *tx)
     .await?;
+    sqlx::query("UPDATE audit_log SET device_id = $2 WHERE device_id = $1")
+        .bind(old)
+        .bind(new)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM devices WHERE id = $1").bind(old).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())

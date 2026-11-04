@@ -305,10 +305,6 @@ impl ApiClient {
         self.send(self.http.patch(format!("{}{path}", self.base)).json(body)).await
     }
 
-    pub async fn delete(&self, path: &str) -> (StatusCode, Value) {
-        self.send(self.http.delete(format!("{}{path}", self.base))).await
-    }
-
     pub async fn put_bytes(&self, path: &str, body: Vec<u8>) -> (StatusCode, Value) {
         self.send(self.http.put(format!("{}{path}", self.base)).body(body)).await
     }

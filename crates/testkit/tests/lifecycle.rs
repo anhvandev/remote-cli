@@ -64,6 +64,11 @@ async fn reinstalled_machine_is_a_new_device_until_an_admin_merges_the_old_histo
     let old_id = old.device_id().to_owned();
     old.platform.update(|s| s.resources.cpu_percent = Some(10.0));
     sys.wait_history(&old_id, "resolution=5s", |h| cpus(h).contains(&10.0)).await;
+    let (status, body) = sys.api.post(&format!("/api/v1/devices/{old_id}/lock")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let click = serde_json::json!({"actions": [{"type": "click", "display": 0, "x": 1, "y": 1}], "observe": "none"});
+    let (status, body) = sys.api.post_json(&format!("/api/v1/devices/{old_id}/actions"), &click).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     old.stop();
     sys.wait_device(&old_id, |d| !d["last_seen_at"].is_null()).await;
 
@@ -88,6 +93,10 @@ async fn reinstalled_machine_is_a_new_device_until_an_admin_merges_the_old_histo
     assert_eq!(cpus(&sys.history(&new_id, &format!("{range}&resolution=1m")).await), vec![10.0, 20.0]);
     let raw = cpus(&sys.history(&new_id, &format!("{range}&resolution=5s")).await);
     assert!(raw.contains(&10.0) && raw.contains(&20.0), "{raw:?}");
+    // Audit entries about the old Device now point at the new one.
+    let (_, audit) = sys.api.get(&format!("/api/v1/audit?device={new_id}")).await;
+    assert_eq!(audit.as_array().map(Vec::len), Some(1), "{audit}");
+    assert_eq!(audit[0]["device"], "lab-pc", "{audit}");
     // The old Device is gone; the new one keeps its identity and connection.
     let (status, _) = sys.api.get(&format!("/api/v1/devices/{old_id}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
