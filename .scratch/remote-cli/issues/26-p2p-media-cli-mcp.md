@@ -4,8 +4,12 @@
 
 **Blocked by:** 21, 09
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] CLI/MCP negotiate WebRTC via Server signaling for large media
 - [ ] Falls back to TURN, then to Server relay, without the Controller noticing
 - [ ] Results are identical whichever path was used
+
+## Comments
+
+- 2026-11-04: Resolved on integration branch `feat/remote-cli` (tip after review fixes: 793f229). Code review findings fixed on branch `review-fixes`.

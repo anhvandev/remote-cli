@@ -4,8 +4,12 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Suite runs against the FakePlatform in CI
 - [ ] Suite can run on a real machine with step-by-step operator prompts (lock now, log out now)
 - [ ] Produces a results table like the lockscreen probe's README
+
+## Comments
+
+- 2026-11-04: Resolved on integration branch `feat/remote-cli` (tip after review fixes: 793f229). Code review findings fixed on branch `review-fixes`.

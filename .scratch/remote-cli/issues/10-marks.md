@@ -4,10 +4,14 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Observation can include an annotated image and a Mark table (number, text, role, bounding box)
 - [ ] Marks come from the FakePlatform's accessibility tree when present, otherwise from OCR over the image
 - [ ] Actions accept `mark N` or `text "..."` as targets and resolve them through the Coordinate Mapper
 - [ ] Targeting a stale Mark (from an older Observation) or ambiguous text fails with a clear error
 - [ ] Tests cover tree-based and OCR-based detection with scripted FakePlatform screens
+
+## Comments
+
+- 2026-11-04: Resolved on integration branch `feat/remote-cli` (tip after review fixes: 793f229). Code review findings fixed on branch `review-fixes`.

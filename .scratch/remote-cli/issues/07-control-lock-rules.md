@@ -4,7 +4,7 @@
 
 **Blocked by:** 05, 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Any Action from the holder, including observe-only requests, resets the 10-minute timer
 - [ ] Lock survives a holder disconnect shorter than 60 s; released after 60 s
@@ -13,3 +13,7 @@
 - [ ] Non-holders can still observe, read metrics and use the terminal
 - [ ] Platform port shows/hides the control indicator; FakePlatform records it
 - [ ] All timing verified with the injectable clock
+
+## Comments
+
+- 2026-11-04: Resolved on integration branch `feat/remote-cli` (tip after review fixes: 793f229). Code review findings fixed on branch `review-fixes`.

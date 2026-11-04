@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `rcli lock acquire|release|status <device>`; input Actions without the Control Lock are refused with an error naming the holder
 - [ ] Actions: move, click, double-click, right-click, drag, scroll, type text, key combination
@@ -14,3 +14,7 @@
 - [ ] Default Observation is the display last acted on; `--display all` returns one image per display; displays can be listed with resolution and arrangement
 - [ ] Observation mode `none` is supported
 - [ ] Non-holders can still request a screenshot (observe-only)
+
+## Comments
+
+- 2026-11-04: Resolved on integration branch `feat/remote-cli` (tip after review fixes: 793f229). Code review findings fixed on branch `review-fixes`.

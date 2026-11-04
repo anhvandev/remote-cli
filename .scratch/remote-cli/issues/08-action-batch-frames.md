@@ -4,10 +4,14 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Action Batch runs Actions in order; a failing Action stops the batch and reports which step failed
 - [ ] Waits inside a batch are supported
 - [ ] `frames` captures only when the screen changes noticeably, with timestamps, capped at a configurable maximum
 - [ ] Each Action in a batch is audited
 - [ ] CLI accepts a batch from JSON input
+
+## Comments
+
+- 2026-11-04: Resolved on integration branch `feat/remote-cli` (tip after review fixes: 793f229). Code review findings fixed on branch `review-fixes`.

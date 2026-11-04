@@ -4,10 +4,14 @@
 
 **Blocked by:** 19, 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Server provides WebRTC signaling; coturn in Docker Compose
 - [ ] Live stream works peer-to-peer and through TURN fallback
 - [ ] Live view does not require the Control Lock
 - [ ] Control indicator shows on the Device while a live stream is active
 - [ ] Playwright test opens live view against the FakePlatform
+
+## Comments
+
+- 2026-11-04: Resolved on integration branch `feat/remote-cli` (tip after review fixes: 793f229). Code review findings fixed on branch `review-fixes`.

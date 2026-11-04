@@ -4,10 +4,14 @@
 
 **Blocked by:** 03, 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `rcli wake <device>`
 - [ ] Wake Relay chosen from Online Agents sharing the target's subnet; it sends the packet to the target's MAC
 - [ ] Waking → Online, or Waking → Offline with "Wake failed" after 3 minutes (injectable clock)
 - [ ] No relay available → immediate failure explaining why
 - [ ] Wake audited
+
+## Comments
+
+- 2026-11-04: Resolved on integration branch `feat/remote-cli` (tip after review fixes: 793f229). Code review findings fixed on branch `review-fixes`.

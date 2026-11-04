@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Inventory: OS/version, hostname, CPU model/cores, RAM, disks, GPU, network interfaces (IP/MAC), serial, displays and resolutions
 - [ ] Resources: CPU %, RAM used, disk usage %, disk read/write rate, network up/down, GPU %, uptime, logged-in user, screen-lock state; CPU temperature and battery when available
@@ -12,3 +12,7 @@
 - [ ] Inventory changes on the FakePlatform show up without a manual refresh
 - [ ] `rcli device processes <device>` returns the process list on demand; it is not streamed periodically
 - [ ] Online Device shows whether it is at the lock screen or login screen
+
+## Comments
+
+- 2026-11-04: Resolved on integration branch `feat/remote-cli` (tip after review fixes: 793f229). Code review findings fixed on branch `review-fixes`.
