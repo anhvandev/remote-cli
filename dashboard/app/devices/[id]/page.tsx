@@ -7,6 +7,7 @@ import { History } from "./history";
 import { ControlProvider, LockCard } from "./control";
 import { LiveView } from "./live-view";
 import { PowerButtons } from "./power";
+import { Terminal } from "./terminal";
 
 const GB = 1 << 30;
 const gb = (b: number) => `${(b / GB).toFixed(1)} GB`;
@@ -95,6 +96,7 @@ export default async function DevicePage({
           </section>
 
           <LiveView device={d.id} name={d.name} />
+          <Terminal device={d.id} admin={me.role === "admin"} />
 
           <section className="card" aria-label="Phần cứng">
             <h3>Phần cứng</h3>

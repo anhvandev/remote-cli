@@ -42,6 +42,23 @@ export async function proxy(path: string, init: RequestInit = {}): Promise<Respo
   });
 }
 
+/** Like `proxy`, but passes the reply body through as a stream (NDJSON shell sessions). Aborting `signal` (the browser
+ * went away) closes the upstream stream, which ends the session. */
+export async function proxyStream(path: string, init: RequestInit & { signal: AbortSignal }): Promise<Response> {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) return Response.json({ error: { code: "unauthorized", message: "not signed in" } }, { status: 401 });
+  const res = await fetch(BASE + path, {
+    ...init,
+    cache: "no-store",
+    headers: { ...init.headers, "content-type": "application/json", authorization: `Bearer ${token}` },
+  });
+  return new Response(res.body, {
+    status: res.status,
+    // no-transform: keeps Next's gzip from buffering the stream.
+    headers: { "content-type": res.headers.get("content-type") ?? "application/json", "cache-control": "no-transform" },
+  });
+}
+
 /** Calls the Controller API without a session (sign-in). */
 export async function publicApi<T>(path: string, init: RequestInit): Promise<T> {
   return parse<T>(await fetch(BASE + path, { ...init, cache: "no-store" }));
