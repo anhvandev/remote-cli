@@ -23,7 +23,7 @@ async fn list(_: Caller, State(state): State<super::State>) -> Result<Json<Vec<r
 }
 
 /// `{device}` is an id or a unique name.
-async fn resolve(state: &super::State, key: &str) -> Result<Uuid, ApiError> {
+pub(super) async fn resolve(state: &super::State, key: &str) -> Result<Uuid, ApiError> {
     match registry::resolve(state, key).await? {
         Ok(Some(id)) => Ok(id),
         Ok(None) => Err(ApiError::new(StatusCode::NOT_FOUND, "device_not_found", format!("no Device {key:?}"))),
