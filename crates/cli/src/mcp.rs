@@ -153,9 +153,9 @@ impl Mcp {
                 self.watches.lock().unwrap().remove(name);
                 structured(lock)
             }
-            "observe" => observation(self.api.call(Method::POST, &format!("{dev}/actions"), Some(&act(json!([])))).await?),
-            "act" => observation(self.api.call(Method::POST, &format!("{dev}/actions"), Some(&act(json!([args["action"]])))).await?),
-            "batch" => observation(self.api.call(Method::POST, &format!("{dev}/actions"), Some(&act(args["actions"].clone()))).await?),
+            "observe" => observation(self.api.observe(name, &act(json!([]))).await?),
+            "act" => observation(self.api.observe(name, &act(json!([args["action"]]))).await?),
+            "batch" => observation(self.api.observe(name, &act(args["actions"].clone())).await?),
             "exec" => {
                 let body = Value::Object(pick(args, &["command", "as", "timeout_secs"]));
                 structured(self.api.call(Method::POST, &format!("{dev}/exec"), Some(&body)).await?)

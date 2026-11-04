@@ -7,6 +7,7 @@ mod coords;
 mod executor;
 mod live;
 mod marks;
+mod media;
 mod observer;
 pub mod platform;
 
@@ -117,12 +118,13 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn P
     let executor = Arc::new(Mutex::new(Executor::default()));
     // Live streams are peer-to-peer, so they survive a lost Server connection.
     let live = live::Live::new(platform.clone());
+    let media = Arc::new(media::Media::default());
     let mut backoff = Duration::from_secs(1);
     loop {
         match connect(&server, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
-                if let Err(e) = session(conn, &server, &platform, &executor, &live, &backlog).await {
+                if let Err(e) = session(conn, &server, &platform, &executor, &live, &media, &backlog).await {
                     tracing::warn!("connection to server lost: {e}");
                 }
             }
@@ -150,6 +152,7 @@ async fn session(
     platform_arc: &Arc<dyn Platform>,
     executor: &Arc<Mutex<Executor>>,
     live: &Arc<live::Live>,
+    media: &Arc<media::Media>,
     backlog: &Backlog,
 ) -> anyhow::Result<()> {
     let platform = platform_arc.as_ref();
@@ -202,21 +205,29 @@ async fn session(
                     Some(server_message::Msg::Act(req)) => {
                         // The Executor's lock runs requests one at a time, in arrival order.
                         let (platform, executor, replies) = (platform_arc.clone(), executor.clone(), replies.clone());
+                        let (media, rt) = (media.clone(), tokio::runtime::Handle::current());
                         tokio::task::spawn_blocking(move || {
-                            let result = executor.lock().unwrap().act(platform.as_ref(), &req);
+                            let mut result = executor.lock().unwrap().act(platform.as_ref(), &req);
+                            if !req.media_session.is_empty() {
+                                rt.block_on(media.offload(&req.media_session, &mut result));
+                            }
                             let _ = replies.send(agent_message::Msg::ActResult(result));
                         });
                     }
                     Some(server_message::Msg::LiveOffer(offer)) => {
                         // Answering waits for ICE gathering; keep the loop (heartbeats) running meanwhile.
-                        let (live, replies) = (live.clone(), replies.clone());
+                        let (live, media, replies) = (live.clone(), media.clone(), replies.clone());
                         tokio::spawn(async move {
-                            let _ = replies.send(agent_message::Msg::LiveAnswer(live.open(offer).await));
+                            let answer = if offer.media { media.open(offer).await } else { live.open(offer).await };
+                            let _ = replies.send(agent_message::Msg::LiveAnswer(answer));
                         });
                     }
                     Some(server_message::Msg::LiveClose(c)) => {
-                        let live = live.clone();
-                        tokio::spawn(async move { live.close(&c.session).await });
+                        let (live, media) = (live.clone(), media.clone());
+                        tokio::spawn(async move {
+                            live.close(&c.session).await;
+                            media.close(&c.session).await;
+                        });
                     }
                     Some(server_message::Msg::Exec(req)) => {
                         // Off the loop: a command may run for minutes; commands run concurrently.

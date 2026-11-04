@@ -78,7 +78,7 @@ pub fn record(p: &dyn Platform, display: u32, done: &AtomicBool) -> anyhow::Resu
     let end = samples.last().unwrap().at + FRAME_EVERY.as_millis() as u64;
     let data = mux(&samples, width, height, sps, pps, end)?;
     let mime = "video/mp4".into();
-    Ok(Clip { display, width, height, mime, data, duration_ms: end as u32 })
+    Ok(Clip { display, width, height, mime, data, duration_ms: end as u32, p2p: 0 })
 }
 
 fn strip_start_code(nal: &[u8]) -> &[u8] {

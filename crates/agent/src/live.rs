@@ -166,7 +166,7 @@ impl Live {
     }
 }
 
-async fn peer_connection(ice_servers: &[rcli_protocol::agent::IceServer]) -> webrtc::error::Result<RTCPeerConnection> {
+pub(crate) async fn peer_connection(ice_servers: &[rcli_protocol::agent::IceServer]) -> webrtc::error::Result<RTCPeerConnection> {
     let mut media = MediaEngine::default();
     media.register_default_codecs()?;
     let interceptors = register_default_interceptors(Registry::new(), &mut media)?;

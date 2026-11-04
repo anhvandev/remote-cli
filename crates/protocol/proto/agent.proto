@@ -194,6 +194,8 @@ message ActRequest {
   uint32 max_frames = 8;
   // Detect Marks: annotate the images and return the Mark table.
   bool marks = 10;
+  // Open media channel (LiveOffer with `media`) of this Controller: large image/clip bytes go over it, not here.
+  string media_session = 26;
 }
 
 enum ObserveMode {
@@ -266,6 +268,8 @@ message Clip {
   string mime = 4;
   bytes data = 5;
   uint32 duration_ms = 6;
+  // Non-zero: `data` was sent over the media channel as blob `p2p` instead.
+  uint64 p2p = 26;
 }
 
 // A numbered on-screen element; the box is in Observation image space of `display`.
@@ -290,6 +294,8 @@ message Image {
   bytes data = 6;
   // `frames`: milliseconds since the Agent started the request.
   uint32 at_ms = 8;
+  // Non-zero: `data` was sent over the media channel as blob `p2p` instead.
+  uint64 p2p = 26;
 }
 
 message DisplaysRequest {
@@ -427,6 +433,8 @@ message LiveOffer {
   repeated IceServer ice_servers = 4;
   // Display to stream: unset = primary.
   optional uint32 display = 5;
+  // A media channel (one data channel, no video) for ActRequest.media_session instead of a live stream.
+  bool media = 26;
 }
 
 // The Agent's SDP answer, or `error` (code "invalid_offer" for a bad offer).
