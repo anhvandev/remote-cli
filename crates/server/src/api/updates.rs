@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{Admin, ApiError};
+use super::{bad_request, Admin, ApiError};
 use crate::updates::{self, UpdateError};
 
 pub fn routes() -> Router<super::State> {
@@ -30,10 +30,6 @@ impl From<UpdateError> for ApiError {
             UpdateError::Internal(e) => e.into(),
         }
     }
-}
-
-fn bad_request(m: impl Into<String>) -> ApiError {
-    ApiError::new(StatusCode::BAD_REQUEST, "bad_request", m)
 }
 
 #[derive(Deserialize)]

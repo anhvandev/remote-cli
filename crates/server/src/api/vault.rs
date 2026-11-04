@@ -9,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{devices::resolve, Admin, ApiError};
+use super::{bad_request, devices::resolve, Admin, ApiError};
 use crate::vault;
 
 pub fn routes() -> Router<super::State> {
@@ -57,9 +57,9 @@ async fn set(
     req: Result<Json<SetBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let device = resolve(&state, &id).await?;
-    let Json(req) = req.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let Json(req) = req.map_err(|e| bad_request(e.body_text()))?;
     if req.password.is_empty() {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_request", "password must not be empty"));
+        return Err(bad_request("password must not be empty"));
     }
     vault::set(&state, device, &req.password).await?;
     body(vault::updated_at(&state, device).await?)

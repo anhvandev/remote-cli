@@ -11,8 +11,8 @@ use rcli_protocol::agent::{self as proto, action::Kind, agent_message, server_me
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{devices::resolve, ApiError, Caller};
-use crate::{agent_link::RequestError, audit, auth::User, control_lock, metrics, vault};
+use super::{bad_request, devices::resolve, ApiError, Caller};
+use crate::{audit, auth::User, control_lock, metrics, vault};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -156,15 +156,6 @@ impl Action {
     }
 }
 
-impl From<RequestError> for ApiError {
-    fn from(e: RequestError) -> Self {
-        match e {
-            RequestError::NotConnected => ApiError::new(StatusCode::CONFLICT, "device_not_connected", "the Device's Agent is not connected"),
-            RequestError::Timeout => ApiError::new(StatusCode::GATEWAY_TIMEOUT, "agent_timeout", "the Agent did not answer in time"),
-        }
-    }
-}
-
 fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "invalid_action", message)
 }
@@ -187,9 +178,9 @@ async fn act(
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let device = resolve(&state, &id).await?;
-    let Json(mut params) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let Json(mut params) = body.map_err(|e| bad_request(e.body_text()))?;
     let body: ActBody = serde_json::from_value(params.clone())
-        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?;
+        .map_err(|e| bad_request(e.to_string()))?;
     let waits: u64 = body.actions.iter().map(|a| if let Action::Wait { ms } = a { u64::from(*ms) } else { 0 }).sum();
     if waits > MAX_TOTAL_WAIT_MS {
         return Err(invalid(format!("waits add up to {waits} ms; at most {MAX_TOTAL_WAIT_MS} ms per request")));

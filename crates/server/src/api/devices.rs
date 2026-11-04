@@ -8,8 +8,8 @@ use rcli_protocol::agent::{agent_message, server_message, Inventory, Process, Pr
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{Admin, ApiError, Caller};
-use crate::{agent_link::RequestError, metrics, registry};
+use super::{bad_request, Admin, ApiError, Caller};
+use crate::{metrics, registry};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -31,9 +31,9 @@ async fn rename(
     Path(key): Path<String>,
     body: Result<Json<Rename>, JsonRejection>,
 ) -> Result<Json<registry::Device>, ApiError> {
-    let Json(body) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let Json(body) = body.map_err(|e| bad_request(e.body_text()))?;
     let id = resolve(&state, &key).await?;
-    registry::rename(&state, id, &body.name).await?.map_err(|m| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", m))?;
+    registry::rename(&state, id, &body.name).await?.map_err(|m| bad_request(m))?;
     Ok(Json(registry::get(&state, id).await?))
 }
 
@@ -55,11 +55,11 @@ async fn merge(
     Path(key): Path<String>,
     body: Result<Json<Merge>, JsonRejection>,
 ) -> Result<Json<registry::Device>, ApiError> {
-    let Json(body) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let Json(body) = body.map_err(|e| bad_request(e.body_text()))?;
     let new = resolve(&state, &key).await?;
     let old = resolve(&state, &body.from).await?;
     if old == new {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_request", "cannot merge a Device into itself"));
+        return Err(bad_request("cannot merge a Device into itself"));
     }
     registry::merge(&state, old, new).await?;
     Ok(Json(registry::get(&state, new).await?))
@@ -104,11 +104,7 @@ async fn show(
     Path(key): Path<String>,
 ) -> Result<Json<DeviceDetails>, ApiError> {
     let id = resolve(&state, &key).await?;
-    let device = registry::list(&state)
-        .await?
-        .into_iter()
-        .find(|d| d.id == id)
-        .ok_or_else(|| anyhow::anyhow!("device vanished"))?;
+    let device = registry::get(&state, id).await?;
     let resources = match device.status {
         registry::DeviceStatus::Online => metrics::current_resources(&state, id),
         _ => None,
@@ -124,15 +120,9 @@ async fn processes(
 ) -> Result<Json<Vec<Process>>, ApiError> {
     let id = resolve(&state, &key).await?;
     let req = |request_id| server_message::Msg::ListProcesses(ProcessListRequest { request_id });
-    match state.agents.request(id, req).await {
-        Ok(agent_message::Msg::Processes(p)) if p.error.is_empty() => Ok(Json(p.processes)),
-        Ok(agent_message::Msg::Processes(p)) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", p.error)),
-        Ok(_) => Err(anyhow::anyhow!("unexpected reply to ListProcesses").into()),
-        Err(RequestError::NotConnected) => {
-            Err(ApiError::new(StatusCode::CONFLICT, "device_not_connected", "the Device's Agent is not connected"))
-        }
-        Err(RequestError::Timeout) => {
-            Err(ApiError::new(StatusCode::GATEWAY_TIMEOUT, "agent_timeout", "the Agent did not answer in time"))
-        }
+    match state.agents.request(id, req).await? {
+        agent_message::Msg::Processes(p) if p.error.is_empty() => Ok(Json(p.processes)),
+        agent_message::Msg::Processes(p) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", p.error)),
+        _ => Err(anyhow::anyhow!("unexpected reply to ListProcesses").into()),
     }
 }

@@ -9,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{ApiError, Caller};
+use super::{bad_request, ApiError, Caller};
 use crate::auth::{self, User};
 
 pub fn routes() -> Router<super::State> {
@@ -30,7 +30,7 @@ async fn sign_in(
     State(state): State<super::State>,
     body: Result<Json<SignIn>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let Json(b) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let Json(b) = body.map_err(|e| bad_request(e.body_text()))?;
     let (user, token) = auth::sign_in(&state, &b.name, &b.password, b.totp.trim()).await?.ok_or_else(|| {
         ApiError::new(StatusCode::UNAUTHORIZED, "invalid_credentials", "wrong name, password or TOTP code")
     })?;

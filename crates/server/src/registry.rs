@@ -76,6 +76,15 @@ fn status(
 }
 
 pub async fn list(state: &AppState) -> anyhow::Result<Vec<Device>> {
+    fetch(state, None).await
+}
+
+pub async fn get(state: &AppState, id: Uuid) -> anyhow::Result<Device> {
+    fetch(state, Some(id)).await?.pop().ok_or_else(|| anyhow::anyhow!("device {id} vanished"))
+}
+
+/// All Devices, or just `only`.
+async fn fetch(state: &AppState, only: Option<Uuid>) -> anyhow::Result<Vec<Device>> {
     type Row = (
         Uuid,
         String,
@@ -88,8 +97,9 @@ pub async fn list(state: &AppState) -> anyhow::Result<Vec<Device>> {
     );
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT id, name, last_seen_at, agent_version, update_version, update_error, revoked_at, wake_requested_at
-         FROM devices ORDER BY enrolled_at, id",
+         FROM devices WHERE $1::uuid IS NULL OR id = $1 ORDER BY enrolled_at, id",
     )
+    .bind(only)
     .fetch_all(&state.db)
     .await?;
     let now = state.clock.now();
@@ -111,10 +121,6 @@ pub async fn list(state: &AppState) -> anyhow::Result<Vec<Device>> {
             }
         })
         .collect())
-}
-
-pub async fn get(state: &AppState, id: Uuid) -> anyhow::Result<Device> {
-    list(state).await?.into_iter().find(|d| d.id == id).ok_or_else(|| anyhow::anyhow!("device {id} vanished"))
 }
 
 /// Finds a Device by id or by name. `Ok(None)` if none; an error message if the name is ambiguous.

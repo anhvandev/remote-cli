@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{Admin, ApiError};
+use super::{bad_request, Admin, ApiError};
 use crate::auth::{self, User};
 
 pub fn routes() -> Router<super::State> {
@@ -24,7 +24,7 @@ pub fn routes() -> Router<super::State> {
 impl From<auth::Error> for ApiError {
     fn from(e: auth::Error) -> Self {
         match e {
-            auth::Error::BadRequest(m) => ApiError::new(StatusCode::BAD_REQUEST, "bad_request", m),
+            auth::Error::BadRequest(m) => bad_request(m),
             auth::Error::NameTaken => ApiError::new(StatusCode::CONFLICT, "name_taken", "a user with this name exists"),
             auth::Error::NotFound => ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such user or token"),
             auth::Error::Internal(e) => e.into(),
@@ -43,7 +43,7 @@ async fn create(
     State(state): State<super::State>,
     body: Result<Json<NewUser>, JsonRejection>,
 ) -> Result<(StatusCode, Json<User>), ApiError> {
-    let Json(u) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let Json(u) = body.map_err(|e| bad_request(e.body_text()))?;
     Ok((StatusCode::CREATED, Json(auth::create_user(&state, &u.name, &u.role).await?)))
 }
 
@@ -85,7 +85,7 @@ async fn set_credentials(
     Path(name): Path<String>,
     body: Result<Json<Credentials>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let Json(c) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let Json(c) = body.map_err(|e| bad_request(e.body_text()))?;
     let totp = auth::set_credentials(&state, &name, &c.password).await?;
     Ok(Json(json!({ "user": name, "totp_secret": totp.secret, "otpauth_url": totp.url })))
 }

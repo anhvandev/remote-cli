@@ -1,13 +1,12 @@
 use axum::{
     extract::{rejection::QueryRejection, Path, Query, State},
-    http::StatusCode,
     routing::get,
     Json, Router,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{devices::resolve, ApiError, Caller};
+use super::{bad_request, devices::resolve, ApiError, Caller};
 use crate::history::{self, Point, Resolution};
 
 pub fn routes() -> Router<super::State> {
@@ -36,8 +35,7 @@ async fn show(
     Path(key): Path<String>,
     params: Result<Query<Params>, QueryRejection>,
 ) -> Result<Json<History>, ApiError> {
-    let bad = |m: String| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", m);
-    let Query(p) = params.map_err(|e| bad(e.body_text()))?;
+    let Query(p) = params.map_err(|e| bad_request(e.body_text()))?;
     let id = resolve(&state, &key).await?;
     let now = state.clock.now();
     let to = p.to.unwrap_or(now);
@@ -47,7 +45,7 @@ async fn show(
         Some("1m") => Resolution::Minute,
         None if from > now - history::RAW_KEEP => Resolution::Raw,
         None => Resolution::Minute,
-        Some(r) => return Err(bad(format!("resolution must be 5s or 1m, not {r:?}"))),
+        Some(r) => return Err(bad_request(format!("resolution must be 5s or 1m, not {r:?}"))),
     };
     let samples = history::query(&state, id, from, to, resolution).await?;
     Ok(Json(History { resolution, samples }))

@@ -12,7 +12,7 @@ use rcli_protocol::agent::{self as proto, agent_message, server_message};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{devices::resolve, ApiError, Caller};
+use super::{bad_request, devices::resolve, ApiError, Caller};
 use crate::{audit, control_lock};
 
 pub fn routes() -> Router<super::State> {
@@ -49,12 +49,12 @@ async fn exec(
     let device = resolve(&state, &id).await?;
     // A command from the Control Lock holder counts as an Action: restarts their idle timer.
     control_lock::touch(&state, device, &user).await?;
-    let Json(params) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let Json(params) = body.map_err(|e| bad_request(e.body_text()))?;
     let body: ExecBody = serde_json::from_value(params.clone())
-        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?;
+        .map_err(|e| bad_request(e.to_string()))?;
     let timeout = body.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
     if !(1..=MAX_TIMEOUT_SECS).contains(&timeout) {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_request", format!("timeout_secs must be 1..={MAX_TIMEOUT_SECS}")));
+        return Err(bad_request(format!("timeout_secs must be 1..={MAX_TIMEOUT_SECS}")));
     }
     let as_root = body.run_as == Some(RunAs::Root);
     if as_root && !user.is_admin() {

@@ -82,6 +82,21 @@ impl IntoResponse for ApiError {
     }
 }
 
+impl From<crate::agent_link::RequestError> for ApiError {
+    fn from(e: crate::agent_link::RequestError) -> Self {
+        use crate::agent_link::RequestError;
+        match e {
+            RequestError::NotConnected => ApiError::new(StatusCode::CONFLICT, "device_not_connected", "the Device's Agent is not connected"),
+            RequestError::Timeout => ApiError::new(StatusCode::GATEWAY_TIMEOUT, "agent_timeout", "the Agent did not answer in time"),
+        }
+    }
+}
+
+/// 400 `bad_request`, e.g. a body that is not the expected JSON.
+pub fn bad_request(message: impl ToString) -> ApiError {
+    ApiError::new(StatusCode::BAD_REQUEST, "bad_request", message.to_string())
+}
+
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
         tracing::error!("internal error: {e:#}");
