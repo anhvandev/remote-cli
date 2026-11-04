@@ -31,7 +31,7 @@ pub struct Point {
 
 /// Serializes `maintain` runs (single Server process) so concurrent rollups of a minute cannot interleave.
 #[derive(Default)]
-pub struct Maintenance(tokio::sync::Mutex<()>);
+pub struct Maintenance(pub tokio::sync::Mutex<()>);
 
 /// Stores one complete sample.
 pub async fn record(state: &AppState, device: Uuid, at: DateTime<Utc>, resources: &Resources) -> anyhow::Result<()> {
