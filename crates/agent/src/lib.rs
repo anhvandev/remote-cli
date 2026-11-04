@@ -1,5 +1,6 @@
 //! Agent core: enrollment and the persistent connection to the Server.
 
+pub mod backlog;
 pub mod contract;
 mod coords;
 mod executor;
@@ -13,11 +14,12 @@ use std::{
 
 use executor::Executor;
 
+use backlog::Backlog;
 use platform::Platform;
 use rcli_protocol::{
     agent::{
         agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, DisplayList, EnrollRequest, Error,
-        Heartbeat, ProcessList, Resources, ServerMessage, UpdateFailed,
+        Heartbeat, ProcessList, ResourceSample, Resources, ServerMessage, UpdateFailed,
     },
     Conn,
 };
@@ -30,7 +32,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::{client::TlsStream, TlsConnector};
 
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(10);
-/// Inventory is checked and resources are sampled this often.
+/// Inventory is checked and resources are sampled this often (each sample is a history point).
 const SAMPLE_EVERY: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
@@ -94,7 +96,18 @@ pub async fn enroll(server: &ServerEndpoint, code: &str, platform: &dyn Platform
 }
 
 /// Keeps a connection to the Server open forever, reconnecting with backoff.
+/// Resources are sampled every 5 s whether connected or not; samples taken offline are backfilled on reconnect.
 pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn Platform>) {
+    let backlog = Arc::new(Backlog::default());
+    let sampler = tokio::spawn(sample_forever(platform.clone(), backlog.clone()));
+    // Stop the sampler when `run` is dropped (e.g. aborted).
+    struct AbortOnDrop(tokio::task::JoinHandle<()>);
+    impl Drop for AbortOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _sampler = AbortOnDrop(sampler);
     // Outlives sessions: the last acted-on display and what each Controller last saw survive a reconnect.
     let executor = Arc::new(Mutex::new(Executor::default()));
     let mut backoff = Duration::from_secs(1);
@@ -102,7 +115,7 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn P
         match connect(&server, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
-                if let Err(e) = session(conn, &server, &platform, &executor).await {
+                if let Err(e) = session(conn, &server, &platform, &executor, &backlog).await {
                     tracing::warn!("connection to server lost: {e}");
                 }
             }
@@ -113,11 +126,23 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn P
     }
 }
 
+async fn sample_forever(platform: Arc<dyn Platform>, backlog: Arc<Backlog>) {
+    let mut sample = tokio::time::interval(SAMPLE_EVERY);
+    loop {
+        sample.tick().await;
+        match sample_resources(platform.as_ref()) {
+            Ok(r) => backlog.push(std::time::Instant::now(), r),
+            Err(e) => tracing::warn!("cannot sample resources: {e:#}"),
+        }
+    }
+}
+
 async fn session(
     mut conn: Conn<TlsStream<TcpStream>>,
     server: &ServerEndpoint,
     platform_arc: &Arc<dyn Platform>,
     executor: &Arc<Mutex<Executor>>,
+    backlog: &Backlog,
 ) -> anyhow::Result<()> {
     let platform = platform_arc.as_ref();
     let hello = AgentHello { version: platform.agent_version(), target: target() };
@@ -144,15 +169,15 @@ async fn session(
                     Ok(_) => {}
                     Err(e) => tracing::warn!("cannot read inventory: {e:#}"),
                 }
-                match sample_resources(platform) {
-                    Ok(cur) => {
-                        let d = delta(&resources, &cur);
-                        if d != Resources::default() {
-                            conn.send(&send(agent_message::Msg::Resources(d))).await?;
-                        }
-                        resources = cur;
-                    }
-                    Err(e) => tracing::warn!("cannot sample resources: {e:#}"),
+            }
+            _ = backlog.ready() => {
+                // shortcut: samples taken from the backlog are lost if this connection dies mid-send (<= a few);
+                // re-queue them on error if that ever shows up as gaps.
+                for (at, cur) in backlog.take() {
+                    let age_ms = at.elapsed().as_millis() as u64;
+                    let sample = ResourceSample { resources: Some(delta(&resources, &cur)), age_ms };
+                    conn.send(&send(agent_message::Msg::Sample(sample))).await?;
+                    resources = cur;
                 }
             }
             Some(reply) = replies_rx.recv() => conn.send(&send(reply)).await?,
