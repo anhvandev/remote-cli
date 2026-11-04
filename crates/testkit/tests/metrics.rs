@@ -40,7 +40,6 @@ async fn rcli_device_show_reports_current_resources_and_lock_screen() {
             disk_used_percent: [("C:".to_string(), 40.0)].into(),
             uptime_secs: Some(3600),
             logged_in_user: Some("alice".into()),
-            session: Some(SessionState::Active.into()),
             battery_percent: Some(80.0),
             ..Default::default()
         }
@@ -50,8 +49,8 @@ async fn rcli_device_show_reports_current_resources_and_lock_screen() {
     // Only the changed fields travel; the rest must still be there.
     agent.platform.update(|s| {
         s.resources.cpu_percent = Some(97.0);
-        s.resources.session = Some(SessionState::LockScreen.into());
     });
+    agent.platform.set_session_state(SessionState::Locked);
     sys.wait_device_details(agent.device_id(), |d| d["resources"]["session"] == "LockScreen").await;
 
     let json: serde_json::Value =
@@ -71,6 +70,9 @@ async fn rcli_device_show_reports_current_resources_and_lock_screen() {
     for want in ["lab-pc", "Online", "FakeOS", "97.0", "LockScreen", "alice"] {
         assert!(text.contains(want), "missing {want:?} in:\n{text}");
     }
+
+    agent.platform.set_session_state(SessionState::LoginScreen);
+    sys.wait_device_details(agent.device_id(), |d| d["resources"]["session"] == "LoginScreen").await;
 }
 
 #[tokio::test]

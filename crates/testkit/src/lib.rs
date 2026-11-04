@@ -17,13 +17,15 @@ use testcontainers_modules::{
 };
 use tokio::task::JoinHandle;
 
-pub const ADMIN_TOKEN: &str = "test-admin-token";
+/// First-run token from the Server config; the harness uses it once to create the `admin` user.
+pub const BOOTSTRAP_TOKEN: &str = "test-bootstrap-token";
 
 pub struct TestSystem {
     pub clock: Arc<ManualClock>,
     pub server: rcli_server::Server,
-    /// Controller API client authenticated as the bootstrap admin.
+    /// Controller API client authenticated as the `admin` user.
     pub api: ApiClient,
+    pub admin_token: String,
     _postgres: ContainerAsync<Postgres>,
 }
 
@@ -37,11 +39,19 @@ impl TestSystem {
             http_addr: "127.0.0.1:0".parse().unwrap(),
             agent_addr: "127.0.0.1:0".parse().unwrap(),
             agent_hostnames: vec!["localhost".into()],
-            bootstrap_admin_token: ADMIN_TOKEN.into(),
+            bootstrap_admin_token: BOOTSTRAP_TOKEN.into(),
         };
         let server = rcli_server::start(config, clock.clone()).await.expect("start server");
-        let api = ApiClient::new(format!("http://{}", server.http_addr), Some(ADMIN_TOKEN));
-        Self { clock, server, api, _postgres: postgres }
+        let mut sys = Self {
+            clock,
+            api: ApiClient::new(format!("http://{}", server.http_addr), Some(BOOTSTRAP_TOKEN)),
+            server,
+            admin_token: String::new(),
+            _postgres: postgres,
+        };
+        sys.admin_token = sys.create_user("admin", "admin").await;
+        sys.api = sys.api.with_token(Some(&sys.admin_token));
+        sys
     }
 
     pub fn advance(&self, seconds: i64) {
@@ -54,12 +64,26 @@ impl TestSystem {
 
     /// Runs `rcli <args>` in-process against this Server as the admin; returns stdout.
     pub async fn rcli(&self, args: &[&str]) -> anyhow::Result<String> {
+        self.rcli_as(&self.admin_token, args).await
+    }
+
+    /// Runs `rcli <args>` in-process with the API token `token`; returns stdout.
+    pub async fn rcli_as(&self, token: &str, args: &[&str]) -> anyhow::Result<String> {
         let base = format!("http://{}", self.server.http_addr);
-        let mut argv = vec!["rcli", "--server", &base, "--token", ADMIN_TOKEN];
+        let mut argv = vec!["rcli", "--server", &base, "--token", token];
         argv.extend_from_slice(args);
         let mut out = Vec::new();
         rcli::run(argv, &mut out).await?;
         Ok(String::from_utf8(out)?)
+    }
+
+    /// Creates a user with `role` ("admin" | "operator") and returns a fresh API token for it.
+    pub async fn create_user(&self, name: &str, role: &str) -> String {
+        let (status, body) = self.api.post_json("/api/v1/users", &serde_json::json!({ "name": name, "role": role })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = self.api.post(&format!("/api/v1/users/{name}/tokens")).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        body["token"].as_str().unwrap().to_owned()
     }
 
     pub async fn create_enrollment_code(&self) -> String {

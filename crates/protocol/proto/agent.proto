@@ -112,6 +112,7 @@ message ProcessListRequest {
 message ProcessList {
   uint64 request_id = 1;
   repeated Process processes = 2;
+  string error = 3; // non-empty if the Agent could not list processes
 }
 
 message Process {

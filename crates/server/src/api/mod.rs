@@ -2,6 +2,7 @@
 
 mod devices;
 mod enrollment;
+mod users;
 
 use std::sync::Arc;
 
@@ -23,6 +24,7 @@ pub fn router(state: State) -> Router {
         .route("/api/v1/server-ca", get(|s: axum::extract::State<State>| async move { s.ca.cert_pem.clone() }))
         .merge(devices::routes())
         .merge(enrollment::routes())
+        .merge(users::routes())
         .with_state(state)
 }
 
@@ -53,11 +55,10 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
-/// Extractor: the request carries an admin credential.
-// shortcut: only the bootstrap token from config; ticket 02 replaces this with users, roles and API tokens.
-pub struct Admin;
+/// Extractor: the request carries a valid API token of an enabled user (any role).
+pub struct Caller(pub crate::auth::User);
 
-impl FromRequestParts<State> for Admin {
+impl FromRequestParts<State> for Caller {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &State) -> Result<Self, Self::Rejection> {
@@ -66,9 +67,26 @@ impl FromRequestParts<State> for Admin {
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "));
-        match token {
-            Some(t) if t == state.config.bootstrap_admin_token => Ok(Admin),
-            _ => Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token")),
+        let user = match token {
+            Some(t) => crate::auth::authenticate(state, t).await?,
+            None => None,
+        };
+        user.map(Caller)
+            .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"))
+    }
+}
+
+/// Extractor: like `Caller`, but the user must be an admin; operators get 403 `admin_required`.
+pub struct Admin(pub crate::auth::User);
+
+impl FromRequestParts<State> for Admin {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &State) -> Result<Self, Self::Rejection> {
+        let Caller(user) = Caller::from_request_parts(parts, state).await?;
+        if !user.is_admin() {
+            return Err(ApiError::new(StatusCode::FORBIDDEN, "admin_required", "this operation requires the admin role"));
         }
+        Ok(Admin(user))
     }
 }

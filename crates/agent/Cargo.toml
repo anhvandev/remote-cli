@@ -3,6 +3,7 @@ name = "rcli-agent"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
+default-run = "rcli-agent"
 
 [dependencies]
 anyhow.workspace = true

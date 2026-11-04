@@ -8,7 +8,7 @@ use rcli_protocol::agent::{agent_message, server_message, Inventory, Process, Pr
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::{Admin, ApiError};
+use super::{ApiError, Caller};
 use crate::{agent_link::RequestError, metrics, registry};
 
 pub fn routes() -> Router<super::State> {
@@ -18,7 +18,7 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/devices/{device}/processes", get(processes))
 }
 
-async fn list(_: Admin, State(state): State<super::State>) -> Result<Json<Vec<registry::Device>>, ApiError> {
+async fn list(_: Caller, State(state): State<super::State>) -> Result<Json<Vec<registry::Device>>, ApiError> {
     Ok(Json(registry::list(&state).await?))
 }
 
@@ -42,7 +42,7 @@ struct DeviceDetails {
 }
 
 async fn show(
-    _: Admin,
+    _: Caller,
     State(state): State<super::State>,
     Path(key): Path<String>,
 ) -> Result<Json<DeviceDetails>, ApiError> {
@@ -61,14 +61,15 @@ async fn show(
 
 /// Asks the Agent for its process list now; never streamed.
 async fn processes(
-    _: Admin,
+    _: Caller,
     State(state): State<super::State>,
     Path(key): Path<String>,
 ) -> Result<Json<Vec<Process>>, ApiError> {
     let id = resolve(&state, &key).await?;
     let req = |request_id| server_message::Msg::ListProcesses(ProcessListRequest { request_id });
     match state.agents.request(id, req).await {
-        Ok(agent_message::Msg::Processes(p)) => Ok(Json(p.processes)),
+        Ok(agent_message::Msg::Processes(p)) if p.error.is_empty() => Ok(Json(p.processes)),
+        Ok(agent_message::Msg::Processes(p)) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", p.error)),
         Ok(_) => Err(anyhow::anyhow!("unexpected reply to ListProcesses").into()),
         Err(RequestError::NotConnected) => {
             Err(ApiError::new(StatusCode::CONFLICT, "device_not_connected", "the Device's Agent is not connected"))

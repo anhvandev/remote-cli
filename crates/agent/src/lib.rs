@@ -1,5 +1,6 @@
 //! Agent core: enrollment and the persistent connection to the Server.
 
+pub mod contract;
 pub mod platform;
 
 use std::{sync::Arc, time::Duration};
@@ -107,23 +108,33 @@ async fn session(mut conn: Conn<TlsStream<TcpStream>>, platform: &dyn Platform) 
             }
             _ = sample.tick() => {
                 // shortcut: inventory is re-read every sample; OS adapters may want change notifications instead.
-                let inv = platform.inventory();
-                if inventory.as_ref() != Some(&inv) {
-                    conn.send(&send(agent_message::Msg::Inventory(inv.clone()))).await?;
-                    inventory = Some(inv);
+                match platform.inventory() {
+                    Ok(inv) if inventory.as_ref() != Some(&inv) => {
+                        conn.send(&send(agent_message::Msg::Inventory(inv.clone()))).await?;
+                        inventory = Some(inv);
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("cannot read inventory: {e:#}"),
                 }
-                let cur = platform.resources();
-                let d = delta(&resources, &cur);
-                if d != Resources::default() {
-                    conn.send(&send(agent_message::Msg::Resources(d))).await?;
+                match sample_resources(platform) {
+                    Ok(cur) => {
+                        let d = delta(&resources, &cur);
+                        if d != Resources::default() {
+                            conn.send(&send(agent_message::Msg::Resources(d))).await?;
+                        }
+                        resources = cur;
+                    }
+                    Err(e) => tracing::warn!("cannot sample resources: {e:#}"),
                 }
-                resources = cur;
             }
             msg = conn.recv::<ServerMessage>() => {
                 match msg?.and_then(|m| m.msg) {
                     None => anyhow::bail!("server closed the connection"),
                     Some(server_message::Msg::ListProcesses(req)) => {
-                        let reply = ProcessList { request_id: req.request_id, processes: platform.processes() };
+                        let reply = match platform.processes() {
+                            Ok(processes) => ProcessList { request_id: req.request_id, processes, error: String::new() },
+                            Err(e) => ProcessList { request_id: req.request_id, processes: vec![], error: format!("{e:#}") },
+                        };
                         conn.send(&send(agent_message::Msg::Processes(reply))).await?;
                     }
                     // Later tickets handle Actions and requests from the Server here.
@@ -132,6 +143,19 @@ async fn session(mut conn: Conn<TlsStream<TcpStream>>, platform: &dyn Platform) 
             }
         }
     }
+}
+
+fn sample_resources(platform: &dyn Platform) -> anyhow::Result<Resources> {
+    use platform::SessionState as S;
+    use rcli_protocol::agent::SessionState as P;
+    let mut r = platform.metrics()?;
+    let session = match platform.session_state()? {
+        S::LoggedIn => P::Active,
+        S::Locked => P::LockScreen,
+        S::LoginScreen => P::LoginScreen,
+    };
+    r.session = Some(session.into());
+    Ok(r)
 }
 
 /// The fields of `cur` that differ from `prev`.

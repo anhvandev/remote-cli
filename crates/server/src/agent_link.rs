@@ -113,11 +113,12 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
         Some(fp) => {
             // shortcut: unknown certificates are dropped silently; revocation (ticket 16) should send an error.
             let Some(id) = registry::find_by_cert_fingerprint(&state, &fp).await? else { return Ok(()) };
-            registry::agent_connected(&state, id).await?;
             metrics::session_started(&state, id);
             // The newest connection takes over outbound messages (an overlapping reconnect replaces the old one).
+            // Registered before the Device shows Online, so Online always means requests can be sent.
             let (tx, rx) = mpsc::unbounded_channel();
             state.agents.senders.lock().unwrap().insert(id, tx.clone());
+            registry::agent_connected(&state, id).await?;
             let result = session(&mut conn, rx, &state, id).await;
             {
                 let mut senders = state.agents.senders.lock().unwrap();
