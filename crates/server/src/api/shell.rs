@@ -16,12 +16,12 @@ use axum::{
 };
 use base64::Engine;
 use rcli_protocol::agent::{self as proto, agent_message, server_message};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::{devices::resolve, ApiError, Caller};
+use super::{bad_request, devices::resolve, ApiError, Caller};
 use crate::{audit, control_lock};
 
 pub fn routes() -> Router<super::State> {
@@ -54,15 +54,21 @@ struct Size {
     rows: u32,
 }
 
+/// Why a session ended, as recorded in the `shell.end` audit entry.
+#[derive(Serialize, PartialEq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum EndReason {
+    /// The Controller closed the stream.
+    Closed,
+    Exited,
+    DeviceDisconnected,
+}
+
 fn check_size(cols: u32, rows: u32) -> Result<(), ApiError> {
     match (1..=1000).contains(&cols) && (1..=1000).contains(&rows) {
         true => Ok(()),
-        false => Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_request", "cols and rows must be 1..=1000")),
+        false => Err(bad_request("cols and rows must be 1..=1000")),
     }
-}
-
-fn bad_request(e: impl ToString) -> ApiError {
-    ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.to_string())
 }
 
 async fn open(
@@ -129,29 +135,29 @@ async fn open(
     tokio::spawn(async move {
         let (exit_code, reason) = loop {
             tokio::select! {
-                _ = lines.closed() => break (None, "closed"),
+                _ = lines.closed() => break (None, EndReason::Closed),
                 msg = output.recv() => match msg {
                     Some(agent_message::Msg::ShellOutput(o)) => {
                         let data = base64::engine::general_purpose::STANDARD.encode(&o.data);
                         if lines.send(line(json!({ "output": data }))).await.is_err() {
-                            break (None, "closed");
+                            break (None, EndReason::Closed);
                         }
                     }
                     Some(agent_message::Msg::ShellExit(e)) => {
                         let _ = lines.send(line(json!({ "exit_code": e.exit_code }))).await;
-                        break (Some(e.exit_code), "exited");
+                        break (Some(e.exit_code), EndReason::Exited);
                     }
                     Some(_) => {}
                     None => {
                         let error = json!({ "code": "device_disconnected", "message": "the Device disconnected" });
                         let _ = lines.send(line(json!({ "error": error }))).await;
-                        break (None, "device_disconnected");
+                        break (None, EndReason::DeviceDisconnected);
                     }
                 },
             }
         };
         state.shells.close(session);
-        if reason == "closed" {
+        if reason == EndReason::Closed {
             state.agents.send(device, server_message::Msg::ShellClose(proto::ShellClose { session: session.to_string() }));
         }
         let result = json!({ "exit_code": exit_code, "reason": reason });
