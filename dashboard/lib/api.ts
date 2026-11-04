@@ -27,7 +27,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 /** For route handlers that browser code calls: forwards to the Controller API with the session token, and passes
- * the reply (status + JSON, streamed) back unchanged. The token stays on the Next server. */
+ * the reply (status + JSON body) back unchanged; use `proxyStream` for streams. The token stays on the Next server. */
 export async function proxy(path: string, init: RequestInit = {}): Promise<Response> {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!token) return Response.json({ error: { code: "unauthorized", message: "not signed in" } }, { status: 401 });
