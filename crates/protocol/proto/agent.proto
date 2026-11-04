@@ -18,6 +18,9 @@ message AgentMessage {
     ExecResult exec_result = 11;
     WakeResult wake_result = 14;
     LiveAnswer live_answer = 21;
+    ShellOpened shell_opened = 12;
+    ShellOutput shell_output = 120;
+    ShellExit shell_exit = 121;
   }
   reserved 30; // was a bare Resources delta; now ResourceSample
 }
@@ -31,6 +34,10 @@ message ServerMessage {
     ActRequest act = 5;
     DisplaysRequest list_displays = 50;
     ExecRequest exec = 11;
+    ShellOpen shell_open = 12;
+    ShellInput shell_input = 120;
+    ShellResize shell_resize = 121;
+    ShellClose shell_close = 122;
     ControlIndicator control_indicator = 7;
     WakeRequest wake = 14;
     LiveOffer live_offer = 21;
@@ -330,6 +337,54 @@ message ExecResult {
   bool timed_out = 5;
   bool as_root = 6; // who it actually ran as
   Error error = 7;
+}
+
+// --- Interactive shell (ticket 12) ---
+// A PTY session named by `session` (chosen by the Server). Run-as rules are the same as ExecRequest.
+
+// Answered with ShellOpened carrying the same request_id; then ShellOutput until one ShellExit.
+message ShellOpen {
+  uint64 request_id = 1;
+  string session = 2;
+  bool as_root = 3;
+  bool root_if_nobody_logged_in = 4;
+  uint32 cols = 5;
+  uint32 rows = 6;
+}
+
+// `error` set = no session was started (code "no_logged_in_user", or a Platform failure).
+message ShellOpened {
+  uint64 request_id = 1;
+  bool as_root = 2; // who it actually runs as
+  Error error = 3;
+}
+
+// Keystrokes for the PTY (Ctrl-C is byte 0x03).
+message ShellInput {
+  string session = 1;
+  bytes data = 2;
+}
+
+message ShellResize {
+  string session = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+}
+
+// The Controller went away: the Agent kills the session and sends no ShellExit.
+message ShellClose {
+  string session = 1;
+}
+
+message ShellOutput {
+  string session = 1;
+  bytes data = 2;
+}
+
+// The shell ended; no more output follows.
+message ShellExit {
+  string session = 1;
+  int32 exit_code = 2;
 }
 
 // Show (on) or hide the on-Device indicator that the Device is being controlled.
