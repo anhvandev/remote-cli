@@ -15,6 +15,7 @@ pub mod metrics;
 pub mod pki;
 pub mod registry;
 pub mod updates;
+pub mod wake;
 
 use std::{net::SocketAddr, sync::Arc};
 

@@ -175,6 +175,7 @@ where
                 let Some(msg) = msg?? else { return Ok(()) };
                 match msg.msg {
                     Some(agent_message::Msg::ActResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ActResult(r)),
+                    Some(agent_message::Msg::WakeResult(w)) => state.agents.reply(device, w.request_id, agent_message::Msg::WakeResult(w)),
                     Some(agent_message::Msg::Displays(d)) => state.agents.reply(device, d.request_id, agent_message::Msg::Displays(d)),
                     Some(agent_message::Msg::Inventory(inv)) => metrics::save_inventory(state, device, &inv).await?,
                     Some(agent_message::Msg::Sample(s)) => metrics::apply_sample(state, device, &s).await?,
