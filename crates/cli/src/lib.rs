@@ -70,7 +70,7 @@ enum Command {
         /// Display the coordinates refer to.
         #[arg(long, global = true, default_value_t = 0)]
         display: u32,
-        /// Observation mode: shot or none.
+        /// Observation mode: shot, none or clip (saved as `clip.mp4`).
         #[arg(long, global = true, default_value = "shot")]
         observe: String,
         /// Display to observe, index or `all`; default: the display acted on.
@@ -145,9 +145,16 @@ fn display_sel(s: Option<String>) -> anyhow::Result<Value> {
     })
 }
 
-/// Saves each image as `<out>/display-<N>.jpg`; one line per image.
+/// Saves each image as `<out>/display-<N>.jpg` and a clip as `<out>/clip.mp4`; one line per file.
 fn save_observation(obs: &Value, out: &Path) -> anyhow::Result<String> {
     let mut text = String::new();
+    if let Some(data) = obs["clip"]["data"].as_str() {
+        std::fs::create_dir_all(out)?;
+        let path = out.join("clip.mp4");
+        std::fs::write(&path, base64::engine::general_purpose::STANDARD.decode(data)?)?;
+        let c = &obs["clip"];
+        text += &format!("clip of display {}: {}x{} {} ms {}\n", c["display"], c["width"], c["height"], c["duration_ms"], path.display());
+    }
     for i in obs["images"].as_array().into_iter().flatten() {
         let display = &i["display"];
         if i["unchanged"] == true {

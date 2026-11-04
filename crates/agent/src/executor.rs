@@ -1,9 +1,11 @@
 //! Executor: carries out the Actions of a request in order, then produces one Observation.
 
-use rcli_protocol::agent::{action::Kind, ActRequest, ActResult, Error, ObserveMode, Point};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use rcli_protocol::agent::{action::Kind, ActRequest, ActResult, Clip, Error, Image, ObserveMode, Point};
 
 use crate::{
-    coords,
+    clip, coords,
     observer::Observer,
     platform::{Button, DisplayInfo, Input, Platform},
 };
@@ -22,30 +24,63 @@ fn error(code: &str, e: impl std::fmt::Display) -> Error {
 
 impl Executor {
     pub fn act(&mut self, p: &dyn Platform, req: &ActRequest) -> ActResult {
-        let (images, error) = match self.run(p, req) {
-            Ok(images) => (images, None),
-            Err(e) => (vec![], Some(e)),
+        let (images, clip, error) = match self.run(p, req) {
+            Ok((images, clip)) => (images, clip, None),
+            Err(e) => (vec![], None, Some(e)),
         };
-        ActResult { request_id: req.request_id, images, error }
+        ActResult { request_id: req.request_id, images, error, clip }
     }
 
-    fn run(&mut self, p: &dyn Platform, req: &ActRequest) -> Result<Vec<rcli_protocol::agent::Image>, Error> {
+    fn run(&mut self, p: &dyn Platform, req: &ActRequest) -> Result<(Vec<Image>, Option<Clip>), Error> {
         let displays = p.displays().map_err(|e| error("platform", e))?;
-        for action in &req.actions {
-            let kind = action.kind.as_ref().ok_or_else(|| error("invalid_action", "empty action"))?;
-            for input in self.inputs(&displays, kind)? {
-                p.input(input).map_err(|e| error("platform", e))?;
-            }
+        if req.observe() == ObserveMode::Clip {
+            return self.record(p, &displays, req).map(|c| (vec![], Some(c)));
         }
+        self.run_actions(p, &displays, req)?;
         if req.observe() == ObserveMode::None {
-            return Ok(vec![]);
+            return Ok((vec![], None));
         }
         let wanted: Vec<u32> = match (req.all_displays, req.display) {
             (true, _) => displays.iter().map(|d| d.index).collect(),
             (false, Some(d)) => vec![find(&displays, d)?.index],
             (false, None) => vec![self.last_display.or(displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0)],
         };
-        self.observer.shot(p, &wanted, &req.controller).map_err(|e| error("platform", e))
+        let images = self.observer.shot(p, &wanted, &req.controller).map_err(|e| error("platform", e))?;
+        Ok((images, None))
+    }
+
+    fn run_actions(&mut self, p: &dyn Platform, displays: &[DisplayInfo], req: &ActRequest) -> Result<(), Error> {
+        for action in &req.actions {
+            let kind = action.kind.as_ref().ok_or_else(|| error("invalid_action", "empty action"))?;
+            for input in self.inputs(displays, kind)? {
+                p.input(input).map_err(|e| error("platform", e))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs the Actions while recording one display: the requested one, else the first one acted on, else the default.
+    fn record(&mut self, p: &dyn Platform, displays: &[DisplayInfo], req: &ActRequest) -> Result<Clip, Error> {
+        if req.all_displays {
+            return Err(error("invalid_action", "clip records one display"));
+        }
+        let first_acted = req.actions.iter().find_map(|a| match a.kind.as_ref()? {
+            Kind::Move(pt) | Kind::Click(pt) | Kind::DoubleClick(pt) | Kind::RightClick(pt) => Some(pt.display),
+            Kind::Drag(d) => d.from.as_ref().map(|pt| pt.display),
+            Kind::Scroll(s) => s.at.as_ref().map(|pt| pt.display),
+            Kind::TypeText(_) | Kind::Key(_) => None,
+        });
+        let default = || self.last_display.or(displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0);
+        let display = find(displays, req.display.or(first_acted).unwrap_or_else(default))?.index;
+        let done = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            let recorder = s.spawn(|| clip::record(p, display, &done));
+            let ran = self.run_actions(p, displays, req);
+            done.store(true, Ordering::SeqCst);
+            let clip = recorder.join().map_err(|_| error("platform", "clip recorder panicked"))?;
+            ran?;
+            clip.map_err(|e| error("platform", e))
+        })
     }
 
     /// The input primitives for one Action.

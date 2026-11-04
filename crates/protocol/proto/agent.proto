@@ -170,6 +170,7 @@ message ActRequest {
 enum ObserveMode {
   OBSERVE_MODE_SHOT = 0;
   OBSERVE_MODE_NONE = 1;
+  OBSERVE_MODE_CLIP = 9;
 }
 
 // Coordinates are in Observation image space of `display`; the Agent's Coordinate Mapper converts them.
@@ -209,6 +210,18 @@ message ActResult {
   uint64 request_id = 1;
   repeated Image images = 2;
   Error error = 3;
+  // Set for OBSERVE_MODE_CLIP (then `images` is empty).
+  Clip clip = 9;
+}
+
+// An H.264 recording (MP4) of one display from the first Action until the screen settled, capped in length.
+message Clip {
+  uint32 display = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  string mime = 4;
+  bytes data = 5;
+  uint32 duration_ms = 6;
 }
 
 message Image {

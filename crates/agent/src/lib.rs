@@ -1,6 +1,7 @@
 //! Agent core: enrollment and the persistent connection to the Server.
 
 pub mod contract;
+mod clip;
 mod coords;
 mod executor;
 mod observer;

@@ -20,7 +20,7 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/devices/{id}/displays", get(displays))
 }
 
-/// `{"actions": [...], "observe": "shot" | "none", "display": N | "all"}`. No Actions = observe only (no lock).
+/// `{"actions": [...], "observe": "shot" | "none" | "clip", "display": N | "all"}`. No Actions = observe only (no lock).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ActBody {
@@ -38,6 +38,7 @@ enum Observe {
     #[default]
     Shot,
     None,
+    Clip,
 }
 
 #[derive(Deserialize)]
@@ -147,6 +148,7 @@ async fn act(
             observe: match body.observe {
                 Observe::Shot => proto::ObserveMode::Shot,
                 Observe::None => proto::ObserveMode::None,
+                Observe::Clip => proto::ObserveMode::Clip,
             }
             .into(),
             display: match body.display {
@@ -163,15 +165,24 @@ async fn act(
     if let Some(e) = result.error {
         return Err(agent_error(e));
     }
+    let b64 = |data: &[u8]| base64::engine::general_purpose::STANDARD.encode(data);
+    // Relayed, never stored (spec: no media in the audit log).
+    let clip = result.clip.map(|c| {
+        json!({ "display": c.display, "width": c.width, "height": c.height, "mime": c.mime, "duration_ms": c.duration_ms, "data": b64(&c.data) })
+    });
     let images: Vec<Value> = result
         .images
         .into_iter()
         .map(|i| {
-            let data = (!i.unchanged).then(|| base64::engine::general_purpose::STANDARD.encode(&i.data));
+            let data = (!i.unchanged).then(|| b64(&i.data));
             json!({ "display": i.display, "width": i.width, "height": i.height, "unchanged": i.unchanged, "mime": i.mime, "data": data })
         })
         .collect();
-    Ok(Json(json!({ "images": images })))
+    let mut obs = json!({ "images": images });
+    if let Some(clip) = clip {
+        obs["clip"] = clip;
+    }
+    Ok(Json(obs))
 }
 
 async fn displays(_: Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
