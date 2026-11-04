@@ -13,6 +13,7 @@ base64 = "0.22"
 axum = "0.8"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
+data-encoding = "2"
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
@@ -43,4 +44,8 @@ rcli = { path = "crates/cli" }
 
 # Observation encoding is too slow unoptimized for the system tests.
 [profile.dev.package.image]
+opt-level = 3
+
+# Password hashing (PBKDF2) is ~10x slower unoptimized; keeps tests fast.
+[profile.dev.package.ring]
 opt-level = 3

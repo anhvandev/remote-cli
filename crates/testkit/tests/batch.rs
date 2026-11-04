@@ -115,3 +115,35 @@ async fn cli_runs_a_batch_from_json() {
     assert!(err.contains("invalid_action") && err.contains("step 1"), "{err}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn each_action_of_a_batch_is_audited() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online").await;
+    sys.api.post(&format!("/api/v1/devices/{dev}/lock")).await;
+    let batch = json!({ "observe": "none", "actions": [
+        {"type": "type", "text": "a"},
+        {"type": "click", "x": 99999, "y": 0},
+        {"type": "type", "text": "b"},
+    ]});
+    let (status, _) = sys.api.post_json(&format!("/api/v1/devices/{dev}/actions"), &batch).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (_, entries) = sys.api.get("/api/v1/audit").await;
+    let steps: Vec<(serde_json::Value, serde_json::Value, serde_json::Value)> = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["params"]["step"].clone(), e["params"]["actions"][0]["type"].clone(), e["result"].clone()))
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            (json!(0), json!("type"), json!({"error": null})),
+            (json!(1), json!("click"), json!({"error": "invalid_action"})),
+            (json!(2), json!("type"), json!({"skipped": true})),
+        ]
+    );
+}
