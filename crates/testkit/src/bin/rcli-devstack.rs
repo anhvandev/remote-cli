@@ -1,7 +1,8 @@
 //! The in-process system for the Dashboard's Playwright tests: Server on Postgres (testcontainers), a manual
 //! clock, and FakePlatform Agents. Usage: `rcli-devstack <http-port> <info.json>`.
 //! Writes `{api, admin_token, now}` to `info.json` once the fleet is ready; runs until SIGINT/SIGTERM.
-//! Fleet: `alpha` Online (LockScreen, user "an", full inventory), `bravo` Offline.
+//! Fleet: `alpha` Online (LockScreen, user "an", full inventory, a rolled-up minute of history), `bravo` Offline.
+//! The clock starts at real time (the Dashboard picks history ranges by its own clock) and is frozen after seeding.
 
 use rcli_testkit::{platform::SessionState, Clock, FakePlatform, TestAgent, TestSystem};
 use rcli_agent::platform::{Disk, Display, Inventory, NetworkInterface};
@@ -13,6 +14,7 @@ async fn main() -> anyhow::Result<()> {
     let [_, port, out] = &args[..] else { anyhow::bail!("usage: rcli-devstack <http-port> <info.json>") };
     let _ = std::fs::remove_file(out);
     let sys = TestSystem::start_on(format!("127.0.0.1:{port}").parse()?).await;
+    sys.clock.advance(chrono::Utc::now() - sys.clock.now());
 
     let alpha = FakePlatform::new("alpha");
     alpha.set_session_state(SessionState::Locked);
@@ -52,6 +54,11 @@ async fn main() -> anyhow::Result<()> {
     sys.wait_device(&bravo, |d| !d["last_seen_at"].is_null()).await;
     sys.advance(31);
     sys.wait_device(&bravo, |d| d["status"] == "Offline").await;
+    // Complete alpha's first minute of samples so it has a 1-minute rollup.
+    sys.advance(60);
+    let from = (sys.clock.now() - chrono::Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let query = format!("resolution=1m&from={from}");
+    sys.wait_history(agents[0].device_id(), &query, |h| h["samples"].as_array().is_some_and(|s| !s.is_empty())).await;
 
     let info = json!({
         "api": format!("http://{}", sys.server.http_addr),
