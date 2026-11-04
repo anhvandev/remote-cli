@@ -17,6 +17,7 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/users/{name}/disable", post(disable))
         .route("/api/v1/users/{name}/tokens", post(issue_token))
         .route("/api/v1/users/{name}/credentials", post(set_credentials))
+        .route("/api/v1/tokens", get(list_tokens))
         .route("/api/v1/tokens/{id}/revoke", post(revoke_token))
 }
 
@@ -61,6 +62,10 @@ async fn issue_token(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let (id, token) = auth::issue_token(&state, &name).await?;
     Ok((StatusCode::CREATED, Json(json!({ "id": id, "user": name, "token": token }))))
+}
+
+async fn list_tokens(_: Admin, State(state): State<super::State>) -> Result<Json<Vec<auth::TokenInfo>>, ApiError> {
+    Ok(Json(auth::list_tokens(&state).await?))
 }
 
 async fn revoke_token(_: Admin, State(state): State<super::State>, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {

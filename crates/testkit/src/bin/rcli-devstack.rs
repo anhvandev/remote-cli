@@ -2,7 +2,9 @@
 //! clock, and FakePlatform Agents. Usage: `rcli-devstack <http-port> <info.json>`.
 //! Writes `{api, admin_token, now}` to `info.json` once the fleet is ready; runs until SIGINT/SIGTERM.
 //! Fleet: `alpha` Online (LockScreen, user "an", full inventory, a rolled-up minute of history), `bravo` Offline,
-//! `charlie` Online (logged in; its Control Lock belongs to the direct-control test).
+//! `charlie` Online (logged in; its Control Lock belongs to the direct-control test),
+//! and never-connected `delta`, `echo`, `foxtrot` for the admin screen tests to rename/revoke/delete/merge.
+//! `update` in info.json is a build signed with the key the Agents trust, for the update screen tests.
 //! The clock starts at real time (the Dashboard picks history ranges by its own clock) and is frozen after seeding.
 
 use rcli_testkit::{platform::SessionState, Clock, FakePlatform, TestAgent, TestSystem};
@@ -61,10 +63,18 @@ async fn main() -> anyhow::Result<()> {
     let query = format!("resolution=1m&from={from}");
     sys.wait_history(agents[0].device_id(), &query, |h| h["samples"].as_array().is_some_and(|s| !s.is_empty())).await;
 
+    for name in ["delta", "echo", "foxtrot"] {
+        sys.enroll(&sys.create_enrollment_code().await, &FakePlatform::new(name)).await?;
+    }
+    let (version, target, build) = ("9.9.9", "fake-x86_64", "fake agent build");
+    let signature = rcli_protocol::update::sign(&sys.update_signing_key, version, target, build.as_bytes())?;
+
     let info = json!({
         "api": format!("http://{}", sys.server.http_addr),
         "admin_token": sys.admin_token,
         "now": sys.clock.now().timestamp(),
+        "update": {"version": version, "target": target, "build": build,
+                   "signature": data_encoding::HEXLOWER.encode(&signature)},
     });
     std::fs::write(out, info.to_string())?;
     println!("rcli-devstack ready: {info}");

@@ -32,3 +32,9 @@ tbody tr:hover { background:#1c2029; }
 .login { max-width:360px; margin:60px auto; }
 .login .grid { gap:10px; }
 .otp { text-align:center; font:600 18px ui-monospace,monospace; letter-spacing:.3em; }
+.btn.danger { color:var(--bad); }
+.btn:disabled { opacity:.5; cursor:default; }
+select { background:var(--bg); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:7px 8px; font:inherit; }
+.row input:not([type=checkbox]):not([type=file]) { width:auto; flex:1; min-width:120px; }
+.bar { width:70px; height:6px; background:var(--line); border-radius:3px; display:inline-block; vertical-align:middle; margin-right:6px; }
+.bar i { display:block; height:100%; border-radius:3px; background:var(--accent); }
