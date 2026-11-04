@@ -1,0 +1,234 @@
+<!doctype html>
+<!-- MOCKUP, throwaway: static layout for the Dashboard (spec stories 62-65, tickets 19-25). Fake data, no real behaviour. -->
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Remote CLI · Dashboard mockup</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --text:#e6e8ee; --muted:#8a92a6;
+          --ok:#3ecf8e; --off:#6b7280; --warn:#f5a524; --bad:#ef4444; --accent:#5b8cff; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  code, .mono { font-family:ui-monospace, Menlo, monospace; }
+  nav { display:flex; gap:4px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); align-items:center; }
+  nav b { margin-right:16px; }
+  nav button { background:none; border:0; color:var(--muted); padding:6px 12px; border-radius:6px; cursor:pointer; font:inherit; }
+  nav button.on { background:var(--line); color:var(--text); }
+  nav .who { margin-left:auto; color:var(--muted); }
+  main { padding:20px; max-width:1280px; margin:auto; }
+  section { display:none; } section.on { display:block; }
+  h2 { margin:0 0 12px; font-size:18px; } h3 { margin:0 0 10px; font-size:14px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .grid { display:grid; gap:12px; }
+  .muted { color:var(--muted); }
+  .btn { background:var(--line); color:var(--text); border:1px solid #333a48; border-radius:6px; padding:6px 12px; font:inherit; cursor:pointer; }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .btn.danger { color:var(--bad); }
+  .btn[disabled] { opacity:.4; cursor:not-allowed; }
+  input { background:var(--bg); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:8px 10px; font:inherit; width:100%; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  tr.click:hover { background:#1c2029; cursor:pointer; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  .Online .dot { background:var(--ok); } .Offline .dot { background:var(--off); } .Waking .dot { background:var(--warn); }
+  .tag { font-size:12px; padding:2px 8px; border-radius:99px; background:var(--line); color:var(--muted); white-space:nowrap; }
+  .tag.lock { background:#2b2440; color:#c4b5fd; } .tag.warn { background:#3a2e12; color:var(--warn); }
+  .bar { width:70px; height:6px; background:var(--line); border-radius:3px; display:inline-block; vertical-align:middle; margin-right:6px; }
+  .bar i { display:block; height:100%; border-radius:3px; background:var(--accent); }
+  .banner { border:1px solid #5c4813; background:#2a210c; color:#f8d68a; padding:10px 14px; border-radius:8px; margin-bottom:12px; }
+  .screen { aspect-ratio:16/10; background:linear-gradient(135deg,#1d3b2a,#123049); border-radius:8px; position:relative; overflow:hidden; }
+  .screen .mark { position:absolute; background:#ffd60a; color:#000; font:700 11px ui-monospace,monospace; padding:1px 5px; border-radius:4px; }
+  .screen .win { position:absolute; background:#e9ecf2; border-radius:6px; }
+  .term { background:#000; color:#c8f7c5; border-radius:8px; padding:12px; font:13px/1.5 ui-monospace,Menlo,monospace; height:170px; overflow:auto; }
+  .kpi b { font-size:20px; display:block; }
+  .login { max-width:360px; margin:60px auto; }
+  .login .grid { gap:10px; }
+  .otp { display:flex; gap:6px; } .otp input { text-align:center; font:600 18px ui-monospace,monospace; }
+</style>
+</head>
+<body>
+<nav>
+  <b>⌘ Remote CLI</b>
+  <button data-tab="login">Đăng nhập</button>
+  <button data-tab="fleet" class="on">Danh sách Device</button>
+  <button data-tab="device">Chi tiết Device</button>
+  <button data-tab="admin">Quản trị</button>
+  <span class="who">vanna · admin</span>
+</nav>
+<main>
+
+<!-- 1. Sign-in: password + TOTP (story 62) -->
+<section id="login">
+  <div class="card login">
+    <h2>Đăng nhập</h2>
+    <div class="grid">
+      <label class="muted">Tên đăng nhập<input value="vanna"></label>
+      <label class="muted">Mật khẩu<input type="password" value="secret"></label>
+      <div class="muted">Mã TOTP (ứng dụng xác thực)</div>
+      <div class="otp"><input value="4"><input value="8"><input value="1"><input><input><input></div>
+      <button class="btn primary">Đăng nhập</button>
+    </div>
+  </div>
+</section>
+
+<!-- 2. Fleet list (stories 1, 3, 10, 32) -->
+<section id="fleet" class="on">
+  <div class="row" style="justify-content:space-between;margin-bottom:12px">
+    <h2>Device <span class="muted">· 42 Online · 7 Offline · 1 Waking</span></h2>
+    <div class="row"><input placeholder="Tìm theo tên, IP, OS…" style="width:260px"></div>
+  </div>
+  <div class="card" style="padding:0">
+    <table>
+      <tr><th>Device</th><th>Trạng thái</th><th>Màn hình</th><th>CPU</th><th>RAM</th><th>GPU</th><th>Control Lock</th><th></th></tr>
+      <tr class="click" data-goto="device"><td><b>win-dev-01</b><div class="muted">Windows 11 · 10.0.4.21</div></td>
+        <td class="Online"><span class="dot"></span>Online</td><td><span class="tag">Đã đăng nhập · an</span></td>
+        <td><span class="bar"><i style="width:32%"></i></span>32%</td><td><span class="bar"><i style="width:61%"></i></span>61%</td><td><span class="bar"><i style="width:12%"></i></span>12%</td>
+        <td><span class="tag lock">🔒 ai-bot-1 · còn 7:42</span></td><td></td></tr>
+      <tr class="click"><td><b>mac-design-02</b><div class="muted">macOS 15.8 · 10.0.4.33</div></td>
+        <td class="Online"><span class="dot"></span>Online</td><td><span class="tag warn">Màn đăng nhập · chỉ xem</span></td>
+        <td><span class="bar"><i style="width:4%"></i></span>4%</td><td><span class="bar"><i style="width:22%"></i></span>22%</td><td><span class="bar"><i style="width:0%"></i></span>0%</td>
+        <td class="muted">—</td><td></td></tr>
+      <tr class="click"><td><b>ubuntu-build-07</b><div class="muted">Ubuntu 24.04 · Wayland · 10.0.5.10</div></td>
+        <td class="Online"><span class="dot"></span>Online</td><td><span class="tag">Màn khoá</span></td>
+        <td><span class="bar"><i style="width:88%"></i></span>88%</td><td><span class="bar"><i style="width:74%"></i></span>74%</td><td><span class="bar"><i style="width:65%"></i></span>65%</td>
+        <td class="muted">—</td><td></td></tr>
+      <tr class="click"><td><b>win-qa-03</b><div class="muted">Windows 10 · 10.0.4.40</div></td>
+        <td class="Waking"><span class="dot"></span>Waking</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td>
+        <td class="muted">—</td><td class="muted">còn 2:10</td></tr>
+      <tr class="click"><td><b>linux-lab-12</b><div class="muted">Fedora 41 · X11 · 10.0.6.12</div></td>
+        <td class="Offline"><span class="dot"></span>Offline</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td>
+        <td class="muted">—</td><td><button class="btn">Wake</button></td></tr>
+      <tr class="click"><td><b>win-home-09</b><div class="muted">Windows 11 · 192.168.1.5</div></td>
+        <td class="Offline"><span class="dot"></span>Offline</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td>
+        <td class="muted">—</td><td><button class="btn" disabled title="Không có Wake Relay nào online trong LAN này">Wake</button></td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- 3. Device detail: live view, control, terminal, metrics (stories 3-5, 23-33, 63-65) -->
+<section id="device">
+  <div class="row" style="justify-content:space-between;margin-bottom:12px">
+    <div><h2 style="margin:0">win-dev-01 <span class="Online" style="font-size:14px;font-weight:400"><span class="dot"></span>Online</span></h2>
+      <div class="muted">Windows 11 Pro 24H2 · 10.0.4.21 · Agent 0.4.2 · uptime 3d 4h · user: an</div></div>
+    <div class="row">
+      <button class="btn" disabled>Wake</button><button class="btn">Lock screen</button>
+      <button class="btn" disabled title="Chỉ người giữ Control Lock hoặc admin">Sleep</button>
+      <button class="btn" disabled title="Chỉ người giữ Control Lock hoặc admin">Restart</button>
+      <button class="btn danger" disabled title="Chỉ người giữ Control Lock hoặc admin">Shutdown</button>
+    </div>
+  </div>
+
+  <div class="banner">ⓘ Ví dụ cảnh báo khi Device macOS ở màn đăng nhập: <b>chỉ xem được, không điều khiển được</b>. Cần một người đăng nhập hoặc bật tự đăng nhập.</div>
+
+  <div class="grid" style="grid-template-columns: 1fr 320px">
+    <div class="grid">
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:10px">
+          <h3 style="margin:0">Live view</h3>
+          <div class="row"><span class="tag">Display 1 · 2560×1440</span><span class="tag">Display 2</span><span class="tag">P2P · 38 ms</span><label class="muted"><input type="checkbox" style="width:auto" checked> Hiện Mark</label></div>
+        </div>
+        <div class="screen">
+          <div class="win" style="left:12%;top:14%;width:52%;height:58%"></div>
+          <div class="win" style="left:58%;top:30%;width:30%;height:44%;background:#cfd6e4"></div>
+          <span class="mark" style="left:14%;top:16%">1</span><span class="mark" style="left:40%;top:30%">2</span>
+          <span class="mark" style="left:20%;top:55%">3</span><span class="mark" style="left:60%;top:32%">4</span>
+          <span class="mark" style="left:70%;top:65%">5</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:10px">
+          <h3 style="margin:0">Terminal</h3><span class="tag">chạy dưới: an</span>
+        </div>
+        <div class="term">PS C:\Users\an&gt; Get-Process chrome | Measure-Object<br>Count : 14<br>PS C:\Users\an&gt; <span style="background:#c8f7c5">&nbsp;</span></div>
+      </div>
+    </div>
+
+    <div class="grid" style="align-content:start">
+      <div class="card">
+        <h3>Control Lock</h3>
+        <div class="row" style="margin-bottom:8px"><span class="tag lock">🔒 ai-bot-1</span><span class="muted">hết hạn sau <b class="mono">7:42</b></span></div>
+        <div class="muted" style="margin-bottom:10px">Đang bị AI giữ. Bạn vẫn xem được màn hình và dùng được terminal.</div>
+        <div class="row"><button class="btn primary" disabled>Điều khiển</button><button class="btn danger">Admin: giải phóng</button></div>
+      </div>
+      <div class="card">
+        <h3>Tài nguyên</h3>
+        <div class="grid" style="grid-template-columns:1fr 1fr">
+          <div class="kpi"><span class="muted">CPU</span><b>32%</b></div><div class="kpi"><span class="muted">RAM</span><b>9.8/16 GB</b></div>
+          <div class="kpi"><span class="muted">GPU</span><b>12%</b></div><div class="kpi"><span class="muted">Disk</span><b>40%</b></div>
+          <div class="kpi"><span class="muted">Mạng ↑/↓</span><b class="mono" style="font-size:15px">0.4/2.1 MB/s</b></div><div class="kpi"><span class="muted">CPU temp</span><b>61°C</b></div>
+        </div>
+        <div class="row" style="justify-content:space-between;margin:12px 0 4px"><span class="muted">CPU · 24 giờ</span><span class="muted">1h · <b>24h</b> · 7d · 90d</span></div>
+        <svg viewBox="0 0 280 70" width="100%" height="70"><polyline fill="none" stroke="#5b8cff" stroke-width="2"
+          points="0,50 20,46 40,52 60,30 80,34 100,20 120,40 140,44 160,25 180,28 200,48 220,38 240,42 260,30 280,36"/></svg>
+      </div>
+      <div class="card">
+        <h3>Phần cứng</h3>
+        <table class="muted">
+          <tr><td>CPU</td><td>Intel i7-12700 · 12C/20T</td></tr><tr><td>RAM</td><td>16 GB</td></tr>
+          <tr><td>GPU</td><td>RTX 3060</td></tr><tr><td>Disk</td><td>NVMe 512 GB</td></tr>
+          <tr><td>Mạng</td><td>Ethernet · 3c:7c:3f:aa:10:2e</td></tr><tr><td>Serial</td><td class="mono">PF3X9K2A</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 4. Admin (ticket 25) -->
+<section id="admin">
+  <h2>Quản trị</h2>
+  <div class="grid" style="grid-template-columns:1fr 1fr">
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><h3>User &amp; API token</h3><button class="btn">+ User</button></div>
+      <table>
+        <tr><th>User</th><th>Vai trò</th><th>Token</th><th></th></tr>
+        <tr><td>vanna</td><td><span class="tag">admin</span></td><td>2</td><td><button class="btn">Tạo token</button></td></tr>
+        <tr><td>ai-bot-1</td><td><span class="tag">operator</span></td><td>1</td><td><button class="btn">Tạo token</button></td></tr>
+        <tr><td>minh</td><td><span class="tag">operator</span></td><td>0</td><td><button class="btn danger">Vô hiệu</button></td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><h3>Enrollment Code</h3><button class="btn primary">+ Tạo mã</button></div>
+      <table>
+        <tr><th>Mã</th><th>Tạo lúc</th><th>Trạng thái</th></tr>
+        <tr><td class="mono">K7QF-29XM</td><td>10:12 hôm nay</td><td><span class="tag">chưa dùng</span></td></tr>
+        <tr><td class="mono">P2LA-88ZD</td><td>hôm qua</td><td class="muted">đã dùng · win-qa-03</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Mật khẩu unlock</h3>
+      <table>
+        <tr><th>Device</th><th>Mật khẩu</th><th></th></tr>
+        <tr><td>win-dev-01</td><td class="muted">đã lưu · không hiển thị</td><td><button class="btn">Đổi</button> <button class="btn danger">Xoá</button></td></tr>
+        <tr><td>mac-design-02</td><td class="muted">chưa có</td><td><button class="btn">Đặt</button></td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><h3>Cập nhật Agent</h3><button class="btn">Tải bản build đã ký</button></div>
+      <div class="row" style="margin-bottom:8px"><span class="tag">Mới nhất 0.4.2 ✓ chữ ký hợp lệ</span></div>
+      <table>
+        <tr><th>Phạm vi</th><th>Tiến độ</th></tr>
+        <tr><td>Toàn bộ Device</td><td><span class="bar"><i style="width:76%"></i></span>38/50</td></tr>
+      </table>
+      <div class="row" style="margin-top:10px"><button class="btn primary">Cập nhật tất cả</button><button class="btn">Chọn Device…</button></div>
+    </div>
+    <div class="card" style="grid-column:1/-1">
+      <h3>Device</h3>
+      <table>
+        <tr><th>Device</th><th>Đăng ký</th><th></th></tr>
+        <tr><td>win-dev-01</td><td>12/10/2026</td><td><button class="btn">Đổi tên</button> <button class="btn">Gộp lịch sử từ…</button> <button class="btn danger">Thu hồi</button> <button class="btn danger">Xoá</button></td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+</main>
+<script>
+  const show = t => document.querySelectorAll('nav button, section').forEach(e =>
+    e.classList.toggle('on', e.dataset.tab === t || e.id === t));
+  document.querySelectorAll('nav button').forEach(b => b.onclick = () => show(b.dataset.tab));
+  document.querySelectorAll('[data-goto]').forEach(r => r.onclick = () => show(r.dataset.goto));
+</script>
+</body>
+</html>
