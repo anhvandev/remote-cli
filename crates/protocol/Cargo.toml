@@ -10,6 +10,7 @@ bytes.workspace = true
 futures.workspace = true
 prost.workspace = true
 ring.workspace = true
+serde.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 

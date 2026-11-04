@@ -3,6 +3,8 @@
 
 use std::sync::{Arc, Mutex};
 
+pub use rcli_protocol::agent::{Disk, Display, Inventory, NetworkInterface, Process, Resources};
+
 pub trait Platform: Send + Sync + 'static {
     fn hostname(&self) -> String;
     /// One frame of the primary display.
@@ -10,7 +12,12 @@ pub trait Platform: Send + Sync + 'static {
     /// Presses and releases one key, e.g. `"a"`.
     fn key(&self, key: &str) -> anyhow::Result<()>;
     fn session_state(&self) -> anyhow::Result<SessionState>;
-    fn metrics(&self) -> anyhow::Result<Metrics>;
+    /// Hardware and OS facts; polled, and re-sent when they differ from the last ones sent.
+    fn inventory(&self) -> anyhow::Result<Inventory>;
+    /// A complete sample of current resources; unavailable values (e.g. no battery) are `None`.
+    /// `session` is left unset: the Agent fills it from `session_state`.
+    fn metrics(&self) -> anyhow::Result<Resources>;
+    fn processes(&self) -> anyhow::Result<Vec<Process>>;
     /// One-shot command through the OS shell.
     fn shell(&self, command: &str) -> anyhow::Result<ShellOutput>;
     fn power(&self, action: PowerAction) -> anyhow::Result<()>;
@@ -39,12 +46,6 @@ pub enum SessionState {
     LoginScreen,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Metrics {
-    pub cpu_percent: f32,
-    pub ram_used_bytes: u64,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShellOutput {
     pub exit_code: i32,
@@ -60,7 +61,8 @@ pub enum PowerAction {
     Lock,
 }
 
-/// Scripted Platform for tests: no OS access. Clones share state, so a test can keep one and script the screen.
+/// Scripted Platform for tests: no OS access. Clones share state, so a test can keep one and script the screen,
+/// inventory, resources and processes (`update`).
 #[derive(Clone, Debug)]
 pub struct FakePlatform {
     pub hostname: String,
@@ -68,18 +70,35 @@ pub struct FakePlatform {
 }
 
 #[derive(Debug)]
-struct FakeState {
+pub struct FakeState {
     session: SessionState,
     keys: Vec<String>,
     wakes: Vec<[u8; 6]>,
     version: String,
     installed: Vec<String>,
+    pub inventory: Inventory,
+    pub resources: Resources,
+    pub processes: Vec<Process>,
 }
 
 impl FakePlatform {
     pub fn new(hostname: impl Into<String>) -> Self {
-        let state = FakeState { session: SessionState::LoggedIn, keys: vec![], wakes: vec![], version: env!("CARGO_PKG_VERSION").into(), installed: vec![] };
-        Self { hostname: hostname.into(), state: Arc::new(Mutex::new(state)) }
+        let hostname = hostname.into();
+        let state = FakeState {
+            session: SessionState::LoggedIn,
+            keys: vec![],
+            wakes: vec![],
+            inventory: Inventory { os: "FakeOS".into(), hostname: hostname.clone(), cpu_cores: 4, ..Default::default() },
+            resources: Resources { cpu_percent: Some(12.5), ram_used_bytes: Some(4 << 30), ..Default::default() },
+            processes: vec![Process { pid: 1, name: "init".into(), ..Default::default() }],
+            version: env!("CARGO_PKG_VERSION").into(),
+            installed: vec![],
+        };
+        Self { hostname, state: Arc::new(Mutex::new(state)) }
+    }
+
+    pub fn update(&self, f: impl FnOnce(&mut FakeState)) {
+        f(&mut self.state.lock().unwrap());
     }
 
     pub fn set_session_state(&self, session: SessionState) {
@@ -123,8 +142,16 @@ impl Platform for FakePlatform {
         Ok(self.state.lock().unwrap().session)
     }
 
-    fn metrics(&self) -> anyhow::Result<Metrics> {
-        Ok(Metrics { cpu_percent: 12.5, ram_used_bytes: 4 << 30 })
+    fn inventory(&self) -> anyhow::Result<Inventory> {
+        Ok(self.state.lock().unwrap().inventory.clone())
+    }
+
+    fn metrics(&self) -> anyhow::Result<Resources> {
+        Ok(self.state.lock().unwrap().resources.clone())
+    }
+
+    fn processes(&self) -> anyhow::Result<Vec<Process>> {
+        Ok(self.state.lock().unwrap().processes.clone())
     }
 
     // shortcut: only `echo` is emulated; script more results when a feature needs them.

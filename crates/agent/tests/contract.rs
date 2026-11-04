@@ -2,7 +2,7 @@
 
 use rcli_agent::{
     contract::{self, Env, Step},
-    platform::{FakePlatform, Frame, Metrics, Platform, PowerAction, SessionState, ShellOutput},
+    platform::{FakePlatform, Frame, Inventory, Platform, PowerAction, Process, Resources, SessionState, ShellOutput},
 };
 
 /// Does to the FakePlatform what a person at the machine would do.
@@ -29,6 +29,8 @@ fn fake_platform_passes_every_check_in_every_environment() {
 | key shows on screen | ✅ | ✅ | ✅ |
 | session state | ✅ | ✅ | ✅ |
 | metrics | ✅ | | |
+| inventory | ✅ | | |
+| processes | ✅ | | |
 | shell | ✅ | | |
 | wake send | ✅ | | |
 | power lock | ✅ | | |
@@ -65,8 +67,14 @@ impl Platform for Broken {
             Ok(SessionState::LoggedIn)
         }
     }
-    fn metrics(&self) -> anyhow::Result<Metrics> {
+    fn inventory(&self) -> anyhow::Result<Inventory> {
+        self.fake.inventory()
+    }
+    fn metrics(&self) -> anyhow::Result<Resources> {
         self.fake.metrics()
+    }
+    fn processes(&self) -> anyhow::Result<Vec<Process>> {
+        self.fake.processes()
     }
     fn shell(&self, command: &str) -> anyhow::Result<ShellOutput> {
         self.fake.shell(command)

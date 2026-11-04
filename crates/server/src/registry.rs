@@ -83,6 +83,19 @@ pub async fn list(state: &AppState) -> anyhow::Result<Vec<Device>> {
         .collect())
 }
 
+/// Finds a Device by id or by name. `Ok(None)` if none; an error message if the name is ambiguous.
+pub async fn resolve(state: &AppState, key: &str) -> anyhow::Result<Result<Option<Uuid>, String>> {
+    let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM devices WHERE id::text = $1 OR name = $1 LIMIT 2")
+        .bind(key)
+        .fetch_all(&state.db)
+        .await?;
+    Ok(match ids[..] {
+        [] => Ok(None),
+        [id] => Ok(Some(id)),
+        _ => Err(format!("more than one Device is named {key:?}; use its id")),
+    })
+}
+
 pub async fn find_by_cert_fingerprint(state: &AppState, fp: &[u8]) -> anyhow::Result<Option<Uuid>> {
     Ok(sqlx::query_scalar("SELECT id FROM devices WHERE cert_fingerprint = $1")
         .bind(fp)
