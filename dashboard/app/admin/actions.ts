@@ -61,8 +61,8 @@ export async function disableUser(_: Result, form: FormData) {
 
 export async function createEnrollmentCode() {
   return run(async () => {
-    const r = await api<{ code: string }>("/api/v1/enrollment-codes", json("POST"));
-    return `${r.code} (dùng một lần)`;
+    const r = await api<{ code: string; ca_fingerprint: string }>("/api/v1/enrollment-codes", json("POST"));
+    return `${r.code} (dùng một lần) · CA fingerprint ${r.ca_fingerprint}`;
   });
 }
 

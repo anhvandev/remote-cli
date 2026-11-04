@@ -558,7 +558,8 @@ where
         }
         Command::EnrollmentCode(EnrollmentCodeCommand::Create) => {
             let created = api.call(reqwest::Method::POST, "/api/v1/enrollment-codes", None).await?;
-            let text = format!("{}\n", str_of(&created["code"]));
+            // The installer passes both to the Agent: `--enroll CODE --ca-fingerprint FP`.
+            let text = format!("{}\nca-fingerprint {}\n", str_of(&created["code"]), str_of(&created["ca_fingerprint"]));
             (created, text)
         }
         Command::User(UserCommand::Create { name, role }) => {

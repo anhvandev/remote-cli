@@ -9,5 +9,6 @@ pub fn routes() -> Router<super::State> {
 
 async fn create(_: Admin, State(state): State<super::State>) -> Result<(StatusCode, Json<Value>), ApiError> {
     let code = crate::enrollment::create_code(&state).await?;
-    Ok((StatusCode::CREATED, Json(json!({ "code": code }))))
+    // The Agent checks the CA it was given against this before enrolling (no trust on first use).
+    Ok((StatusCode::CREATED, Json(json!({ "code": code, "ca_fingerprint": state.ca.fingerprint }))))
 }

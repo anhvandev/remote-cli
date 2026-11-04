@@ -150,7 +150,8 @@ impl TestSystem {
     }
 
     pub async fn enroll(&self, code: &str, platform: &FakePlatform) -> anyhow::Result<Credentials> {
-        rcli_agent::enroll(&self.endpoint(), code, platform).await
+        let endpoint = self.endpoint();
+        rcli_agent::enroll(&endpoint, code, &rcli_agent::ca_fingerprint(&endpoint.ca_pem)?, platform).await
     }
 
     /// Enrolls a new Device named `hostname` and starts its Agent.

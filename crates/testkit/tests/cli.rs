@@ -4,7 +4,7 @@ use rcli_testkit::TestSystem;
 async fn rcli_devices_shows_device_status_as_text_and_json() {
     let sys = TestSystem::start().await;
     let code = sys.rcli(&["enrollment-code", "create"]).await.unwrap();
-    let creds = sys.enroll(code.trim(), &rcli_testkit::FakePlatform::new("lab-pc")).await.unwrap();
+    let creds = sys.enroll(code.lines().next().unwrap(), &rcli_testkit::FakePlatform::new("lab-pc")).await.unwrap();
     let mut agent = rcli_testkit::TestAgent::new(sys.endpoint(), rcli_testkit::FakePlatform::new("lab-pc"), creds);
     agent.start();
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;

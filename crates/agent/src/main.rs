@@ -16,8 +16,11 @@ struct Args {
     #[arg(long, env = "RCLI_AGENT_STATE_DIR")]
     state_dir: PathBuf,
     /// Enrollment Code; needed only on first start.
-    #[arg(long)]
+    #[arg(long, requires = "ca_fingerprint")]
     enroll: Option<String>,
+    /// SHA-256 fingerprint of the Server CA, printed with the Enrollment Code; enrolling fails if `--ca` differs.
+    #[arg(long, env = "RCLI_AGENT_CA_FINGERPRINT")]
+    ca_fingerprint: Option<String>,
     /// Public key (hex) Agent updates must be signed with, from `rcli update keygen`. Without it updates are rejected.
     #[arg(long, env = "RCLI_AGENT_UPDATE_KEY")]
     update_key: Option<String>,
@@ -42,7 +45,8 @@ async fn main() -> anyhow::Result<()> {
         Ok(bytes) => serde_json::from_slice(&bytes)?,
         Err(_) => {
             let code = args.enroll.ok_or_else(|| anyhow::anyhow!("not enrolled yet: pass --enroll <code>"))?;
-            let creds = rcli_agent::enroll(&server, &code, platform.as_ref()).await?;
+            let pin = args.ca_fingerprint.unwrap_or_default();
+            let creds = rcli_agent::enroll(&server, &code, &pin, platform.as_ref()).await?;
             std::fs::create_dir_all(&args.state_dir)?;
             std::fs::write(&path, serde_json::to_vec(&creds)?)?;
             #[cfg(unix)]

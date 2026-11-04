@@ -4,11 +4,14 @@ use rcgen::{
     BasicConstraints, Certificate, CertificateParams, CertificateSigningRequestParams, DnType,
     ExtendedKeyUsagePurpose, IsCa, KeyPair,
 };
+use rustls::pki_types::pem::PemObject;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
 pub struct Ca {
     pub cert_pem: String,
+    /// Hex SHA-256 of the CA certificate (DER): handed out with Enrollment Codes so Agents can pin it.
+    pub fingerprint: String,
     cert: Certificate,
     key: KeyPair,
 }
@@ -38,7 +41,9 @@ impl Ca {
         let key = KeyPair::from_pem(&key_pem)?;
         // Re-signing yields an equivalent issuer (same DN and key) for signing; peers trust `cert_pem`.
         let cert = CertificateParams::from_ca_cert_pem(&cert_pem)?.self_signed(&key)?;
-        Ok(Self { cert_pem, cert, key })
+        let der = rustls::pki_types::CertificateDer::from_pem_slice(cert_pem.as_bytes())?;
+        let fingerprint = hex::encode(fingerprint(&der));
+        Ok(Self { cert_pem, fingerprint, cert, key })
     }
 
     pub fn issue_server_cert(&self, hostnames: Vec<String>) -> anyhow::Result<Issued> {

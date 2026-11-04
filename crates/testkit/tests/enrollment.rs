@@ -46,3 +46,26 @@ async fn controller_api_requires_admin_token() {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }
+
+#[tokio::test]
+async fn the_agent_enrolls_only_with_a_server_ca_matching_the_pinned_fingerprint() {
+    let sys = TestSystem::start().await;
+    let (status, created) = sys.api.post("/api/v1/enrollment-codes").await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (code, pin) = (created["code"].as_str().unwrap(), created["ca_fingerprint"].as_str().unwrap());
+    assert_eq!(pin.len(), 64, "hex SHA-256: {pin}");
+
+    // A CA swapped in on the way (plain-HTTP download) does not match the pin from the Enrollment Code.
+    let wrong = "00".repeat(32);
+    let err = rcli_agent::enroll(&sys.endpoint(), code, &wrong, &FakePlatform::new("lab-pc")).await.unwrap_err();
+    assert!(err.to_string().contains("fingerprint"), "{err}");
+    let (_, devices) = sys.api.get("/api/v1/devices").await;
+    assert_eq!(devices, serde_json::json!([]), "nothing was sent to the Server");
+
+    // Pins are accepted in either case and with colons, as tools print them.
+    let colons = pin.to_uppercase().as_bytes().chunks(2).map(|c| std::str::from_utf8(c).unwrap()).collect::<Vec<_>>().join(":");
+    rcli_agent::enroll(&sys.endpoint(), code, &colons, &FakePlatform::new("lab-pc")).await.unwrap();
+
+    let out = sys.rcli(&["enrollment-code", "create"]).await.unwrap();
+    assert_eq!(out.lines().nth(1), Some(&*format!("ca-fingerprint {pin}")), "{out}");
+}

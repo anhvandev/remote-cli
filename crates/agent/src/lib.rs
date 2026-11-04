@@ -84,9 +84,21 @@ async fn connect(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow
     Ok(Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME))
 }
 
+/// Hex SHA-256 of a CA certificate (PEM), as the Server reports it with each Enrollment Code.
+pub fn ca_fingerprint(ca_pem: &str) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    Ok(hex::encode(Sha256::digest(CertificateDer::from_pem_slice(ca_pem.as_bytes())?)))
+}
+
 /// Exchanges a single-use Enrollment Code for this Device's credentials.
-/// The private key never leaves the Agent; only a CSR is sent.
-pub async fn enroll(server: &ServerEndpoint, code: &str, platform: &dyn Platform) -> anyhow::Result<Credentials> {
+/// The private key never leaves the Agent; only a CSR is sent. Refuses to talk to the Server unless its CA matches
+/// `ca_fingerprint` (from the Enrollment Code; hex, any case, colons allowed): the CA file itself may come over plain HTTP.
+pub async fn enroll(server: &ServerEndpoint, code: &str, ca_fingerprint: &str, platform: &dyn Platform) -> anyhow::Result<Credentials> {
+    let pinned = ca_fingerprint.replace(':', "").to_lowercase();
+    let actual = self::ca_fingerprint(&server.ca_pem)?;
+    if pinned != actual {
+        anyhow::bail!("the Server CA's fingerprint {actual} does not match the pinned fingerprint {pinned}; refusing to enroll");
+    }
     let key = rcgen::KeyPair::generate()?;
     let csr = rcgen::CertificateParams::new(vec![])?.serialize_request(&key)?.pem()?;
     let mut conn = connect(server, None).await?;
