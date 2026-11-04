@@ -15,6 +15,7 @@ pub mod metrics;
 pub mod pki;
 pub mod registry;
 pub mod updates;
+pub mod vault;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -33,6 +34,8 @@ pub struct Config {
     pub agent_hostnames: Vec<String>,
     /// First-run admin token: accepted only until an enabled admin user has a live API token.
     pub bootstrap_admin_token: String,
+    /// Secrets Vault key (`RCLI_MASTER_KEY`); None = unlock passwords can't be stored or used.
+    pub master_key: Option<vault::MasterKey>,
 }
 
 impl Config {
@@ -49,6 +52,7 @@ impl Config {
                 .map(|s| s.trim().to_owned())
                 .collect(),
             bootstrap_admin_token: var("RCLI_BOOTSTRAP_ADMIN_TOKEN", None)?,
+            master_key: std::env::var("RCLI_MASTER_KEY").ok().filter(|k| !k.is_empty()).map(|k| k.parse()).transpose()?,
         })
     }
 }

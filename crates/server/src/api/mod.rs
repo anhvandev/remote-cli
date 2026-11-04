@@ -8,6 +8,7 @@ mod enrollment;
 mod history;
 mod updates;
 mod users;
+mod vault;
 
 use std::sync::Arc;
 
@@ -35,6 +36,7 @@ pub fn router(state: State) -> Router {
         .merge(control_lock::routes())
         .merge(actions::routes())
         .merge(audit::routes())
+        .merge(vault::routes())
         .with_state(state)
 }
 

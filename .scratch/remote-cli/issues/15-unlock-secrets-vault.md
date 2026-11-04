@@ -4,9 +4,9 @@
 
 **Blocked by:** 05, 06
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Admin sets/clears a Device's unlock password via CLI; it is stored encrypted
-- [ ] `rcli unlock <device>` makes the Agent type the password; requires the Control Lock
-- [ ] The password never appears in any Controller API response, CLI output or audit entry
-- [ ] Clear error when no password is stored
+- [x] Admin sets/clears a Device's unlock password via CLI; it is stored encrypted
+- [x] `rcli unlock <device>` makes the Agent type the password; requires the Control Lock
+- [x] The password never appears in any Controller API response, CLI output or audit entry
+- [x] Clear error when no password is stored
