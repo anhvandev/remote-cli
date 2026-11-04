@@ -5,6 +5,7 @@
 
 pub mod agent_link;
 pub mod api;
+pub mod audit;
 pub mod auth;
 pub mod clock;
 pub mod control_lock;

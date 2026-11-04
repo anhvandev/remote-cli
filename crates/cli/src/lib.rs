@@ -61,6 +61,20 @@ enum Command {
         #[arg(long, default_value = ".")]
         out: PathBuf,
     },
+    /// Audit log of Actions, oldest first (admin).
+    Audit {
+        /// Device id or name.
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long)]
+        user: Option<String>,
+        /// RFC 3339 time, inclusive.
+        #[arg(long)]
+        since: Option<String>,
+        /// RFC 3339 time, inclusive.
+        #[arg(long)]
+        until: Option<String>,
+    },
     /// Send one Action (needs the Control Lock) and get an Observation back.
     /// Coordinates are in the Observation image space of `--display`.
     Act {
@@ -107,7 +121,12 @@ enum ActCommand {
         dy: i32,
     },
     /// Type text.
-    Type { text: String },
+    Type {
+        text: String,
+        /// It is a password: masked in the audit log.
+        #[arg(long)]
+        secret: bool,
+    },
     /// Press a key combination, e.g. ctrl+shift+t.
     Key { keys: String },
 }
@@ -130,7 +149,7 @@ impl ActCommand {
                 (v["dx"], v["dy"]) = (dx.into(), dy.into());
                 v
             }
-            ActCommand::Type { text } => json!({ "type": "type", "text": text }),
+            ActCommand::Type { text, secret } => json!({ "type": "type", "text": text, "secret": secret }),
             ActCommand::Key { keys } => json!({ "type": "key", "keys": keys }),
         }
     }
@@ -378,6 +397,27 @@ where
             let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
             (obs, text)
+        }
+        Command::Audit { device, user, since, until } => {
+            let query: Vec<String> = [("device", device), ("user", user), ("since", since), ("until", until)]
+                .into_iter()
+                .filter_map(|(k, v)| v.map(|v| format!("{k}={}", path_segment(&v))))
+                .collect();
+            let entries = api.call(reqwest::Method::GET, &format!("/api/v1/audit?{}", query.join("&")), None).await?;
+            let mut text = format!("{:<30}  {:<16}  {:<24}  {:<8}  {:<16}  {}\n", "AT", "USER", "DEVICE", "ACTION", "RESULT", "PARAMS");
+            for e in entries.as_array().into_iter().flatten() {
+                let result = if e["result"].get("error").is_some_and(Value::is_null) { "ok".to_owned() } else { e["result"].to_string() };
+                text += &format!(
+                    "{:<30}  {:<16}  {:<24}  {:<8}  {:<16}  {}\n",
+                    str_of(&e["at"]),
+                    str_of(&e["user"]),
+                    e["device"].as_str().or(e["device_id"].as_str()).unwrap_or(""),
+                    str_of(&e["action"]),
+                    result,
+                    e["params"],
+                );
+            }
+            (entries, text)
         }
         Command::Act { device, action, display, observe, observe_display, out } => {
             let body = json!({

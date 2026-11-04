@@ -1,6 +1,7 @@
 //! Controller API (HTTP). One file per area; each exposes `routes()` merged here.
 
 mod actions;
+mod audit;
 mod control_lock;
 mod devices;
 mod enrollment;
@@ -31,6 +32,7 @@ pub fn router(state: State) -> Router {
         .merge(users::routes())
         .merge(control_lock::routes())
         .merge(actions::routes())
+        .merge(audit::routes())
         .with_state(state)
 }
 
