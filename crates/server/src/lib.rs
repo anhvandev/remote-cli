@@ -14,6 +14,7 @@ pub mod history;
 pub mod metrics;
 pub mod pki;
 pub mod registry;
+pub mod shell;
 pub mod updates;
 
 use std::{net::SocketAddr, sync::Arc};
@@ -65,6 +66,7 @@ pub struct AppState {
     pub maintenance: history::Maintenance,
     /// Signalled on every rollout so live Device sessions offer the update.
     pub rollouts: tokio::sync::watch::Sender<()>,
+    pub shells: shell::Shells,
 }
 
 /// A running Server. Dropping it stops the listeners.
@@ -103,6 +105,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
         agents: Default::default(),
         maintenance: Default::default(),
         rollouts: tokio::sync::watch::Sender::new(()),
+        shells: Default::default(),
     });
     let acceptor = agent_link::acceptor(&state)?;
     let router = api::router(state.clone());

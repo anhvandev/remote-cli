@@ -2,7 +2,10 @@
 //! It runs against any adapter: the FakePlatform in CI, a real OS adapter on a real machine with an operator
 //! following prompts. Each check yields one cell of a results table (rows = checks, columns = environments).
 
-use std::time::{Duration, Instant};
+use std::{
+    io::{Read, Write},
+    time::{Duration, Instant},
+};
 
 use crate::platform::{Input, Platform, PowerAction, RunAs, SessionState};
 
@@ -12,7 +15,7 @@ pub const WAKE_TEST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x27];
 const SCREEN_CHANGE_TIMEOUT: Duration = Duration::from_secs(1);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(3);
 const SHELL_TIMEOUT: Duration = Duration::from_secs(5);
-const CHECKS: [&str; 14] = [
+const CHECKS: [&str; 15] = [
     "displays",
     "capture",
     "key shows on screen",
@@ -25,6 +28,7 @@ const CHECKS: [&str; 14] = [
     "shell",
     "shell timeout",
     "shell as root",
+    "pty",
     "wake send",
     "power lock",
 ];
@@ -138,6 +142,28 @@ pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
         let out = p.shell("sleep 30", RunAs::LoggedInUser, Duration::from_secs(1))?;
         anyhow::ensure!(out.timed_out, "not reported as timed out: {out:?}");
         anyhow::ensure!(start.elapsed() < SHELL_TIMEOUT, "not killed in time: took {:?}", start.elapsed());
+        Ok(())
+    });
+    r.check("pty", Env::LoggedIn, || {
+        let mut pty = p.pty(RunAs::LoggedInUser, 80, 24)?;
+        pty.control.resize(100, 30)?;
+        pty.input.write_all(b"echo rcli-contract\rexit 3\r")?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut output = pty.output;
+        std::thread::spawn(move || {
+            let mut text = vec![];
+            let _ = output.read_to_end(&mut text);
+            let _ = tx.send(text);
+        });
+        let Ok(text) = rx.recv_timeout(SHELL_TIMEOUT) else {
+            pty.control.kill()?;
+            anyhow::bail!("shell did not exit after `exit 3`");
+        };
+        let text = String::from_utf8_lossy(&text);
+        // The typed line is echoed once; the output makes a second occurrence.
+        anyhow::ensure!(text.matches("rcli-contract").count() >= 2, "no echo output in {text:?}");
+        let code = pty.control.wait()?;
+        anyhow::ensure!(code == 3, "exit code {code}, expected 3");
         Ok(())
     });
     r.check("wake send", Env::LoggedIn, || p.send_wake(WAKE_TEST_MAC));

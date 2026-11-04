@@ -5,7 +5,7 @@ use std::time::Duration;
 use rcli_agent::{
     contract::{self, Env, Step},
     platform::{
-        DisplayInfo, FakePlatform, Frame, Input, Inventory, Platform, PowerAction, Process, Resources, RunAs, SessionState,
+        DisplayInfo, FakePlatform, Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, RunAs, SessionState,
         ShellOutput, UiElement,
     },
 };
@@ -53,6 +53,7 @@ fn fake_platform_passes_every_check_in_every_environment() {
 | shell | ✅ | | |
 | shell timeout | ✅ | | |
 | shell as root | | | ✅ |
+| pty | ✅ | | |
 | wake send | ✅ | | |
 | power lock | ✅ | | |
 "
@@ -108,6 +109,9 @@ impl Platform for Broken {
     }
     fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
         self.fake.shell(command, run_as, timeout)
+    }
+    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+        self.fake.pty(run_as, cols, rows)
     }
     fn power(&self, action: PowerAction) -> anyhow::Result<()> {
         self.fake.power(action)

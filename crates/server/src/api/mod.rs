@@ -8,6 +8,7 @@ mod enrollment;
 mod exec;
 mod history;
 mod sessions;
+mod shell;
 mod updates;
 mod users;
 
@@ -39,6 +40,7 @@ pub fn router(state: State) -> Router {
         .merge(audit::routes())
         .merge(exec::routes())
         .merge(sessions::routes())
+        .merge(shell::routes())
         .with_state(state)
 }
 

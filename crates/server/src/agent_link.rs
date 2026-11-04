@@ -88,6 +88,13 @@ impl Agents {
         }
     }
 
+    /// Fire-and-forget message to a connected Agent; dropped if it is not connected.
+    pub fn send(&self, device: uuid::Uuid, msg: server_message::Msg) {
+        if let Some(s) = self.senders.lock().unwrap().get(&device) {
+            let _ = s.send(ServerMessage { msg: Some(msg) });
+        }
+    }
+
     fn reply(&self, device: uuid::Uuid, request_id: u64, msg: agent_message::Msg) {
         if let Some(tx) = self.pending.lock().unwrap().remove(&(device, request_id)) {
             let _ = tx.send(msg);
@@ -147,6 +154,7 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
                     senders.remove(&id);
                 }
             }
+            state.shells.device_gone(id);
             registry::agent_disconnected(&state, id).await?;
             result
         }
@@ -198,6 +206,9 @@ where
                     Some(agent_message::Msg::ActResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ActResult(r)),
                     Some(agent_message::Msg::Displays(d)) => state.agents.reply(device, d.request_id, agent_message::Msg::Displays(d)),
                     Some(agent_message::Msg::ExecResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ExecResult(r)),
+                    Some(agent_message::Msg::ShellOpened(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ShellOpened(r)),
+                    Some(agent_message::Msg::ShellOutput(o)) => state.shells.deliver(device, &o.session.clone(), agent_message::Msg::ShellOutput(o)),
+                    Some(agent_message::Msg::ShellExit(e)) => state.shells.deliver(device, &e.session.clone(), agent_message::Msg::ShellExit(e)),
                     Some(agent_message::Msg::Inventory(inv)) => metrics::save_inventory(state, device, &inv).await?,
                     Some(agent_message::Msg::Sample(s)) => metrics::apply_sample(state, device, &s).await?,
                     Some(agent_message::Msg::Processes(p)) => {
