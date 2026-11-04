@@ -6,7 +6,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 
-use super::{device_id, ApiError, Caller};
+use super::{devices::resolve, ApiError, Caller};
 use crate::control_lock::{self, Lock};
 
 pub fn routes() -> Router<super::State> {
@@ -18,7 +18,6 @@ pub fn routes() -> Router<super::State> {
 impl From<control_lock::Error> for ApiError {
     fn from(e: control_lock::Error) -> Self {
         match e {
-            control_lock::Error::NoSuchDevice => ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such device"),
             control_lock::Error::Held(lock) => ApiError::new(
                 StatusCode::CONFLICT,
                 "control_lock_held",
@@ -44,14 +43,14 @@ fn body(lock: Option<Lock>) -> Json<Value> {
 }
 
 async fn status(_: Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    Ok(body(control_lock::status(&state, device_id(&id)?).await?))
+    Ok(body(control_lock::status(&state, resolve(&state, &id).await?).await?))
 }
 
 async fn acquire(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    Ok(body(Some(control_lock::acquire(&state, device_id(&id)?, &user).await?)))
+    Ok(body(Some(control_lock::acquire(&state, resolve(&state, &id).await?, &user).await?)))
 }
 
 async fn release(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    control_lock::release(&state, device_id(&id)?, &user).await?;
+    control_lock::release(&state, resolve(&state, &id).await?, &user).await?;
     Ok(body(None))
 }

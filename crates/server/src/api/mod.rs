@@ -4,6 +4,7 @@ mod actions;
 mod control_lock;
 mod devices;
 mod enrollment;
+mod updates;
 mod users;
 
 use std::sync::Arc;
@@ -26,6 +27,7 @@ pub fn router(state: State) -> Router {
         .route("/api/v1/server-ca", get(|s: axum::extract::State<State>| async move { s.ca.cert_pem.clone() }))
         .merge(devices::routes())
         .merge(enrollment::routes())
+        .merge(updates::routes())
         .merge(users::routes())
         .merge(control_lock::routes())
         .merge(actions::routes())
@@ -60,11 +62,6 @@ impl IntoResponse for ApiError {
         error.insert("message".into(), self.message.into());
         (self.status, Json(json!({ "error": error }))).into_response()
     }
-}
-
-/// A Device id from a URL path; anything that is not a UUID cannot be a Device.
-pub fn device_id(raw: &str) -> Result<uuid::Uuid, ApiError> {
-    raw.parse().map_err(|_| ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such device"))
 }
 
 impl From<anyhow::Error> for ApiError {

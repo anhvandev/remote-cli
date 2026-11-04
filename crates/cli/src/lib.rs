@@ -31,6 +31,9 @@ struct Cli {
 enum Command {
     /// List Devices with their Device Status.
     Devices,
+    /// One Device: inventory, current resources, processes.
+    #[command(subcommand)]
+    Device(DeviceCommand),
     /// Manage Enrollment Codes (admin).
     #[command(subcommand)]
     EnrollmentCode(EnrollmentCodeCommand),
@@ -40,6 +43,9 @@ enum Command {
     /// Manage per-user API tokens (admin).
     #[command(subcommand)]
     Token(TokenCommand),
+    /// Signed Agent builds and rollouts (admin).
+    #[command(subcommand)]
+    Update(UpdateCommand),
     /// Control Lock: needed to send input Actions to a Device.
     #[command(subcommand)]
     Lock(LockCommand),
@@ -168,6 +174,36 @@ fn lock_text(lock: &Value) -> String {
 }
 
 #[derive(Subcommand)]
+enum UpdateCommand {
+    /// Create an update signing key (offline, no server needed). Agents get the printed public key via --update-key.
+    Keygen {
+        /// Where to write the private key (PKCS#8). Keep it off the Server.
+        key_file: String,
+    },
+    /// Sign an Agent build locally with KEY and upload it.
+    Publish {
+        file: String,
+        #[arg(long)]
+        version: String,
+        /// `<os>-<arch>` the build runs on, e.g. linux-x86_64, windows-x86_64, macos-aarch64.
+        #[arg(long)]
+        target: String,
+        /// Private key file from `rcli update keygen`.
+        #[arg(long)]
+        key: String,
+    },
+    /// Target a published version at all Devices or selected ones.
+    Rollout {
+        version: String,
+        #[arg(long, conflicts_with = "device", required_unless_present = "device")]
+        all: bool,
+        /// Device id; repeat for several.
+        #[arg(long)]
+        device: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum UserCommand {
     /// Create a user.
     Create {
@@ -191,6 +227,14 @@ enum TokenCommand {
 }
 
 #[derive(Subcommand)]
+enum DeviceCommand {
+    /// Inventory and current resources of a Device (id or name).
+    Show { device: String },
+    /// The Device's process list, fetched from its Agent now.
+    Processes { device: String },
+}
+
+#[derive(Subcommand)]
 enum EnrollmentCodeCommand {
     /// Create a single-use Enrollment Code.
     Create,
@@ -206,6 +250,17 @@ where
         Err(e) if !e.use_stderr() => return Ok(write!(out, "{e}")?), // --help / --version
         Err(e) => anyhow::bail!("{e}"),
     };
+    if let Command::Update(UpdateCommand::Keygen { key_file }) = &cli.command {
+        let (private, public) = rcli_protocol::update::generate_key()?;
+        write_private(key_file, &private)?;
+        let public = hex::encode(public);
+        if cli.json {
+            writeln!(out, "{}", serde_json::json!({ "public_key": public }))?;
+        } else {
+            writeln!(out, "public key {public}")?;
+        }
+        return Ok(());
+    }
     let api = Api {
         base: cli.server.ok_or_else(|| anyhow::anyhow!("--server or RCLI_SERVER is required"))?,
         token: cli.token.ok_or_else(|| anyhow::anyhow!("--token or RCLI_TOKEN is required"))?,
@@ -214,17 +269,51 @@ where
     let (body, human) = match cli.command {
         Command::Devices => {
             let devices = api.call(reqwest::Method::GET, "/api/v1/devices", None).await?;
-            let mut text = format!("{:<36}  {:<24}  {:<7}  {}\n", "ID", "NAME", "STATUS", "LAST SEEN");
+            let mut text = format!(
+                "{:<36}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
+                "ID", "NAME", "STATUS", "LAST SEEN", "AGENT", "UPDATE"
+            );
             for d in devices.as_array().into_iter().flatten() {
+                let u = &d["update"];
+                let update = if u.is_null() {
+                    "-".to_owned()
+                } else {
+                    let error = u["error"].as_str().map(|e| format!(": {e}")).unwrap_or_default();
+                    format!("{} {}{error}", str_of(&u["version"]), str_of(&u["status"]))
+                };
                 text += &format!(
-                    "{:<36}  {:<24}  {:<7}  {}\n",
+                    "{:<36}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
                     str_of(&d["id"]),
                     str_of(&d["name"]),
                     str_of(&d["status"]),
                     d["last_seen_at"].as_str().unwrap_or("-"),
+                    d["agent_version"].as_str().unwrap_or("-"),
+                    update,
                 );
             }
             (devices, text)
+        }
+        Command::Device(DeviceCommand::Show { device }) => {
+            let d = api.call(reqwest::Method::GET, &format!("/api/v1/devices/{}", path_segment(&device)), None).await?;
+            let mut text = String::new();
+            flatten("", &d, &mut text);
+            (d, text)
+        }
+        Command::Device(DeviceCommand::Processes { device }) => {
+            let path = format!("/api/v1/devices/{}/processes", path_segment(&device));
+            let procs = api.call(reqwest::Method::GET, &path, None).await?;
+            let mut text = format!("{:>7}  {:<16}  {:>6}  {:>12}  {}\n", "PID", "USER", "CPU%", "MEM BYTES", "NAME");
+            for p in procs.as_array().into_iter().flatten() {
+                text += &format!(
+                    "{:>7}  {:<16}  {:>6.1}  {:>12}  {}\n",
+                    p["pid"],
+                    str_of(&p["user"]),
+                    p["cpu_percent"].as_f64().unwrap_or(0.0),
+                    p["memory_bytes"],
+                    str_of(&p["name"]),
+                );
+            }
+            (procs, text)
         }
         Command::EnrollmentCode(EnrollmentCodeCommand::Create) => {
             let created = api.call(reqwest::Method::POST, "/api/v1/enrollment-codes", None).await?;
@@ -300,6 +389,22 @@ where
             let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
             (obs, text)
         }
+        Command::Update(UpdateCommand::Keygen { .. }) => unreachable!("handled before connecting"),
+        Command::Update(UpdateCommand::Publish { file, version, target, key }) => {
+            let build = std::fs::read(&file)?;
+            let signature = rcli_protocol::update::sign(&std::fs::read(&key)?, &version, &target, &build)?;
+            let url = format!("{}/api/v1/agent-builds/{version}/{target}", api.base.trim_end_matches('/'));
+            let req = api.http.put(url).query(&[("signature", hex::encode(signature))]).body(build);
+            let published = api.send(req).await?;
+            (published, format!("published {version} for {target}\n"))
+        }
+        Command::Update(UpdateCommand::Rollout { version, all, device }) => {
+            let body = if all { serde_json::json!({ "all": true }) } else { serde_json::json!({ "devices": device }) };
+            let path = format!("/api/v1/agent-builds/{version}/rollout");
+            let r = api.call(reqwest::Method::POST, &path, Some(&body)).await?;
+            let text = format!("rolling out {version} to {} device(s)\n", r["devices"]);
+            (r, text)
+        }
     };
     if cli.json {
         writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?;
@@ -307,6 +412,37 @@ where
         write!(out, "{human}")?;
     }
     Ok(())
+}
+
+fn write_private(path: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    Ok(opts.open(path)?.write_all(bytes)?)
+}
+
+/// Human view of nested JSON: one `a.b[0].c: value` line per leaf, nulls and empties skipped.
+fn flatten(prefix: &str, v: &Value, out: &mut String) {
+    match v {
+        Value::Null => {}
+        Value::Object(m) => m
+            .iter()
+            .for_each(|(k, v)| flatten(&if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") }, v, out)),
+        Value::Array(a) => a.iter().enumerate().for_each(|(i, v)| flatten(&format!("{prefix}[{i}]"), v, out)),
+        Value::String(s) if s.is_empty() => {}
+        Value::String(s) => *out += &format!("{prefix}: {s}\n"),
+        _ => *out += &format!("{prefix}: {v}\n"),
+    }
+}
+
+fn path_segment(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 fn str_of(v: &Value) -> &str {
@@ -322,11 +458,15 @@ struct Api {
 impl Api {
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> anyhow::Result<Value> {
         let url = format!("{}{path}", self.base.trim_end_matches('/'));
-        let mut req = self.http.request(method, url).bearer_auth(&self.token);
+        let mut req = self.http.request(method, url);
         if let Some(body) = body {
             req = req.json(body);
         }
-        let resp = req.send().await?;
+        self.send(req).await
+    }
+
+    async fn send(&self, req: reqwest::RequestBuilder) -> anyhow::Result<Value> {
+        let resp = req.bearer_auth(&self.token).send().await?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {

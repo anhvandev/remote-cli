@@ -11,7 +11,18 @@ pub const WAKE_TEST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x27];
 /// Like the probe: how long a key may take to show up on screen.
 const SCREEN_CHANGE_TIMEOUT: Duration = Duration::from_secs(1);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(3);
-const CHECKS: [&str; 8] = ["displays", "capture", "key shows on screen", "session state", "metrics", "shell", "wake send", "power lock"];
+const CHECKS: [&str; 10] = [
+    "displays",
+    "capture",
+    "key shows on screen",
+    "session state",
+    "metrics",
+    "inventory",
+    "processes",
+    "shell",
+    "wake send",
+    "power lock",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Env {
@@ -93,8 +104,18 @@ pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
     screen_checks(p, Env::LoggedIn, SessionState::LoggedIn, &mut r);
     r.check("metrics", Env::LoggedIn, || {
         let m = p.metrics()?;
-        anyhow::ensure!((0.0..=100.0).contains(&m.cpu_percent), "cpu {}% out of range", m.cpu_percent);
-        anyhow::ensure!(m.ram_used_bytes > 0, "ram used is 0");
+        let cpu = m.cpu_percent.unwrap_or(-1.0);
+        anyhow::ensure!((0.0..=100.0).contains(&cpu), "cpu {cpu}% missing or out of range");
+        anyhow::ensure!(m.ram_used_bytes.unwrap_or(0) > 0, "ram used missing or 0");
+        Ok(())
+    });
+    r.check("inventory", Env::LoggedIn, || {
+        let i = p.inventory()?;
+        anyhow::ensure!(!i.os.is_empty() && !i.hostname.is_empty() && i.cpu_cores > 0, "incomplete {i:?}");
+        Ok(())
+    });
+    r.check("processes", Env::LoggedIn, || {
+        anyhow::ensure!(!p.processes()?.is_empty(), "no processes");
         Ok(())
     });
     r.check("shell", Env::LoggedIn, || {

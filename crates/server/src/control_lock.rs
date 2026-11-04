@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::{auth::User, registry, AppState};
+use crate::{auth::User, AppState};
 
 #[derive(Serialize, Debug, Clone, sqlx::FromRow)]
 pub struct Lock {
@@ -17,9 +17,9 @@ pub struct Lock {
     pub acquired_at: DateTime<Utc>,
 }
 
+/// Callers pass an existing Device (the API resolves it first).
 #[derive(Debug)]
 pub enum Error {
-    NoSuchDevice,
     /// Someone else holds it.
     Held(Lock),
     /// Nobody holds it, but the operation needs the caller to.
@@ -34,9 +34,6 @@ impl<E: Into<anyhow::Error>> From<E> for Error {
 }
 
 pub async fn status(state: &AppState, device: Uuid) -> Result<Option<Lock>, Error> {
-    if !registry::exists(state, device).await? {
-        return Err(Error::NoSuchDevice);
-    }
     Ok(sqlx::query_as("SELECT holder_name, holder_id, acquired_at FROM control_locks WHERE device_id = $1")
         .bind(device)
         .fetch_optional(&state.db)
@@ -45,9 +42,6 @@ pub async fn status(state: &AppState, device: Uuid) -> Result<Option<Lock>, Erro
 
 /// Takes the lock if it is free; holding it already is fine. Never pre-empts another holder.
 pub async fn acquire(state: &AppState, device: Uuid, user: &User) -> Result<Lock, Error> {
-    if !registry::exists(state, device).await? {
-        return Err(Error::NoSuchDevice);
-    }
     sqlx::query(
         "INSERT INTO control_locks (device_id, holder_id, holder_name, acquired_at) VALUES ($1, $2, $3, $4)
          ON CONFLICT (device_id) DO NOTHING",

@@ -209,9 +209,10 @@ async fn actions_on_an_offline_device_fail_clearly() {
     sys.wait_device(&dev, |d| !d["last_seen_at"].is_null()).await;
     let (status, body) = sys.api.post_json(&format!("/api/v1/devices/{dev}/actions"), &json!({ "actions": [] })).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["error"]["code"], "device_offline");
+    assert_eq!(body["error"]["code"], "device_not_connected");
     let (status, body) = sys.api.post("/api/v1/devices/00000000-0000-0000-0000-000000000000/lock").await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "device_not_found");
 }
 
 #[tokio::test]
@@ -221,7 +222,7 @@ async fn cli_lock_act_shot_and_displays() {
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
 
-    let out = sys.rcli(&["lock", "acquire", dev]).await.unwrap();
+    let out = sys.rcli(&["lock", "acquire", "dual"]).await.unwrap(); // by name
     assert!(out.contains("admin"), "{out}");
     let out = sys.rcli(&["lock", "status", dev, "--json"]).await.unwrap();
     assert_eq!(serde_json::from_str::<Value>(&out).unwrap()["holder"], "admin");

@@ -9,8 +9,10 @@ pub mod auth;
 pub mod clock;
 pub mod control_lock;
 pub mod enrollment;
+pub mod metrics;
 pub mod pki;
 pub mod registry;
+pub mod updates;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -56,7 +58,10 @@ pub struct AppState {
     pub ca: pki::Ca,
     pub config: Config,
     pub connections: registry::Connections,
+    pub resources: metrics::CurrentResources,
     pub agents: agent_link::Agents,
+    /// Signalled on every rollout so live Device sessions offer the update.
+    pub rollouts: tokio::sync::watch::Sender<()>,
 }
 
 /// A running Server. Dropping it stops the listeners.
@@ -85,7 +90,16 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
     let agents = tokio::net::TcpListener::bind(config.agent_addr).await?;
     let (http_addr, agent_addr) = (http.local_addr()?, agents.local_addr()?);
 
-    let state = Arc::new(AppState { db, clock, ca, config, connections: Default::default(), agents: Default::default() });
+    let state = Arc::new(AppState {
+        db,
+        clock,
+        ca,
+        config,
+        connections: Default::default(),
+        resources: Default::default(),
+        agents: Default::default(),
+        rollouts: tokio::sync::watch::Sender::new(()),
+    });
     let acceptor = agent_link::acceptor(&state)?;
     let router = api::router(state.clone());
     let tasks = vec![

@@ -11,8 +11,8 @@ use rcli_protocol::agent::{self as proto, action::Kind, agent_message, server_me
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{device_id, ApiError, Caller};
-use crate::{agent_link::RequestError, control_lock, registry};
+use super::{devices::resolve, ApiError, Caller};
+use crate::{agent_link::RequestError, control_lock};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -116,7 +116,7 @@ impl From<Action> for proto::Action {
 impl From<RequestError> for ApiError {
     fn from(e: RequestError) -> Self {
         match e {
-            RequestError::NotConnected => ApiError::new(StatusCode::CONFLICT, "device_offline", "the Device's Agent is not connected"),
+            RequestError::NotConnected => ApiError::new(StatusCode::CONFLICT, "device_not_connected", "the Device's Agent is not connected"),
             RequestError::Timeout => ApiError::new(StatusCode::GATEWAY_TIMEOUT, "agent_timeout", "the Agent did not answer in time"),
         }
     }
@@ -125,7 +125,7 @@ impl From<RequestError> for ApiError {
 fn agent_error(e: proto::Error) -> ApiError {
     match e.code.as_str() {
         "invalid_action" => ApiError::new(StatusCode::BAD_REQUEST, "invalid_action", e.message),
-        _ => ApiError::new(StatusCode::BAD_GATEWAY, "platform_error", e.message),
+        _ => ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message),
     }
 }
 
@@ -135,12 +135,10 @@ async fn act(
     Path(id): Path<String>,
     body: Result<Json<ActBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let device = device_id(&id)?;
+    let device = resolve(&state, &id).await?;
     let Json(body) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
     if !body.actions.is_empty() {
         control_lock::check(&state, device, &user).await?;
-    } else if !registry::exists(&state, device).await? {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such device"));
     }
     let req = |request_id| {
         server_message::Msg::Act(proto::ActRequest {
@@ -177,10 +175,7 @@ async fn act(
 }
 
 async fn displays(_: Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    let device = device_id(&id)?;
-    if !registry::exists(&state, device).await? {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such device"));
-    }
+    let device = resolve(&state, &id).await?;
     let req = |request_id| server_message::Msg::ListDisplays(proto::DisplaysRequest { request_id });
     let agent_message::Msg::Displays(list) = state.agents.request(device, req).await? else {
         return Err(anyhow::anyhow!("unexpected reply to DisplaysRequest").into());

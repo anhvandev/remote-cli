@@ -6,7 +6,7 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
-pub use rcli_agent::platform::{Button, DisplayInfo, FakePlatform, Input};
+pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input};
 use rcli_agent::{Credentials, ServerEndpoint};
 pub use rcli_server::clock::ManualClock;
 pub use reqwest::StatusCode;
@@ -26,6 +26,9 @@ pub struct TestSystem {
     /// Controller API client authenticated as the `admin` user.
     pub api: ApiClient,
     pub admin_token: String,
+    /// PKCS#8 Ed25519 key that signs Agent builds; Agents from `endpoint()` trust its public half.
+    pub update_signing_key: Vec<u8>,
+    update_public_key: Vec<u8>,
     _postgres: ContainerAsync<Postgres>,
 }
 
@@ -42,11 +45,14 @@ impl TestSystem {
             bootstrap_admin_token: BOOTSTRAP_TOKEN.into(),
         };
         let server = rcli_server::start(config, clock.clone()).await.expect("start server");
+        let (update_signing_key, update_public_key) = rcli_protocol::update::generate_key().unwrap();
         let mut sys = Self {
             clock,
             api: ApiClient::new(format!("http://{}", server.http_addr), Some(BOOTSTRAP_TOKEN)),
             server,
             admin_token: String::new(),
+            update_signing_key,
+            update_public_key,
             _postgres: postgres,
         };
         sys.admin_token = sys.create_user("admin", "admin").await;
@@ -59,7 +65,11 @@ impl TestSystem {
     }
 
     pub fn endpoint(&self) -> ServerEndpoint {
-        ServerEndpoint { addr: format!("localhost:{}", self.server.agent_addr.port()), ca_pem: self.server.ca_pem.clone() }
+        ServerEndpoint {
+            addr: format!("localhost:{}", self.server.agent_addr.port()),
+            ca_pem: self.server.ca_pem.clone(),
+            update_key: Some(self.update_public_key.clone()),
+        }
     }
 
     /// Runs `rcli <args>` in-process against this Server as the admin; returns stdout.
@@ -115,6 +125,15 @@ impl TestSystem {
         eventually(|| async {
             let (_, devices) = self.api.get("/api/v1/devices").await;
             devices.as_array()?.iter().find(|d| d["id"] == id && pred(d)).cloned()
+        })
+        .await
+    }
+
+    /// Polls `GET /api/v1/devices/{id}` (inventory + current resources) until `pred` holds; returns it.
+    pub async fn wait_device_details(&self, id: &str, pred: impl Fn(&Value) -> bool) -> Value {
+        eventually(|| async {
+            let (_, device) = self.api.get(&format!("/api/v1/devices/{id}")).await;
+            pred(&device).then_some(device)
         })
         .await
     }
@@ -198,6 +217,10 @@ impl ApiClient {
 
     pub async fn post_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
         self.send(self.http.post(format!("{}{path}", self.base)).json(body)).await
+    }
+
+    pub async fn put_bytes(&self, path: &str, body: Vec<u8>) -> (StatusCode, Value) {
+        self.send(self.http.put(format!("{}{path}", self.base)).body(body)).await
     }
 
     async fn send(&self, mut req: reqwest::RequestBuilder) -> (StatusCode, Value) {

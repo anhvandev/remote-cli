@@ -15,7 +15,10 @@ use executor::Executor;
 
 use platform::Platform;
 use rcli_protocol::{
-    agent::{agent_message, server_message, AgentMessage, DisplayList, EnrollRequest, Error, Heartbeat, ServerMessage},
+    agent::{
+        agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, DisplayList, EnrollRequest, Error,
+        Heartbeat, ProcessList, Resources, ServerMessage, UpdateFailed,
+    },
     Conn,
 };
 use rustls::{
@@ -27,14 +30,23 @@ use tokio::net::TcpStream;
 use tokio_rustls::{client::TlsStream, TlsConnector};
 
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(10);
+/// Inventory is checked and resources are sampled this often.
+const SAMPLE_EVERY: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-/// Where the Server's Agent port is and which CA to trust for it.
+/// Where the Server's Agent port is and what to trust from it.
 #[derive(Clone, Debug)]
 pub struct ServerEndpoint {
     /// `host:port`; `host` must be one of the Server's `agent_hostnames`.
     pub addr: String,
     pub ca_pem: String,
+    /// Raw Ed25519 public key Agent builds must be signed with; `None` rejects every update.
+    pub update_key: Option<Vec<u8>>,
+}
+
+/// `<os>-<arch>` of this Agent binary; Agent builds are signed for one target.
+pub fn target() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 /// The Device's identity, obtained once by enrolling.
@@ -61,7 +73,7 @@ async fn connect(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow
     let name = ServerName::try_from(host.trim_matches(['[', ']']).to_owned())?;
     let tcp = TcpStream::connect(&server.addr).await?;
     let tls = TlsConnector::from(Arc::new(config)).connect(name, tcp).await?;
-    Ok(Conn::new(tls))
+    Ok(Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME))
 }
 
 /// Exchanges a single-use Enrollment Code for this Device's credentials.
@@ -90,7 +102,7 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn P
         match connect(&server, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
-                if let Err(e) = session(conn, &platform, &executor).await {
+                if let Err(e) = session(conn, &server, &platform, &executor).await {
                     tracing::warn!("connection to server lost: {e}");
                 }
             }
@@ -103,11 +115,18 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn P
 
 async fn session(
     mut conn: Conn<TlsStream<TcpStream>>,
-    platform: &Arc<dyn Platform>,
+    server: &ServerEndpoint,
+    platform_arc: &Arc<dyn Platform>,
     executor: &Arc<Mutex<Executor>>,
 ) -> anyhow::Result<()> {
+    let platform = platform_arc.as_ref();
+    let hello = AgentHello { version: platform.agent_version(), target: target() };
     let send = |msg| AgentMessage { msg: Some(msg) };
+    conn.send(&send(agent_message::Msg::Hello(hello))).await?;
     let mut tick = tokio::time::interval(HEARTBEAT_EVERY);
+    let mut sample = tokio::time::interval(SAMPLE_EVERY);
+    // What the Server has seen this session; a new session starts from nothing, so it gets everything.
+    let (mut inventory, mut resources) = (None, Resources::default());
     // Replies from work that runs off this loop (Actions block on the OS for up to seconds).
     let (replies, mut replies_rx) = tokio::sync::mpsc::unbounded_channel();
     loop {
@@ -115,13 +134,34 @@ async fn session(
             _ = tick.tick() => {
                 conn.send(&send(agent_message::Msg::Heartbeat(Heartbeat {}))).await?;
             }
+            _ = sample.tick() => {
+                // shortcut: inventory is re-read every sample; OS adapters may want change notifications instead.
+                match platform.inventory() {
+                    Ok(inv) if inventory.as_ref() != Some(&inv) => {
+                        conn.send(&send(agent_message::Msg::Inventory(inv.clone()))).await?;
+                        inventory = Some(inv);
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("cannot read inventory: {e:#}"),
+                }
+                match sample_resources(platform) {
+                    Ok(cur) => {
+                        let d = delta(&resources, &cur);
+                        if d != Resources::default() {
+                            conn.send(&send(agent_message::Msg::Resources(d))).await?;
+                        }
+                        resources = cur;
+                    }
+                    Err(e) => tracing::warn!("cannot sample resources: {e:#}"),
+                }
+            }
             Some(reply) = replies_rx.recv() => conn.send(&send(reply)).await?,
             msg = conn.recv::<ServerMessage>() => {
                 match msg?.and_then(|m| m.msg) {
                     None => anyhow::bail!("server closed the connection"),
                     Some(server_message::Msg::Act(req)) => {
                         // The Executor's lock runs requests one at a time, in arrival order.
-                        let (platform, executor, replies) = (platform.clone(), executor.clone(), replies.clone());
+                        let (platform, executor, replies) = (platform_arc.clone(), executor.clone(), replies.clone());
                         tokio::task::spawn_blocking(move || {
                             let result = executor.lock().unwrap().act(platform.as_ref(), &req);
                             let _ = replies.send(agent_message::Msg::ActResult(result));
@@ -135,10 +175,84 @@ async fn session(
                         let reply = DisplayList { request_id: req.request_id, displays, error };
                         conn.send(&send(agent_message::Msg::Displays(reply))).await?;
                     }
+                    Some(server_message::Msg::ListProcesses(req)) => {
+                        let reply = match platform.processes() {
+                            Ok(processes) => ProcessList { request_id: req.request_id, processes, error: String::new() },
+                            Err(e) => ProcessList { request_id: req.request_id, processes: vec![], error: format!("{e:#}") },
+                        };
+                        conn.send(&send(agent_message::Msg::Processes(reply))).await?;
+                    }
+                    Some(server_message::Msg::Update(update)) => {
+                        // shortcut: installs inline, blocking heartbeats; fine while installs take well under 30 s.
+                        match install(server, platform, &update) {
+                            // Reconnect so the Server sees the new version (real adapters restart instead).
+                            Ok(()) => return Ok(()),
+                            Err(e) => {
+                                tracing::warn!("rejected Agent update {}: {e:#}", update.version);
+                                let failed = UpdateFailed { version: update.version, reason: format!("{e:#}") };
+                                conn.send(&send(agent_message::Msg::UpdateFailed(failed))).await?;
+                            }
+                        }
+                    }
                     // Later tickets handle more requests from the Server here.
                     Some(_) => {}
                 }
             }
         }
     }
+}
+
+/// Verifies `update` against the configured update key and target, then installs it.
+fn install(server: &ServerEndpoint, platform: &dyn Platform, update: &AgentUpdate) -> anyhow::Result<()> {
+    let key = server.update_key.as_deref().ok_or_else(|| anyhow::anyhow!("no update key configured on this Agent"))?;
+    anyhow::ensure!(update.target == target(), "build is for {}, this Agent is {}", update.target, target());
+    anyhow::ensure!(
+        rcli_protocol::update::verify(key, &update.version, &update.target, &update.build, &update.signature),
+        "bad signature: build is not signed with this Agent's update key"
+    );
+    platform.install_update(&update.version, &update.build)
+}
+
+fn sample_resources(platform: &dyn Platform) -> anyhow::Result<Resources> {
+    use platform::SessionState as S;
+    use rcli_protocol::agent::SessionState as P;
+    let mut r = platform.metrics()?;
+    let session = match platform.session_state()? {
+        S::LoggedIn => P::Active,
+        S::Locked => P::LockScreen,
+        S::LoginScreen => P::LoginScreen,
+    };
+    r.session = Some(session.into());
+    Ok(r)
+}
+
+/// The fields of `cur` that differ from `prev`.
+// shortcut: a value that becomes unavailable (Some -> None) is not sent; the Server keeps the last one until reconnect.
+fn delta(prev: &Resources, cur: &Resources) -> Resources {
+    let mut d = Resources::default();
+    macro_rules! changed {
+        ($($f:ident),*) => { $( if cur.$f != prev.$f { d.$f = cur.$f.clone(); } )* };
+    }
+    changed!(
+        cpu_percent,
+        ram_used_bytes,
+        disk_read_bytes_per_sec,
+        disk_write_bytes_per_sec,
+        net_up_bytes_per_sec,
+        net_down_bytes_per_sec,
+        gpu_percent,
+        uptime_secs,
+        logged_in_user,
+        session,
+        cpu_temp_celsius,
+        battery_percent,
+        battery_charging
+    );
+    d.disk_used_percent = cur
+        .disk_used_percent
+        .iter()
+        .filter(|(k, v)| prev.disk_used_percent.get(*k) != Some(v))
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+    d
 }

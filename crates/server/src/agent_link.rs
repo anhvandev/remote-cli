@@ -24,10 +24,10 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 
-use crate::{enrollment, pki, registry, AppState};
+use crate::{enrollment, metrics, pki, registry, updates, AppState};
 
-/// How long a request to an Agent may take (a `shot` alone may wait ~1 s per display to settle).
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a request to an Agent (e.g. the process list) may take.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Outbound channels to connected Agents and requests waiting for their reply.
 #[derive(Default)]
@@ -107,16 +107,18 @@ pub async fn serve(listener: TcpListener, acceptor: TlsAcceptor, state: Arc<AppS
 async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> anyhow::Result<()> {
     let tls = acceptor.accept(tcp).await?;
     let fingerprint = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| pki::fingerprint(c));
-    let mut conn = Conn::new(tls);
     match fingerprint {
-        None => enroll(&mut conn, &state).await,
+        None => enroll(&mut Conn::new(tls), &state).await,
         Some(fp) => {
+            let mut conn = Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME);
             // shortcut: unknown certificates are dropped silently; revocation (ticket 16) should send an error.
             let Some(id) = registry::find_by_cert_fingerprint(&state, &fp).await? else { return Ok(()) };
-            registry::agent_connected(&state, id).await?;
+            metrics::session_started(&state, id);
             // The newest connection takes over outbound messages (an overlapping reconnect replaces the old one).
+            // Registered before the Device shows Online, so Online always means requests can be sent.
             let (tx, rx) = mpsc::unbounded_channel();
             state.agents.senders.lock().unwrap().insert(id, tx.clone());
+            registry::agent_connected(&state, id).await?;
             let result = session(&mut conn, rx, &state, id).await;
             {
                 let mut senders = state.agents.senders.lock().unwrap();
@@ -165,6 +167,8 @@ async fn session<T>(
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    let mut rollouts = state.rollouts.subscribe();
+    let mut offered = None;
     loop {
         tokio::select! {
             msg = tokio::time::timeout(READ_TIMEOUT, conn.recv::<AgentMessage>()) => {
@@ -172,11 +176,39 @@ where
                 match msg.msg {
                     Some(agent_message::Msg::ActResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ActResult(r)),
                     Some(agent_message::Msg::Displays(d)) => state.agents.reply(device, d.request_id, agent_message::Msg::Displays(d)),
-                    // Later tickets dispatch inventory and metrics here.
+                    Some(agent_message::Msg::Inventory(inv)) => metrics::save_inventory(state, device, &inv).await?,
+                    Some(agent_message::Msg::Resources(r)) => metrics::apply_resources(state, device, &r)?,
+                    Some(agent_message::Msg::Processes(p)) => {
+                        state.agents.reply(device, p.request_id, agent_message::Msg::Processes(p));
+                    }
+                    Some(agent_message::Msg::Hello(h)) => {
+                        updates::agent_hello(state, device, &h).await?;
+                        offer_update(conn, state, device, &mut offered).await?;
+                    }
+                    Some(agent_message::Msg::UpdateFailed(f)) => updates::agent_failed(state, device, &f).await?,
+                    // Later tickets dispatch more replies here.
                     _ => {}
                 }
             }
             Some(msg) = outbound.recv() => conn.send(&msg).await?,
+            changed = rollouts.changed() => {
+                changed?;
+                offer_update(conn, state, device, &mut offered).await?;
+            }
         }
     }
+}
+
+/// Sends the Device its pending Agent update, once per version per session.
+async fn offer_update<T>(conn: &mut Conn<T>, state: &AppState, device: uuid::Uuid, offered: &mut Option<String>) -> anyhow::Result<()>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if let Some(update) = updates::pending(state, device).await? {
+        if offered.as_ref() != Some(&update.version) {
+            *offered = Some(update.version.clone());
+            conn.send(&ServerMessage { msg: Some(server_message::Msg::Update(update)) }).await?;
+        }
+    }
+    Ok(())
 }
