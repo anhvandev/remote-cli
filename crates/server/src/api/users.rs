@@ -16,6 +16,7 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/users", get(list).post(create))
         .route("/api/v1/users/{name}/disable", post(disable))
         .route("/api/v1/users/{name}/tokens", post(issue_token))
+        .route("/api/v1/users/{name}/credentials", post(set_credentials))
         .route("/api/v1/tokens/{id}/revoke", post(revoke_token))
 }
 
@@ -65,4 +66,21 @@ async fn issue_token(
 async fn revoke_token(_: Admin, State(state): State<super::State>, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
     auth::revoke_token(&state, id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct Credentials {
+    password: String,
+}
+
+/// Sets the user's Dashboard password and enrolls a fresh TOTP secret, returned once.
+async fn set_credentials(
+    _: Admin,
+    State(state): State<super::State>,
+    Path(name): Path<String>,
+    body: Result<Json<Credentials>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Json(c) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let totp = auth::set_credentials(&state, &name, &c.password).await?;
+    Ok(Json(json!({ "user": name, "totp_secret": totp.secret, "otpauth_url": totp.url })))
 }

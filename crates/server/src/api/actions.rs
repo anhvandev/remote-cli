@@ -30,6 +30,9 @@ struct ActBody {
     observe: Observe,
     /// Unset = the display last acted on.
     display: Option<DisplaySel>,
+    /// Detect Marks: annotated images plus `observation` id and `marks` table in the reply.
+    #[serde(default)]
+    marks: bool,
 }
 
 #[derive(Deserialize, Default, PartialEq)]
@@ -53,13 +56,22 @@ enum AllDisplays {
     All,
 }
 
-/// A point in Observation image space of `display` (default 0).
+/// A target on `display` (default 0): a point in Observation image space, a Mark number from Observation
+/// `observation`, or a Mark's visible text.
 #[derive(Deserialize)]
 struct Point {
     #[serde(default)]
     display: u32,
-    x: u32,
-    y: u32,
+    #[serde(flatten)]
+    target: Target,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Target {
+    Xy { x: u32, y: u32 },
+    Mark { mark: u32, observation: u64 },
+    Text { text: String },
 }
 
 #[derive(Deserialize)]
@@ -82,8 +94,10 @@ enum Action {
         #[serde(default)]
         dy: i32,
     },
+    /// Types `text`, first clicking `into` if given.
     Type {
         text: String,
+        into: Option<Point>,
         // `"secret": true` (a password field) is read only by `mask_secrets`.
     },
     /// Key combination, e.g. "ctrl+shift+t".
@@ -94,23 +108,32 @@ enum Action {
 
 impl From<Point> for proto::Point {
     fn from(p: Point) -> Self {
-        Self { display: p.display, x: p.x, y: p.y }
+        let display = p.display;
+        match p.target {
+            Target::Xy { x, y } => Self { display, x, y, ..Default::default() },
+            Target::Mark { mark, observation } => Self { display, mark: Some(mark), observation, ..Default::default() },
+            Target::Text { text } => Self { display, text: Some(text), ..Default::default() },
+        }
     }
 }
 
-impl From<Action> for proto::Action {
-    fn from(a: Action) -> Self {
-        let kind = match a {
+impl Action {
+    /// The protocol Actions this one becomes (typing into a target is a click, then the text).
+    fn into_proto(self) -> Vec<proto::Action> {
+        let kind = match self {
+            Action::Type { text, into: Some(at) } => {
+                return [Kind::Click(at.into()), Kind::TypeText(text)].map(|k| proto::Action { kind: Some(k) }).to_vec()
+            }
             Action::Move(p) => Kind::Move(p.into()),
             Action::Click(p) => Kind::Click(p.into()),
             Action::DoubleClick(p) => Kind::DoubleClick(p.into()),
             Action::RightClick(p) => Kind::RightClick(p.into()),
             Action::Drag { from, to } => Kind::Drag(proto::Drag { from: Some(from.into()), to: Some(to.into()) }),
             Action::Scroll { at, dx, dy } => Kind::Scroll(proto::Scroll { at: Some(at.into()), dx, dy }),
-            Action::Type { text } => Kind::TypeText(text),
+            Action::Type { text, into: None } => Kind::TypeText(text),
             Action::Key { keys } => Kind::Key(keys),
         };
-        Self { kind: Some(kind) }
+        vec![proto::Action { kind: Some(kind) }]
     }
 }
 
@@ -124,8 +147,12 @@ impl From<RequestError> for ApiError {
 }
 
 fn agent_error(e: proto::Error) -> ApiError {
+    let bad_request = |code| ApiError::new(StatusCode::BAD_REQUEST, code, e.message.clone());
     match e.code.as_str() {
-        "invalid_action" => ApiError::new(StatusCode::BAD_REQUEST, "invalid_action", e.message),
+        "invalid_action" => bad_request("invalid_action"),
+        "stale_mark" => bad_request("stale_mark"),
+        "ambiguous_text" => bad_request("ambiguous_text"),
+        "text_not_found" => bad_request("text_not_found"),
         _ => ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message),
     }
 }
@@ -167,7 +194,7 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
     let req = |request_id| {
         server_message::Msg::Act(proto::ActRequest {
             request_id,
-            actions: body.actions.into_iter().map(Into::into).collect(),
+            actions: body.actions.into_iter().flat_map(Action::into_proto).collect(),
             observe: match body.observe {
                 Observe::Shot => proto::ObserveMode::Shot,
                 Observe::None => proto::ObserveMode::None,
@@ -179,6 +206,7 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
             },
             all_displays: matches!(body.display, Some(DisplaySel::All(_))),
             controller: user.id.to_string(),
+            marks: body.marks,
         })
     };
     let agent_message::Msg::ActResult(result) = state.agents.request(device, req).await? else {
@@ -195,7 +223,16 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
             json!({ "display": i.display, "width": i.width, "height": i.height, "unchanged": i.unchanged, "mime": i.mime, "data": data })
         })
         .collect();
-    Ok(Json(json!({ "images": images })))
+    let mut reply = json!({ "images": images });
+    if result.observation != 0 {
+        reply["observation"] = result.observation.into();
+        reply["marks"] = result
+            .marks
+            .iter()
+            .map(|m| json!({ "number": m.number, "text": m.text, "role": m.role, "display": m.display, "x": m.x, "y": m.y, "width": m.width, "height": m.height }))
+            .collect();
+    }
+    Ok(Json(reply))
 }
 
 async fn displays(_: Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
