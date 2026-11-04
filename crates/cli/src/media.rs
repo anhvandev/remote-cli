@@ -151,7 +151,7 @@ impl Api {
     /// `POST .../actions` with `body`. Unless nothing is observed, large media comes over a fresh media channel;
     /// if one cannot be opened the Server relays it. The result is the same either way.
     pub async fn observe(&self, device: &str, body: &Value) -> anyhow::Result<Value> {
-        let path = format!("/api/v1/devices/{device}/actions");
+        let path = format!("/api/v1/devices/{}/actions", path_segment(device));
         let media = match body["observe"] == "none" {
             true => None,
             false => Media::open(self, device, false).await.ok(),
