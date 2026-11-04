@@ -22,6 +22,7 @@ use rcli_protocol::{
     agent::{
         agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, DisplayList, EnrollRequest, Error,
         ExecRequest, ExecResult, Heartbeat, ProcessList, ResourceSample, Resources, ServerMessage, UpdateFailed,
+        WakeResult,
     },
     Conn,
 };
@@ -216,6 +217,14 @@ async fn session(
                             Err(e) => ProcessList { request_id: req.request_id, processes: vec![], error: format!("{e:#}") },
                         };
                         conn.send(&send(agent_message::Msg::Processes(reply))).await?;
+                    }
+                    Some(server_message::Msg::Wake(req)) => {
+                        let sent = <[u8; 6]>::try_from(req.mac.as_slice())
+                            .map_err(|_| anyhow::anyhow!("MAC must be 6 bytes"))
+                            .and_then(|mac| platform.send_wake(mac));
+                        let error = sent.err().map(|e| Error { code: "platform".into(), message: format!("{e:#}") });
+                        let reply = WakeResult { request_id: req.request_id, error };
+                        conn.send(&send(agent_message::Msg::WakeResult(reply))).await?;
                     }
                     Some(server_message::Msg::Update(update)) => {
                         // shortcut: installs inline, blocking heartbeats; fine while installs take well under 30 s.

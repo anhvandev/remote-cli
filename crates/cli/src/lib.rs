@@ -54,6 +54,8 @@ enum Command {
     Lock(LockCommand),
     /// List a Device's displays with resolution and arrangement.
     Displays { device: String },
+    /// Wake an Offline Device through a Wake Relay on its LAN.
+    Wake { device: String },
     /// Observe a Device's screen (no Control Lock needed).
     Shot {
         device: String,
@@ -421,7 +423,10 @@ where
                     "{:<36}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
                     str_of(&d["id"]),
                     str_of(&d["name"]),
-                    str_of(&d["status"]),
+                    match d["wake_error"].as_str() {
+                        Some(e) => format!("{} ({e})", str_of(&d["status"])),
+                        None => str_of(&d["status"]).to_owned(),
+                    },
                     d["last_seen_at"].as_str().unwrap_or("-"),
                     d["agent_version"].as_str().unwrap_or("-"),
                     update,
@@ -546,6 +551,12 @@ where
             let lock = api.call(method, &format!("/api/v1/devices/{device}/lock{suffix}"), None).await?;
             let text = lock_text(&lock);
             (lock, text)
+        }
+        Command::Wake { device } => {
+            let path = format!("/api/v1/devices/{}/wake", path_segment(&device));
+            let w = api.call(reqwest::Method::POST, &path, None).await?;
+            let text = format!("waking {device} via {} ({})\n", str_of(&w["relay"]["name"]), str_of(&w["mac"]));
+            (w, text)
         }
         Command::Displays { device } => {
             let displays = api.call(reqwest::Method::GET, &format!("/api/v1/devices/{device}/displays"), None).await?;

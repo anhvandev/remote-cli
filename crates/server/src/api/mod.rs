@@ -10,6 +10,7 @@ mod history;
 mod sessions;
 mod updates;
 mod users;
+mod wake;
 
 use std::sync::Arc;
 
@@ -38,6 +39,7 @@ pub fn router(state: State) -> Router {
         .merge(actions::routes())
         .merge(audit::routes())
         .merge(exec::routes())
+        .merge(wake::routes())
         .merge(sessions::routes())
         .with_state(state)
 }

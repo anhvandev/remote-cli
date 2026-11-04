@@ -11,6 +11,9 @@ use crate::AppState;
 /// A Device stays Online this long after its connection drops.
 pub const OFFLINE_AFTER: Duration = Duration::seconds(30);
 
+/// A woken Device has this long to come Online before the Wake counts as failed.
+pub const WAKE_TIMEOUT: Duration = Duration::minutes(3);
+
 /// Live Agent connections per Device (a count, so an overlapping reconnect is not a drop).
 #[derive(Default)]
 pub struct Connections(Mutex<HashMap<Uuid, usize>>);
@@ -19,6 +22,7 @@ pub struct Connections(Mutex<HashMap<Uuid, usize>>);
 pub enum DeviceStatus {
     Online,
     Offline,
+    Waking,
 }
 
 #[derive(Serialize, Debug)]
@@ -28,6 +32,8 @@ pub struct Device {
     pub status: DeviceStatus,
     /// When the Agent's last connection ended; null while connected or never connected.
     pub last_seen_at: Option<DateTime<Utc>>,
+    /// "Wake failed" when the last Wake did not bring the Device Online in time; else null.
+    pub wake_error: Option<String>,
     /// Version the Agent reported on its last connection; null until it connected once.
     pub agent_version: Option<String>,
     /// The Agent update rolled out to this Device, if any.
@@ -55,19 +61,33 @@ fn update(agent_version: Option<&str>, version: Option<String>, error: Option<St
     Some(Update { version, status, error })
 }
 
-fn status(connected: bool, last_seen_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> DeviceStatus {
-    match (connected, last_seen_at) {
-        (true, _) => DeviceStatus::Online,
-        (false, Some(t)) if now - t < OFFLINE_AFTER => DeviceStatus::Online,
+fn status(
+    connected: bool,
+    last_seen_at: Option<DateTime<Utc>>,
+    woken_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> DeviceStatus {
+    match (connected, last_seen_at, woken_at) {
+        (true, _, _) => DeviceStatus::Online,
+        (false, Some(t), _) if now - t < OFFLINE_AFTER => DeviceStatus::Online,
+        (false, _, Some(w)) if now - w < WAKE_TIMEOUT => DeviceStatus::Waking,
         _ => DeviceStatus::Offline,
     }
 }
 
 pub async fn list(state: &AppState) -> anyhow::Result<Vec<Device>> {
-    type Row =
-        (Uuid, String, Option<DateTime<Utc>>, Option<String>, Option<String>, Option<String>, Option<DateTime<Utc>>);
+    type Row = (
+        Uuid,
+        String,
+        Option<DateTime<Utc>>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<DateTime<Utc>>,
+        Option<DateTime<Utc>>,
+    );
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT id, name, last_seen_at, agent_version, update_version, update_error, revoked_at
+        "SELECT id, name, last_seen_at, agent_version, update_version, update_error, revoked_at, wake_requested_at
          FROM devices ORDER BY enrolled_at, id",
     )
     .fetch_all(&state.db)
@@ -76,14 +96,19 @@ pub async fn list(state: &AppState) -> anyhow::Result<Vec<Device>> {
     let connected = state.connections.0.lock().unwrap();
     Ok(rows
         .into_iter()
-        .map(|(id, name, last_seen_at, agent_version, update_version, update_error, revoked_at)| Device {
-            id,
-            name,
-            status: status(connected.contains_key(&id), last_seen_at, now),
-            last_seen_at,
-            update: update(agent_version.as_deref(), update_version, update_error),
-            agent_version,
-            revoked_at,
+        .map(|(id, name, last_seen_at, agent_version, update_version, update_error, revoked_at, woken_at)| {
+            let status = status(connected.contains_key(&id), last_seen_at, woken_at, now);
+            let wake_failed = woken_at.is_some() && status == DeviceStatus::Offline;
+            Device {
+                id,
+                name,
+                status,
+                last_seen_at,
+                wake_error: wake_failed.then(|| "Wake failed".to_owned()),
+                update: update(agent_version.as_deref(), update_version, update_error),
+                agent_version,
+                revoked_at,
+            }
         })
         .collect())
 }
@@ -173,7 +198,7 @@ pub async fn merge(state: &AppState, old: Uuid, new: Uuid) -> anyhow::Result<()>
 
 pub async fn agent_connected(state: &AppState, id: Uuid) -> anyhow::Result<()> {
     *state.connections.0.lock().unwrap().entry(id).or_default() += 1;
-    sqlx::query("UPDATE devices SET last_seen_at = NULL WHERE id = $1").bind(id).execute(&state.db).await?;
+    sqlx::query("UPDATE devices SET last_seen_at = NULL, wake_requested_at = NULL WHERE id = $1").bind(id).execute(&state.db).await?;
     Ok(())
 }
 
@@ -205,9 +230,16 @@ mod tests {
     #[test]
     fn online_for_30_seconds_after_drop_then_offline() {
         let t = Utc::now();
-        assert_eq!(status(true, None, t), DeviceStatus::Online);
-        assert_eq!(status(false, None, t), DeviceStatus::Offline);
-        assert_eq!(status(false, Some(t), t + Duration::seconds(29)), DeviceStatus::Online);
-        assert_eq!(status(false, Some(t), t + Duration::seconds(30)), DeviceStatus::Offline);
+        assert_eq!(status(true, None, None, t), DeviceStatus::Online);
+        assert_eq!(status(false, None, None, t), DeviceStatus::Offline);
+        assert_eq!(status(false, Some(t), None, t + Duration::seconds(29)), DeviceStatus::Online);
+        assert_eq!(status(false, Some(t), None, t + Duration::seconds(30)), DeviceStatus::Offline);
+    }
+
+    #[test]
+    fn waking_for_3_minutes_after_a_wake_then_offline() {
+        let t = Utc::now();
+        assert_eq!(status(false, Some(t), Some(t), t + Duration::seconds(179)), DeviceStatus::Waking);
+        assert_eq!(status(false, Some(t), Some(t), t + Duration::seconds(180)), DeviceStatus::Offline);
     }
 }

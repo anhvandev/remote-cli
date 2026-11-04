@@ -16,6 +16,7 @@ message AgentMessage {
     ActResult act_result = 5;
     DisplayList displays = 50;
     ExecResult exec_result = 11;
+    WakeResult wake_result = 14;
   }
   reserved 30; // was a bare Resources delta; now ResourceSample
 }
@@ -30,6 +31,7 @@ message ServerMessage {
     DisplaysRequest list_displays = 50;
     ExecRequest exec = 11;
     ControlIndicator control_indicator = 7;
+    WakeRequest wake = 14;
   }
 }
 
@@ -100,6 +102,7 @@ message Disk {
 message NetworkInterface {
   string name = 1;
   string mac = 2;
+  // "address/prefix", e.g. "192.168.1.20/24" (the prefix lets the Server match Wake Relays by subnet).
   repeated string ips = 3;
 }
 
@@ -330,4 +333,18 @@ message ExecResult {
 // Sent whenever it changes and at the start of every Device session.
 message ControlIndicator {
   bool on = 1;
+}
+
+// --- Wake (ticket 14) ---
+
+// Sent to a Wake Relay: broadcast a Wake-on-LAN magic packet for `mac` (6 bytes) on the local network.
+message WakeRequest {
+  uint64 request_id = 1;
+  bytes mac = 2;
+}
+
+// `error` set = the packet could not be sent.
+message WakeResult {
+  uint64 request_id = 1;
+  Error error = 2;
 }
