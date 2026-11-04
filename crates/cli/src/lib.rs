@@ -303,6 +303,18 @@ enum DeviceCommand {
     Show { device: String },
     /// The Device's process list, fetched from its Agent now.
     Processes { device: String },
+    /// Rename a Device (admin).
+    Rename { device: String, name: String },
+    /// Delete a Device and its history (admin).
+    Delete { device: String },
+    /// Revoke a Device's credential so its Agent can no longer connect (admin).
+    Revoke { device: String },
+    /// Move an old Device's history into a new one (e.g. after a reinstall), then delete the old one (admin).
+    Merge {
+        old: String,
+        #[arg(long)]
+        into: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -402,6 +414,28 @@ where
                 );
             }
             (procs, text)
+        }
+        Command::Device(DeviceCommand::Rename { device, name }) => {
+            let path = format!("/api/v1/devices/{}", path_segment(&device));
+            let d = api.call(reqwest::Method::PATCH, &path, Some(&serde_json::json!({ "name": name }))).await?;
+            let text = format!("renamed {} to {}\n", str_of(&d["id"]), str_of(&d["name"]));
+            (d, text)
+        }
+        Command::Device(DeviceCommand::Delete { device }) => {
+            let path = format!("/api/v1/devices/{}", path_segment(&device));
+            (api.call(reqwest::Method::DELETE, &path, None).await?, format!("deleted {device}\n"))
+        }
+        Command::Device(DeviceCommand::Revoke { device }) => {
+            let path = format!("/api/v1/devices/{}/revoke", path_segment(&device));
+            let d = api.call(reqwest::Method::POST, &path, None).await?;
+            let text = format!("revoked {} at {}\n", str_of(&d["name"]), str_of(&d["revoked_at"]));
+            (d, text)
+        }
+        Command::Device(DeviceCommand::Merge { old, into }) => {
+            let path = format!("/api/v1/devices/{}/merge", path_segment(&into));
+            let d = api.call(reqwest::Method::POST, &path, Some(&serde_json::json!({ "from": old }))).await?;
+            let text = format!("merged {old} into {} ({})\n", str_of(&d["name"]), str_of(&d["id"]));
+            (d, text)
         }
         Command::Metrics(MetricsCommand::History { device, from, to, resolution }) => {
             let query: Vec<String> = [("from", from), ("to", to), ("resolution", resolution)]

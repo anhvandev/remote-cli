@@ -186,6 +186,7 @@ async fn session(
             msg = conn.recv::<ServerMessage>() => {
                 match msg?.and_then(|m| m.msg) {
                     None => anyhow::bail!("server closed the connection"),
+                    Some(server_message::Msg::Error(e)) => anyhow::bail!("server refused: {}: {}", e.code, e.message),
                     Some(server_message::Msg::Act(req)) => {
                         // The Executor's lock runs requests one at a time, in arrival order.
                         let (platform, executor, replies) = (platform_arc.clone(), executor.clone(), replies.clone());

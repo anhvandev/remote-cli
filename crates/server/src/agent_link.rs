@@ -71,6 +71,13 @@ impl Agents {
         result
     }
 
+    /// Tells the Device's Agent why and closes its current connection (if any).
+    pub fn disconnect(&self, device: uuid::Uuid, code: &str, message: &str) {
+        if let Some(tx) = self.senders.lock().unwrap().remove(&device) {
+            let _ = tx.send(ServerMessage { msg: Some(server_message::Msg::Error(error(code, message))) });
+        }
+    }
+
     fn reply(&self, device: uuid::Uuid, request_id: u64, msg: agent_message::Msg) {
         if let Some(tx) = self.pending.lock().unwrap().remove(&(device, request_id)) {
             let _ = tx.send(msg);
@@ -111,8 +118,12 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
         None => enroll(&mut Conn::new(tls), &state).await,
         Some(fp) => {
             let mut conn = Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME);
-            // shortcut: unknown certificates are dropped silently; revocation (ticket 16) should send an error.
-            let Some(id) = registry::find_by_cert_fingerprint(&state, &fp).await? else { return Ok(()) };
+            // shortcut: a revoke landing between this lookup and registering the sender below misses this
+            // connection until it reconnects; re-check after registering if that window ever matters.
+            let Some(id) = registry::find_by_cert_fingerprint(&state, &fp).await? else {
+                let msg = server_message::Msg::Error(error("unknown_device", "this credential is revoked or unknown"));
+                return conn.send(&ServerMessage { msg: Some(msg) }).await;
+            };
             metrics::session_started(&state, id);
             // The newest connection takes over outbound messages (an overlapping reconnect replaces the old one).
             // Registered before the Device shows Online, so Online always means requests can be sent.
@@ -190,7 +201,13 @@ where
                     _ => {}
                 }
             }
-            Some(msg) = outbound.recv() => conn.send(&msg).await?,
+            Some(msg) = outbound.recv() => {
+                conn.send(&msg).await?;
+                // An Error is only sent by `Agents::disconnect`.
+                if matches!(msg.msg, Some(server_message::Msg::Error(_))) {
+                    return Ok(());
+                }
+            }
             changed = rollouts.changed() => {
                 changed?;
                 offer_update(conn, state, device, &mut offered).await?;
