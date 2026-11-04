@@ -30,6 +30,9 @@ pub trait Platform: Send + Sync + 'static {
     /// One-shot command through the OS shell, as `run_as`. Kills it after `timeout` and returns what it printed
     /// so far with `timed_out` set. `RunAs::LoggedInUser` is only asked while someone is logged in.
     fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput>;
+    /// Interactive login shell on a new PTY of `cols` x `rows`, as `run_as` (same rule as `shell`).
+    /// Full PTY semantics: input goes to the terminal as typed (Ctrl-C = 0x03 interrupts), TERM supports full-screen programs.
+    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty>;
     fn power(&self, action: PowerAction) -> anyhow::Result<()>;
     /// Sends a Wake-on-LAN magic packet for `mac` on the local network.
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()>;
@@ -99,6 +102,21 @@ pub struct ShellOutput {
     pub stdout: String,
     pub stderr: String,
     pub timed_out: bool,
+}
+
+/// A running PTY session. `output` reaches EOF when the shell has exited.
+pub struct Pty {
+    pub output: Box<dyn std::io::Read + Send>,
+    pub input: Box<dyn std::io::Write + Send>,
+    pub control: Box<dyn PtyControl>,
+}
+
+pub trait PtyControl: Send {
+    fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()>;
+    /// Exit code of the shell, waiting for it to end (called after `output` hit EOF).
+    fn wait(&mut self) -> anyhow::Result<i32>;
+    /// Ends the shell and everything it started.
+    fn kill(&mut self) -> anyhow::Result<()>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -261,19 +279,15 @@ impl Platform for FakePlatform {
         Ok(self.state.lock().unwrap().processes.clone())
     }
 
-    // shortcut: only `echo X`, `whoami` ("user" or "root") and `sleep SECS` are emulated; anything else exits 127.
     fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
-        let ok = |stdout: String| ShellOutput { exit_code: 0, stdout, stderr: String::new(), timed_out: false };
-        if let Some(secs) = command.strip_prefix("sleep ").and_then(|s| s.parse().ok()) {
-            let wanted = Duration::from_secs(secs);
-            std::thread::sleep(wanted.min(timeout));
-            return Ok(ShellOutput { timed_out: wanted > timeout, ..ok(String::new()) });
-        }
-        Ok(match (command, command.strip_prefix("echo ")) {
-            (_, Some(text)) => ok(format!("{text}\n")),
-            ("whoami", _) => ok(if run_as == RunAs::Root { "root\n" } else { "user\n" }.into()),
-            _ => ShellOutput { exit_code: 127, stdout: String::new(), stderr: format!("{command}: not found\n"), timed_out: false },
-        })
+        Ok(fake_shell(command, run_as, timeout))
+    }
+
+    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+        let state = FakePtyState { output: b"$ ".to_vec(), size: (cols, rows), ..Default::default() };
+        let shared = Arc::new((Mutex::new(state), std::sync::Condvar::new()));
+        let pty = FakePty { shared, run_as };
+        Ok(Pty { output: Box::new(pty.clone()), input: Box::new(pty.clone()), control: Box::new(pty) })
     }
 
     fn power(&self, action: PowerAction) -> anyhow::Result<()> {
@@ -302,6 +316,122 @@ impl Platform for FakePlatform {
 
     fn set_control_indicator(&self, on: bool) -> anyhow::Result<()> {
         self.state.lock().unwrap().control_indicator = on;
+        Ok(())
+    }
+}
+
+// shortcut: only `echo X`, `whoami` ("user" or "root") and `sleep SECS` are emulated; anything else exits 127.
+fn fake_shell(command: &str, run_as: RunAs, timeout: Duration) -> ShellOutput {
+    let ok = |stdout: String| ShellOutput { exit_code: 0, stdout, stderr: String::new(), timed_out: false };
+    if let Some(secs) = command.strip_prefix("sleep ").and_then(|s| s.parse().ok()) {
+        let wanted = Duration::from_secs(secs);
+        std::thread::sleep(wanted.min(timeout));
+        return ShellOutput { timed_out: wanted > timeout, ..ok(String::new()) };
+    }
+    match (command, command.strip_prefix("echo ")) {
+        (_, Some(text)) => ok(format!("{text}\n")),
+        ("whoami", _) => ok(if run_as == RunAs::Root { "root\n" } else { "user\n" }.into()),
+        _ => ShellOutput { exit_code: 127, stdout: String::new(), stderr: format!("{command}: not found\n"), timed_out: false },
+    }
+}
+
+/// Fake terminal: echoes input, runs each line through `fake_shell` with prompt `$ `, plus `stty size`
+/// (prints "ROWS COLS"), `exit [N]`, Ctrl-C (prints `^C` and a new prompt) and Ctrl-D on an empty line (exit 0).
+#[derive(Clone)]
+struct FakePty {
+    shared: Arc<(Mutex<FakePtyState>, std::sync::Condvar)>,
+    run_as: RunAs,
+}
+
+#[derive(Default)]
+struct FakePtyState {
+    output: Vec<u8>,
+    line: String,
+    size: (u16, u16),
+    exit: Option<i32>,
+}
+
+impl FakePty {
+    fn update<T>(&self, f: impl FnOnce(&mut FakePtyState) -> T) -> T {
+        let out = f(&mut self.shared.0.lock().unwrap());
+        self.shared.1.notify_all();
+        out
+    }
+}
+
+impl std::io::Read for FakePty {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let (lock, cvar) = &*self.shared;
+        let mut s = cvar.wait_while(lock.lock().unwrap(), |s| s.output.is_empty() && s.exit.is_none()).unwrap();
+        let n = buf.len().min(s.output.len());
+        buf[..n].copy_from_slice(&s.output[..n]);
+        s.output.drain(..n);
+        Ok(n)
+    }
+}
+
+impl std::io::Write for FakePty {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let run_as = self.run_as;
+        self.update(|s| {
+            for &b in buf {
+                if s.exit.is_some() {
+                    break;
+                }
+                match b {
+                    3 => {
+                        s.line.clear();
+                        s.output.extend_from_slice(b"^C\r\n$ ");
+                    }
+                    4 if s.line.is_empty() => s.exit = Some(0),
+                    b'\r' | b'\n' => {
+                        s.output.extend_from_slice(b"\r\n");
+                        let line = std::mem::take(&mut s.line);
+                        let text = match line.trim() {
+                            "" => String::new(),
+                            "stty size" => format!("{} {}\n", s.size.1, s.size.0),
+                            l if l == "exit" || l.starts_with("exit ") => {
+                                s.exit = Some(l[4..].trim().parse().unwrap_or(0));
+                                break;
+                            }
+                            l => {
+                                let out = fake_shell(l, run_as, Duration::ZERO);
+                                out.stdout + &out.stderr
+                            }
+                        };
+                        s.output.extend_from_slice(text.replace('\n', "\r\n").as_bytes());
+                        s.output.extend_from_slice(b"$ ");
+                    }
+                    b => {
+                        s.line.push(b as char);
+                        s.output.push(b);
+                    }
+                }
+            }
+        });
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl PtyControl for FakePty {
+    fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
+        self.update(|s| s.size = (cols, rows));
+        Ok(())
+    }
+
+    fn wait(&mut self) -> anyhow::Result<i32> {
+        let (lock, cvar) = &*self.shared;
+        Ok(cvar.wait_while(lock.lock().unwrap(), |s| s.exit.is_none()).unwrap().exit.unwrap())
+    }
+
+    fn kill(&mut self) -> anyhow::Result<()> {
+        self.update(|s| {
+            s.exit.get_or_insert(-9);
+        });
         Ok(())
     }
 }

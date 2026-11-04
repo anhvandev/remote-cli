@@ -15,6 +15,7 @@ bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 data-encoding = "2"
 clap = { version = "4", features = ["derive", "env"] }
+crossterm = { version = "0.28", default-features = false, features = ["windows"] }
 futures = "0.3"
 mp4 = "0.14"
 openh264 = "0.9"
@@ -38,6 +39,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+webrtc = "0.17"
 
 rcli-protocol = { path = "crates/protocol" }
 rcli-server = { path = "crates/server" }
