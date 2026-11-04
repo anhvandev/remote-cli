@@ -25,6 +25,13 @@ pub fn to_real(display: &DisplayInfo, x: u32, y: u32) -> Option<(u32, u32)> {
     Some((map(x, display.width, iw), map(y, display.height, ih)))
 }
 
+/// Image point for real pixel (x, y) of a `width` x `height` display, clamped to the image.
+pub fn to_image(width: u32, height: u32, x: u32, y: u32) -> (u32, u32) {
+    let (iw, ih) = observed_size(width, height);
+    let map = |v: u32, real: u32, image: u32| (v.min(real) as u64 * image as u64 / real as u64) as u32;
+    (map(x, width, iw), map(y, height, ih))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
