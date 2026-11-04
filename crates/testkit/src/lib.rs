@@ -6,7 +6,7 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
-pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState};
+pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState, UiElement};
 use rcli_agent::{Credentials, ServerEndpoint};
 pub use rcli_server::clock::{Clock, ManualClock};
 pub use reqwest::StatusCode;

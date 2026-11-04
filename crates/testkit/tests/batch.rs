@@ -35,6 +35,15 @@ async fn a_batch_runs_in_order_with_waits_and_stops_at_the_failing_step() {
     let inputs = agent.platform.inputs();
     assert!(inputs.contains(&Input::Text("a".into())) && !inputs.contains(&Input::Text("b".into())), "{inputs:?}");
 
+    // `type` into a target expands to click + type on the Agent; the step still names the API Action.
+    let batch = json!({ "observe": "none", "actions": [
+        {"type": "key", "keys": "a"},
+        {"type": "type", "text": "x", "into": {"text": "Nowhere"}},
+    ]});
+    let (status, body) = sys.api.post_json(&actions, &batch).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["step"], 1, "{body}");
+
     // Waits are bounded so a batch always answers before the Agent request times out.
     let (status, body) = sys.api.post_json(&actions, &json!({ "actions": [{"type": "wait", "ms": 60_000}] })).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");

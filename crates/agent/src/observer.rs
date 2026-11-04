@@ -7,10 +7,10 @@ use std::{
 };
 
 use image::{codecs::jpeg::JpegEncoder, imageops, RgbaImage};
-use rcli_protocol::agent::Image;
+use rcli_protocol::agent::{Image, Mark};
 
 use crate::{
-    coords,
+    coords, marks,
     platform::{Frame, Platform},
 };
 
@@ -28,15 +28,28 @@ pub struct Observer {
 }
 
 impl Observer {
-    /// One settled, encoded image per display, as seen by `controller`.
-    pub fn shot(&mut self, p: &dyn Platform, displays: &[u32], controller: &str) -> anyhow::Result<Vec<Image>> {
-        displays.iter().map(|&d| self.image(p, d, controller)).collect()
+    /// One settled, encoded image per display, as seen by `controller`. With `marks`, the images are annotated
+    /// and the Marks of all displays are returned, numbered from 1.
+    pub fn shot(&mut self, p: &dyn Platform, displays: &[u32], controller: &str, marks: bool) -> anyhow::Result<(Vec<Image>, Vec<Mark>)> {
+        let mut found = vec![];
+        let images = displays.iter().map(|&d| self.image(p, d, controller, marks.then_some(&mut found))).collect::<anyhow::Result<_>>()?;
+        Ok((images, found))
     }
 
-    fn image(&mut self, p: &dyn Platform, display: u32, controller: &str) -> anyhow::Result<Image> {
+    fn image(&mut self, p: &dyn Platform, display: u32, controller: &str, marks: Option<&mut Vec<Mark>>) -> anyhow::Result<Image> {
         let frame = settle(p, display)?;
         let (width, height) = coords::observed_size(frame.width, frame.height);
-        let data = encode(&to_image(frame)?, width, height)?;
+        let new_marks = match marks {
+            Some(all) => {
+                let m = marks::detect(p, display, &frame, all.len() as u32 + 1)?;
+                all.extend(m.iter().cloned());
+                m
+            }
+            None => vec![],
+        };
+        let mut small = scale(frame, width, height)?;
+        marks::annotate(&mut small, &new_marks);
+        let data = jpeg(small)?;
         let key = (controller.to_owned(), display);
         let unchanged = self.last.get(&key) == Some(&data);
         let mime = "image/jpeg".to_owned();
@@ -61,7 +74,7 @@ impl Observer {
         for track in rec.tracks.into_iter().filter(|t| displays.contains(&t.display)) {
             for (at_ms, img) in track.frames {
                 let (width, height) = img.dimensions();
-                let data = encode(&img, width, height)?;
+                let data = jpeg(img)?;
                 images.push(Image { display: track.display, width, height, unchanged: false, mime: "image/jpeg".into(), data, at_ms });
             }
             if let Some(last) = images.last().filter(|i| i.display == track.display) {
@@ -120,10 +133,10 @@ impl Frames {
     fn sample(&mut self, p: &dyn Platform) -> anyhow::Result<bool> {
         let mut changed = false;
         for t in &mut self.tracks {
-            let full = to_image(p.capture(t.display)?)?;
+            let frame = p.capture(t.display)?;
             let at_ms = self.start.elapsed().as_millis() as u32;
-            let (width, height) = coords::observed_size(full.width(), full.height());
-            let observed = if (width, height) == full.dimensions() { full } else { imageops::thumbnail(&full, width, height) };
+            let (width, height) = coords::observed_size(frame.width, frame.height);
+            let observed = scale(frame, width, height)?;
             let small = shrink(&observed, COMPARE_EDGE);
             if t.seen.as_ref().is_some_and(|seen| !noticeable(seen, &small)) {
                 continue;
@@ -153,7 +166,7 @@ fn noticeable(a: &RgbaImage, b: &RgbaImage) -> bool {
 }
 
 /// Captures until two frames in a row are equal, or `SETTLE_MAX` has passed.
-fn settle(p: &dyn Platform, display: u32) -> anyhow::Result<Frame> {
+pub fn settle(p: &dyn Platform, display: u32) -> anyhow::Result<Frame> {
     let deadline = Instant::now() + SETTLE_MAX;
     let mut prev = p.capture(display)?;
     loop {
@@ -166,12 +179,13 @@ fn settle(p: &dyn Platform, display: u32) -> anyhow::Result<Frame> {
     }
 }
 
-fn to_image(frame: Frame) -> anyhow::Result<RgbaImage> {
-    RgbaImage::from_raw(frame.width, frame.height, frame.rgba).ok_or_else(|| anyhow::anyhow!("frame size does not match its pixels"))
+fn scale(frame: Frame, width: u32, height: u32) -> anyhow::Result<RgbaImage> {
+    let full = RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
+        .ok_or_else(|| anyhow::anyhow!("frame size does not match its pixels"))?;
+    Ok(if (width, height) == (frame.width, frame.height) { full } else { imageops::thumbnail(&full, width, height) })
 }
 
-fn encode(full: &RgbaImage, width: u32, height: u32) -> anyhow::Result<Vec<u8>> {
-    let small = if (width, height) == full.dimensions() { full.clone() } else { imageops::thumbnail(full, width, height) };
+fn jpeg(small: RgbaImage) -> anyhow::Result<Vec<u8>> {
     let rgb = image::DynamicImage::ImageRgba8(small).to_rgb8();
     let mut out = Cursor::new(Vec::new());
     JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY).encode_image(&rgb)?;

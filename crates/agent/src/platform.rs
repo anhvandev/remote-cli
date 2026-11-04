@@ -15,6 +15,11 @@ pub trait Platform: Send + Sync + 'static {
     /// One frame of `display`, in real pixels.
     fn capture(&self, display: u32) -> anyhow::Result<Frame>;
     fn input(&self, input: Input) -> anyhow::Result<()>;
+    /// Targetable elements (buttons, fields, links, labelled text) from the accessibility tree of `display`,
+    /// in real pixels. `None` = no tree here (lock/login screen, Wayland, games): the Agent falls back to OCR.
+    fn accessibility(&self, display: u32) -> anyhow::Result<Option<Vec<UiElement>>>;
+    /// OCR: lines or words of text in `frame`, boxes in the frame's pixels, role "text".
+    fn recognize_text(&self, frame: &Frame) -> anyhow::Result<Vec<UiElement>>;
     fn session_state(&self) -> anyhow::Result<SessionState>;
     /// Hardware and OS facts; polled, and re-sent when they differ from the last ones sent.
     fn inventory(&self) -> anyhow::Result<Inventory>;
@@ -41,6 +46,17 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+}
+
+/// An on-screen element a Mark is made from. Box in real pixels of its display.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiElement {
+    pub role: String,
+    pub text: String,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// One input primitive. The Executor builds clicks, drags and key combinations from these.
@@ -111,6 +127,10 @@ pub struct FakeState {
     pub inventory: Inventory,
     pub resources: Resources,
     pub processes: Vec<Process>,
+    /// What `accessibility` returns for every display.
+    pub accessibility: Option<Vec<UiElement>>,
+    /// What `recognize_text` "reads" from any frame.
+    pub screen_text: Vec<UiElement>,
 }
 
 impl FakePlatform {
@@ -130,6 +150,8 @@ impl FakePlatform {
             processes: vec![Process { pid: 1, name: "init".into(), ..Default::default() }],
             version: env!("CARGO_PKG_VERSION").into(),
             installed: vec![],
+            accessibility: None,
+            screen_text: vec![],
         };
         Self { hostname, state: Arc::new(Mutex::new(state)) }
     }
@@ -192,6 +214,15 @@ impl Platform for FakePlatform {
         s.inputs.push(input);
         s.animating_until = Some(Instant::now() + s.animate);
         Ok(())
+    }
+
+    fn accessibility(&self, _display: u32) -> anyhow::Result<Option<Vec<UiElement>>> {
+        Ok(self.state.lock().unwrap().accessibility.clone())
+    }
+
+    // shortcut: returns the scripted text whatever the frame shows; fine while frames are single-colour.
+    fn recognize_text(&self, _frame: &Frame) -> anyhow::Result<Vec<UiElement>> {
+        Ok(self.state.lock().unwrap().screen_text.clone())
     }
 
     fn session_state(&self) -> anyhow::Result<SessionState> {
