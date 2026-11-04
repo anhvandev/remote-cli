@@ -3,6 +3,7 @@ import { api, ApiError, type ControlLock, type DeviceDetails, type Resources } f
 import { Nav } from "../../nav";
 import { Refresh } from "../../refresh";
 import { Status } from "../../status";
+import { History } from "./history";
 import { LiveView } from "./live-view";
 
 const GB = 1 << 30;
@@ -24,8 +25,15 @@ function Screen({ r }: { r: Resources }) {
   }
 }
 
-export default async function DevicePage({ params }: { params: Promise<{ id: string }> }) {
+export default async function DevicePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ range?: string }>;
+}) {
   const { id } = await params;
+  const { range } = await searchParams;
   const path = `/api/v1/devices/${encodeURIComponent(id)}`;
   const [d, lock] = await Promise.all([api<DeviceDetails>(path), api<ControlLock>(`${path}/lock`)]).catch((e) => {
     if (e instanceof ApiError && e.status === 404) notFound();
@@ -117,6 +125,9 @@ export default async function DevicePage({ params }: { params: Promise<{ id: str
               <span className="muted">Agent chưa gửi thông tin phần cứng.</span>
             )}
           </section>
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <History path={path} range={range} ramBytes={inv?.ram_bytes} />
         </div>
       </main>
     </>

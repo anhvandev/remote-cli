@@ -24,7 +24,7 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 
-use crate::{enrollment, metrics, pki, registry, updates, AppState};
+use crate::{control_lock, enrollment, metrics, pki, registry, updates, AppState};
 
 /// How long a request to an Agent (e.g. the process list) may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -51,6 +51,16 @@ impl Agents {
         device: uuid::Uuid,
         build: impl FnOnce(u64) -> server_message::Msg,
     ) -> Result<agent_message::Msg, RequestError> {
+        self.request_within(device, REQUEST_TIMEOUT, build).await
+    }
+
+    /// `request` with a custom reply timeout, for Agent work that may run long (terminal commands).
+    pub async fn request_within(
+        &self,
+        device: uuid::Uuid,
+        timeout: Duration,
+        build: impl FnOnce(u64) -> server_message::Msg,
+    ) -> Result<agent_message::Msg, RequestError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert((device, id), tx);
@@ -62,7 +72,7 @@ impl Agents {
             .is_some_and(|s| s.send(ServerMessage { msg: Some(build(id)) }).is_ok());
         let result = match sent {
             false => Err(RequestError::NotConnected),
-            true => match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+            true => match tokio::time::timeout(timeout, rx).await {
                 Ok(Ok(reply)) => Ok(reply),
                 Ok(Err(_)) | Err(_) => Err(RequestError::Timeout),
             },
@@ -71,9 +81,18 @@ impl Agents {
         result
     }
 
-    /// Sends a message that has no reply; false if the Device is not connected.
-    pub fn send(&self, device: uuid::Uuid, msg: server_message::Msg) -> bool {
-        self.senders.lock().unwrap().get(&device).is_some_and(|s| s.send(ServerMessage { msg: Some(msg) }).is_ok())
+    /// Tells the Device's Agent why and closes its current connection (if any).
+    pub fn disconnect(&self, device: uuid::Uuid, code: &str, message: &str) {
+        if let Some(tx) = self.senders.lock().unwrap().remove(&device) {
+            let _ = tx.send(ServerMessage { msg: Some(server_message::Msg::Error(error(code, message))) });
+        }
+    }
+
+    /// Fire-and-forget message to a connected Agent; dropped if it is not connected.
+    pub fn send(&self, device: uuid::Uuid, msg: server_message::Msg) {
+        if let Some(s) = self.senders.lock().unwrap().get(&device) {
+            let _ = s.send(ServerMessage { msg: Some(msg) });
+        }
     }
 
     fn reply(&self, device: uuid::Uuid, request_id: u64, msg: agent_message::Msg) {
@@ -116,14 +135,19 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
         None => enroll(&mut Conn::new(tls), &state).await,
         Some(fp) => {
             let mut conn = Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME);
-            // shortcut: unknown certificates are dropped silently; revocation (ticket 16) should send an error.
-            let Some(id) = registry::find_by_cert_fingerprint(&state, &fp).await? else { return Ok(()) };
+            // shortcut: a revoke landing between this lookup and registering the sender below misses this
+            // connection until it reconnects; re-check after registering if that window ever matters.
+            let Some(id) = registry::find_by_cert_fingerprint(&state, &fp).await? else {
+                let msg = server_message::Msg::Error(error("unknown_device", "this credential is revoked or unknown"));
+                return conn.send(&ServerMessage { msg: Some(msg) }).await;
+            };
             metrics::session_started(&state, id);
             // The newest connection takes over outbound messages (an overlapping reconnect replaces the old one).
             // Registered before the Device shows Online, so Online always means requests can be sent.
             let (tx, rx) = mpsc::unbounded_channel();
             state.agents.senders.lock().unwrap().insert(id, tx.clone());
             registry::agent_connected(&state, id).await?;
+            control_lock::push_indicator(&state, id).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
             let result = session(&mut conn, rx, &state, id).await;
             {
                 let mut senders = state.agents.senders.lock().unwrap();
@@ -182,6 +206,7 @@ where
                     Some(agent_message::Msg::ActResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ActResult(r)),
                     Some(agent_message::Msg::LiveAnswer(a)) => state.agents.reply(device, a.request_id, agent_message::Msg::LiveAnswer(a)),
                     Some(agent_message::Msg::Displays(d)) => state.agents.reply(device, d.request_id, agent_message::Msg::Displays(d)),
+                    Some(agent_message::Msg::ExecResult(r)) => state.agents.reply(device, r.request_id, agent_message::Msg::ExecResult(r)),
                     Some(agent_message::Msg::Inventory(inv)) => metrics::save_inventory(state, device, &inv).await?,
                     Some(agent_message::Msg::Sample(s)) => metrics::apply_sample(state, device, &s).await?,
                     Some(agent_message::Msg::Processes(p)) => {
@@ -196,7 +221,13 @@ where
                     _ => {}
                 }
             }
-            Some(msg) = outbound.recv() => conn.send(&msg).await?,
+            Some(msg) = outbound.recv() => {
+                conn.send(&msg).await?;
+                // An Error is only sent by `Agents::disconnect`.
+                if matches!(msg.msg, Some(server_message::Msg::Error(_))) {
+                    return Ok(());
+                }
+            }
             changed = rollouts.changed() => {
                 changed?;
                 offer_update(conn, state, device, &mut offered).await?;

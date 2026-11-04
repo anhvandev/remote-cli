@@ -27,13 +27,12 @@ pub trait Platform: Send + Sync + 'static {
     /// `session` is left unset: the Agent fills it from `session_state`.
     fn metrics(&self) -> anyhow::Result<Resources>;
     fn processes(&self) -> anyhow::Result<Vec<Process>>;
-    /// One-shot command through the OS shell.
-    fn shell(&self, command: &str) -> anyhow::Result<ShellOutput>;
+    /// One-shot command through the OS shell, as `run_as`. Kills it after `timeout` and returns what it printed
+    /// so far with `timed_out` set. `RunAs::LoggedInUser` is only asked while someone is logged in.
+    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput>;
     fn power(&self, action: PowerAction) -> anyhow::Result<()>;
     /// Sends a Wake-on-LAN magic packet for `mac` on the local network.
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()>;
-    /// Shows or hides the visible on-Device indicator that someone is watching or controlling the screen.
-    fn control_indicator(&self, visible: bool) -> anyhow::Result<()>;
     /// Version of the running Agent.
     fn agent_version(&self) -> String {
         env!("CARGO_PKG_VERSION").into()
@@ -41,6 +40,9 @@ pub trait Platform: Send + Sync + 'static {
     /// Replaces the Agent binary with `build` (signature already verified) and restarts the Agent
     /// onto it. Real adapters normally do not return on success; if they do, the Agent reconnects.
     fn install_update(&self, version: &str, build: &[u8]) -> anyhow::Result<()>;
+    /// Shows (true) or hides the visible on-Device indicator that someone is controlling it
+    /// (Control Lock held or live stream active). Must work at the lock and login screens too.
+    fn set_control_indicator(&self, on: bool) -> anyhow::Result<()>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,6 +98,15 @@ pub struct ShellOutput {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
+    pub timed_out: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunAs {
+    /// The user logged in at the console.
+    LoggedInUser,
+    /// root, or SYSTEM on Windows.
+    Root,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,7 +137,7 @@ pub struct FakeState {
     captures: u64,
     version: String,
     installed: Vec<String>,
-    indicator: bool,
+    control_indicator: bool,
     pub inventory: Inventory,
     pub resources: Resources,
     pub processes: Vec<Process>,
@@ -153,7 +164,7 @@ impl FakePlatform {
             processes: vec![Process { pid: 1, name: "init".into(), ..Default::default() }],
             version: env!("CARGO_PKG_VERSION").into(),
             installed: vec![],
-            indicator: false,
+            control_indicator: false,
             accessibility: None,
             screen_text: vec![],
         };
@@ -186,9 +197,9 @@ impl FakePlatform {
         self.state.lock().unwrap().wakes.clone()
     }
 
-    /// Whether the control indicator is showing.
-    pub fn indicator_shown(&self) -> bool {
-        self.state.lock().unwrap().indicator
+    /// Whether the control indicator is currently shown.
+    pub fn control_indicator(&self) -> bool {
+        self.state.lock().unwrap().control_indicator
     }
 
     /// Versions installed through `install_update`, in order.
@@ -213,7 +224,8 @@ impl Platform for FakePlatform {
         let d = s.displays.iter().find(|d| d.index == display).ok_or_else(|| anyhow::anyhow!("no display {display}"))?;
         let animating = s.animating_until.is_some_and(|t| Instant::now() < t);
         let frame_no = if animating { s.captures } else { 0 };
-        let pixel = [s.session as u8 * 60, s.inputs.len() as u8, (frame_no % 251) as u8, 255];
+        // Steps of 40 so every change is noticeable to `frames`.
+        let pixel = [s.session as u8 * 60, (s.inputs.len() * 40) as u8, (frame_no % 6 * 40) as u8, 255];
         Ok(Frame { width: d.width, height: d.height, rgba: pixel.repeat((d.width * d.height) as usize) })
     }
 
@@ -249,11 +261,18 @@ impl Platform for FakePlatform {
         Ok(self.state.lock().unwrap().processes.clone())
     }
 
-    // shortcut: only `echo` is emulated; script more results when a feature needs them.
-    fn shell(&self, command: &str) -> anyhow::Result<ShellOutput> {
-        Ok(match command.strip_prefix("echo ") {
-            Some(text) => ShellOutput { exit_code: 0, stdout: format!("{text}\n"), stderr: String::new() },
-            None => ShellOutput { exit_code: 127, stdout: String::new(), stderr: format!("{command}: not found\n") },
+    // shortcut: only `echo X`, `whoami` ("user" or "root") and `sleep SECS` are emulated; anything else exits 127.
+    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
+        let ok = |stdout: String| ShellOutput { exit_code: 0, stdout, stderr: String::new(), timed_out: false };
+        if let Some(secs) = command.strip_prefix("sleep ").and_then(|s| s.parse().ok()) {
+            let wanted = Duration::from_secs(secs);
+            std::thread::sleep(wanted.min(timeout));
+            return Ok(ShellOutput { timed_out: wanted > timeout, ..ok(String::new()) });
+        }
+        Ok(match (command, command.strip_prefix("echo ")) {
+            (_, Some(text)) => ok(format!("{text}\n")),
+            ("whoami", _) => ok(if run_as == RunAs::Root { "root\n" } else { "user\n" }.into()),
+            _ => ShellOutput { exit_code: 127, stdout: String::new(), stderr: format!("{command}: not found\n"), timed_out: false },
         })
     }
 
@@ -269,11 +288,6 @@ impl Platform for FakePlatform {
         Ok(())
     }
 
-    fn control_indicator(&self, visible: bool) -> anyhow::Result<()> {
-        self.state.lock().unwrap().indicator = visible;
-        Ok(())
-    }
-
     fn agent_version(&self) -> String {
         self.state.lock().unwrap().version.clone()
     }
@@ -283,6 +297,11 @@ impl Platform for FakePlatform {
         let mut s = self.state.lock().unwrap();
         s.installed.push(version.into());
         s.version = version.into();
+        Ok(())
+    }
+
+    fn set_control_indicator(&self, on: bool) -> anyhow::Result<()> {
+        self.state.lock().unwrap().control_indicator = on;
         Ok(())
     }
 }

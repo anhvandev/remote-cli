@@ -3,25 +3,34 @@ use serde_json::json;
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 
 #[tokio::test]
-async fn anyone_can_watch_live_peer_to_peer_while_someone_else_holds_the_control_lock() {
+async fn anyone_can_watch_live_peer_to_peer_and_the_indicator_shows_while_streaming() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
     let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
     let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
-    let (status, _) = alice.post(&format!("/api/v1/devices/{dev}/lock")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(!agent.platform.indicator_shown());
+    assert!(!agent.platform.control_indicator());
 
     let live = LiveViewer::open(&bob, dev, false).await.expect("open live view");
     live.wait_packets(10).await;
     assert_eq!(live.codec(), "video/H264");
     assert_eq!(live.local_candidate_type().await, RTCIceCandidateType::Host, "direct path, no relay configured");
-    assert!(agent.platform.indicator_shown(), "indicator shows while streaming");
+    assert!(agent.platform.control_indicator(), "indicator shows while streaming");
 
+    // Someone else holding the Control Lock does not stop anyone from watching.
+    let lock = format!("/api/v1/devices/{dev}/lock");
+    assert_eq!(alice.post(&lock).await.0, StatusCode::OK);
+    let second = LiveViewer::open(&bob, dev, false).await.expect("watch while alice holds the lock");
+    second.wait_packets(10).await;
+
+    // The indicator stays while the lock is held, and goes once both the streams and the lock are gone.
     assert_eq!(live.close(&bob).await, StatusCode::NO_CONTENT);
-    eventually(|| async { (!agent.platform.indicator_shown()).then_some(()) }).await;
+    assert_eq!(second.close(&bob).await, StatusCode::NO_CONTENT);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(agent.platform.control_indicator(), "Control Lock still held");
+    assert_eq!(alice.post(&format!("{lock}/release")).await.0, StatusCode::OK);
+    eventually(|| async { (!agent.platform.control_indicator()).then_some(()) }).await;
     assert!(agent.platform.inputs().is_empty(), "watching sends no input");
 }
 

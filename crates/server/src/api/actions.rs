@@ -20,7 +20,8 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/devices/{id}/displays", get(displays))
 }
 
-/// `{"actions": [...], "observe": "shot" | "none", "display": N | "all"}`. No Actions = observe only (no lock).
+/// `{"actions": [...], "observe": "shot" | "none" | "frames", "display": N | "all", "max_frames": N}`.
+/// No Actions = observe only (no lock). Several Actions = an Action Batch, run in order.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ActBody {
@@ -30,10 +31,17 @@ struct ActBody {
     observe: Observe,
     /// Unset = the display last acted on.
     display: Option<DisplaySel>,
+    /// `frames`: at most this many per display (default 10).
+    max_frames: Option<u32>,
     /// Detect Marks: annotated images plus `observation` id and `marks` table in the reply.
     #[serde(default)]
     marks: bool,
 }
+
+/// Upper bound of `max_frames`.
+const MAX_FRAMES: u32 = 30;
+/// Upper bound of all waits in one batch, so the Agent answers well within its request timeout.
+const MAX_TOTAL_WAIT_MS: u64 = 5_000;
 
 #[derive(Deserialize, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +49,7 @@ enum Observe {
     #[default]
     Shot,
     None,
+    Frames,
 }
 
 #[derive(Deserialize)]
@@ -104,6 +113,10 @@ enum Action {
     Key {
         keys: String,
     },
+    /// Action Batch pause, in milliseconds.
+    Wait {
+        ms: u32,
+    },
 }
 
 impl From<Point> for proto::Point {
@@ -132,6 +145,7 @@ impl Action {
             Action::Scroll { at, dx, dy } => Kind::Scroll(proto::Scroll { at: Some(at.into()), dx, dy }),
             Action::Type { text, into: None } => Kind::TypeText(text),
             Action::Key { keys } => Kind::Key(keys),
+            Action::Wait { ms } => Kind::WaitMs(ms),
         };
         vec![proto::Action { kind: Some(kind) }]
     }
@@ -144,6 +158,10 @@ impl From<RequestError> for ApiError {
             RequestError::Timeout => ApiError::new(StatusCode::GATEWAY_TIMEOUT, "agent_timeout", "the Agent did not answer in time"),
         }
     }
+}
+
+fn invalid(message: impl Into<String>) -> ApiError {
+    ApiError::new(StatusCode::BAD_REQUEST, "invalid_action", message)
 }
 
 fn agent_error(e: proto::Error) -> ApiError {
@@ -167,13 +185,42 @@ async fn act(
     let Json(mut params) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
     let body: ActBody = serde_json::from_value(params.clone())
         .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?;
+    let waits: u64 = body.actions.iter().map(|a| if let Action::Wait { ms } = a { u64::from(*ms) } else { 0 }).sum();
+    if waits > MAX_TOTAL_WAIT_MS {
+        return Err(invalid(format!("waits add up to {waits} ms; at most {MAX_TOTAL_WAIT_MS} ms per request")));
+    }
+    let max_frames = body.max_frames.unwrap_or(10);
+    if !(1..=MAX_FRAMES).contains(&max_frames) {
+        return Err(invalid(format!("max_frames must be 1 to {MAX_FRAMES}")));
+    }
+    // Every request from the holder, observe-only included, restarts the idle timer.
+    control_lock::touch(&state, device, &user).await?;
     if !body.actions.is_empty() {
         control_lock::check(&state, device, &user).await?;
     }
     mask_secrets(&state, device, &mut params);
-    let result = forward(&state, device, &user, body).await;
-    let outcome = json!({ "error": result.as_ref().err().map(|e| e.code) });
-    audit::record(&state, &user, device, "act", params, outcome).await?;
+    let result = forward(&state, device, &user, body, max_frames).await;
+    let actions = params["actions"].as_array().cloned().unwrap_or_default();
+    if actions.is_empty() {
+        let outcome = json!({ "error": result.as_ref().err().map(|e| e.code) });
+        audit::record(&state, &user, device, "act", params, outcome).await?;
+        return result;
+    }
+    // One entry per Action of a batch: done, the failing step, or skipped after it.
+    let failed = result.as_ref().err().map(|e| (e.code, e.details.get("step").and_then(Value::as_u64)));
+    for (step, action) in actions.into_iter().enumerate() {
+        let step = step as u64;
+        let outcome = match failed {
+            Some((_, Some(s))) if step > s => json!({ "skipped": true }),
+            Some((_, Some(s))) if step < s => json!({ "error": null }),
+            Some((code, _)) => json!({ "error": code }),
+            None => json!({ "error": null }),
+        };
+        let mut entry = params.clone();
+        entry["actions"] = json!([action]);
+        entry["step"] = step.into();
+        audit::record(&state, &user, device, "act", entry, outcome).await?;
+    }
     result
 }
 
@@ -188,14 +235,23 @@ fn mask_secrets(state: &super::State, device: uuid::Uuid, params: &mut Value) {
     }
 }
 
-async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: ActBody) -> Result<Json<Value>, ApiError> {
+async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: ActBody, max_frames: u32) -> Result<Json<Value>, ApiError> {
+    // One API Action can expand to several protocol Actions (type into); map failures back to the API step.
+    let (mut step_of, mut actions) = (vec![], vec![]);
+    for (step, action) in body.actions.into_iter().enumerate() {
+        for a in action.into_proto() {
+            step_of.push(step as u32);
+            actions.push(a);
+        }
+    }
     let req = |request_id| {
         server_message::Msg::Act(proto::ActRequest {
             request_id,
-            actions: body.actions.into_iter().flat_map(Action::into_proto).collect(),
+            actions,
             observe: match body.observe {
                 Observe::Shot => proto::ObserveMode::Shot,
                 Observe::None => proto::ObserveMode::None,
+                Observe::Frames => proto::ObserveMode::Frames,
             }
             .into(),
             display: match body.display {
@@ -204,6 +260,7 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
             },
             all_displays: matches!(body.display, Some(DisplaySel::All(_))),
             controller: user.id.to_string(),
+            max_frames,
             marks: body.marks,
         })
     };
@@ -211,14 +268,18 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
         return Err(anyhow::anyhow!("unexpected reply to ActRequest").into());
     };
     if let Some(e) = result.error {
-        return Err(agent_error(e));
+        let err = agent_error(e);
+        return Err(match result.failed_step.and_then(|s| step_of.get(s as usize)) {
+            Some(step) => err.with("step", *step),
+            None => err,
+        });
     }
     let images: Vec<Value> = result
         .images
         .into_iter()
         .map(|i| {
             let data = (!i.unchanged).then(|| base64::engine::general_purpose::STANDARD.encode(&i.data));
-            json!({ "display": i.display, "width": i.width, "height": i.height, "unchanged": i.unchanged, "mime": i.mime, "data": data })
+            json!({ "display": i.display, "width": i.width, "height": i.height, "unchanged": i.unchanged, "mime": i.mime, "data": data, "at_ms": i.at_ms })
         })
         .collect();
     let mut reply = json!({ "images": images });

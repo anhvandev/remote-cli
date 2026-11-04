@@ -1,9 +1,11 @@
 //! The Platform contract suite, run against the FakePlatform with a scripted operator.
 
+use std::time::Duration;
+
 use rcli_agent::{
     contract::{self, Env, Step},
     platform::{
-        DisplayInfo, FakePlatform, Frame, Input, Inventory, Platform, PowerAction, Process, Resources, SessionState,
+        DisplayInfo, FakePlatform, Frame, Input, Inventory, Platform, PowerAction, Process, Resources, RunAs, SessionState,
         ShellOutput, UiElement,
     },
 };
@@ -43,12 +45,15 @@ fn fake_platform_passes_every_check_in_every_environment() {
 | capture | ✅ | ✅ | ✅ |
 | key shows on screen | ✅ | ✅ | ✅ |
 | session state | ✅ | ✅ | ✅ |
+| control indicator | ✅ | ✅ | ✅ |
 | text recognition | ✅ | ✅ | ✅ |
 | accessibility tree | ✅ | | |
 | metrics | ✅ | | |
 | inventory | ✅ | | |
 | processes | ✅ | | |
 | shell | ✅ | | |
+| shell timeout | ✅ | | |
+| shell as root | | | ✅ |
 | wake send | ✅ | | |
 | power lock | ✅ | | |
 "
@@ -102,8 +107,8 @@ impl Platform for Broken {
     fn processes(&self) -> anyhow::Result<Vec<Process>> {
         self.fake.processes()
     }
-    fn shell(&self, command: &str) -> anyhow::Result<ShellOutput> {
-        self.fake.shell(command)
+    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
+        self.fake.shell(command, run_as, timeout)
     }
     fn power(&self, action: PowerAction) -> anyhow::Result<()> {
         self.fake.power(action)
@@ -111,11 +116,11 @@ impl Platform for Broken {
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()> {
         self.fake.send_wake(mac)
     }
-    fn control_indicator(&self, visible: bool) -> anyhow::Result<()> {
-        self.fake.control_indicator(visible)
-    }
     fn install_update(&self, version: &str, build: &[u8]) -> anyhow::Result<()> {
         self.fake.install_update(version, build)
+    }
+    fn set_control_indicator(&self, on: bool) -> anyhow::Result<()> {
+        self.fake.set_control_indicator(on)
     }
 }
 

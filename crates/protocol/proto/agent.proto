@@ -15,6 +15,7 @@ message AgentMessage {
     ResourceSample sample = 40;
     ActResult act_result = 5;
     DisplayList displays = 50;
+    ExecResult exec_result = 11;
     LiveAnswer live_answer = 21;
   }
   reserved 30; // was a bare Resources delta; now ResourceSample
@@ -28,6 +29,8 @@ message ServerMessage {
     ProcessListRequest list_processes = 3;
     ActRequest act = 5;
     DisplaysRequest list_displays = 50;
+    ExecRequest exec = 11;
+    ControlIndicator control_indicator = 7;
     LiveOffer live_offer = 21;
     LiveClose live_close = 210;
   }
@@ -177,6 +180,8 @@ message ActRequest {
   bool all_displays = 5;
   // Who asks; "unchanged" is relative to the last image this Controller got.
   string controller = 6;
+  // `frames`: at most this many frames per display (the last one is always the final screen).
+  uint32 max_frames = 8;
   // Detect Marks: annotate the images and return the Mark table.
   bool marks = 10;
 }
@@ -184,6 +189,8 @@ message ActRequest {
 enum ObserveMode {
   OBSERVE_MODE_SHOT = 0;
   OBSERVE_MODE_NONE = 1;
+  // Change-triggered, timestamped frames captured while the Actions run.
+  OBSERVE_MODE_FRAMES = 8;
 }
 
 // Coordinates are in Observation image space of `display`; the Agent's Coordinate Mapper converts them.
@@ -210,6 +217,8 @@ message Action {
     string type_text = 7;
     // Key combination, e.g. "ctrl+shift+t".
     string key = 8;
+    // Action Batch: pause this long before the next Action.
+    uint32 wait_ms = 80;
   }
 }
 
@@ -229,6 +238,8 @@ message ActResult {
   uint64 request_id = 1;
   repeated Image images = 2;
   Error error = 3;
+  // Index of the Action in `actions` that failed (with `error`).
+  optional uint32 failed_step = 8;
   // Set when Marks were requested: this Observation's id and its Mark table.
   uint64 observation = 10;
   repeated Mark marks = 11;
@@ -254,6 +265,8 @@ message Image {
   bool unchanged = 4;
   string mime = 5;
   bytes data = 6;
+  // `frames`: milliseconds since the Agent started the request.
+  uint32 at_ms = 8;
 }
 
 message DisplaysRequest {
@@ -276,6 +289,37 @@ message DisplayInfo {
   // Real pixels per logical point (2.0 on Retina).
   double scale = 6;
   bool primary = 7;
+}
+
+// --- One-shot terminal command (ticket 11) ---
+
+// Runs `command` through the OS shell; answered with an ExecResult carrying the same request_id.
+message ExecRequest {
+  uint64 request_id = 1;
+  string command = 2;
+  // Run as root/SYSTEM instead of the logged-in user.
+  bool as_root = 3;
+  // With nobody logged in: run as root (admins) instead of failing with "no_logged_in_user" (operators).
+  bool root_if_nobody_logged_in = 4;
+  // The Agent kills the command after this long.
+  uint32 timeout_ms = 5;
+}
+
+// `error` set = nothing ran (code "no_logged_in_user", or a Platform failure).
+message ExecResult {
+  uint64 request_id = 1;
+  int32 exit_code = 2; // meaningless when timed_out
+  string stdout = 3;
+  string stderr = 4;
+  bool timed_out = 5;
+  bool as_root = 6; // who it actually ran as
+  Error error = 7;
+}
+
+// Show (on) or hide the on-Device indicator that the Device is being controlled.
+// Sent whenever it changes and at the start of every Device session.
+message ControlIndicator {
+  bool on = 1;
 }
 
 // --- Live view over WebRTC (ticket 21) ---

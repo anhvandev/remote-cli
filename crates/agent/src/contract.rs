@@ -4,24 +4,28 @@
 
 use std::time::{Duration, Instant};
 
-use crate::platform::{Input, Platform, PowerAction, SessionState};
+use crate::platform::{Input, Platform, PowerAction, RunAs, SessionState};
 
 /// Locally administered MAC that belongs to no real NIC, so the Wake check wakes nothing.
 pub const WAKE_TEST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x27];
 /// Like the probe: how long a key may take to show up on screen.
 const SCREEN_CHANGE_TIMEOUT: Duration = Duration::from_secs(1);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(3);
-const CHECKS: [&str; 12] = [
+const SHELL_TIMEOUT: Duration = Duration::from_secs(5);
+const CHECKS: [&str; 15] = [
     "displays",
     "capture",
     "key shows on screen",
     "session state",
+    "control indicator",
     "text recognition",
     "accessibility tree",
     "metrics",
     "inventory",
     "processes",
     "shell",
+    "shell timeout",
+    "shell as root",
     "wake send",
     "power lock",
 ];
@@ -126,8 +130,15 @@ pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
         Ok(())
     });
     r.check("shell", Env::LoggedIn, || {
-        let out = p.shell("echo rcli-contract")?;
+        let out = p.shell("echo rcli-contract", RunAs::LoggedInUser, SHELL_TIMEOUT)?;
         anyhow::ensure!(out.exit_code == 0 && out.stdout.trim() == "rcli-contract", "unexpected {out:?}");
+        Ok(())
+    });
+    r.check("shell timeout", Env::LoggedIn, || {
+        let start = Instant::now();
+        let out = p.shell("sleep 30", RunAs::LoggedInUser, Duration::from_secs(1))?;
+        anyhow::ensure!(out.timed_out, "not reported as timed out: {out:?}");
+        anyhow::ensure!(start.elapsed() < SHELL_TIMEOUT, "not killed in time: took {:?}", start.elapsed());
         Ok(())
     });
     r.check("wake send", Env::LoggedIn, || p.send_wake(WAKE_TEST_MAC));
@@ -138,6 +149,12 @@ pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
 
     operator(Step::LogOut);
     screen_checks(p, Env::LoginScreen, SessionState::LoginScreen, &mut r);
+    r.check("shell as root", Env::LoginScreen, || {
+        let out = p.shell("whoami", RunAs::Root, SHELL_TIMEOUT)?;
+        let who = out.stdout.trim().to_lowercase();
+        anyhow::ensure!(out.exit_code == 0 && (who == "root" || who.ends_with("\\system")), "unexpected {out:?}");
+        Ok(())
+    });
     operator(Step::LogIn);
 
     r.check("power lock", Env::LoggedIn, || {
@@ -167,6 +184,11 @@ fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Rep
         Ok(())
     });
     r.check("session state", env, || wait_for_state(p, expected, Duration::ZERO));
+    // shortcut: only checks that show/hide succeed here; whether it is visible is checked by eye on a real machine.
+    r.check("control indicator", env, || {
+        p.set_control_indicator(true)?;
+        p.set_control_indicator(false)
+    });
     // Every screen shows some text (a clock, a user name), and OCR is the Mark fallback where there is no tree.
     r.check("text recognition", env, || {
         anyhow::ensure!(!p.recognize_text(&p.capture(primary(p)?)?)?.is_empty(), "no text recognized");

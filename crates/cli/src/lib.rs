@@ -67,6 +67,19 @@ enum Command {
         #[arg(long, default_value = ".")]
         out: PathBuf,
     },
+    /// Run a one-shot command on a Device: prints its stdout/stderr and exits with its exit code.
+    Exec {
+        device: String,
+        /// `root`: run as root/SYSTEM (admin only). Default: the logged-in user.
+        #[arg(long = "as")]
+        run_as: Option<String>,
+        /// Seconds before the command is killed (default 60).
+        #[arg(long)]
+        timeout: Option<u32>,
+        /// The command, after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     /// Audit log of Actions, oldest first (admin).
     Audit {
         /// Device id or name.
@@ -90,7 +103,7 @@ enum Command {
         /// Display the coordinates refer to.
         #[arg(long, global = true, default_value_t = 0)]
         display: u32,
-        /// Observation mode: shot or none.
+        /// Observation mode: shot, frames or none.
         #[arg(long, global = true, default_value = "shot")]
         observe: String,
         /// Display to observe, index or `all`; default: the display acted on.
@@ -103,6 +116,22 @@ enum Command {
         #[arg(long, global = true, default_value = ".")]
         out: PathBuf,
     },
+    /// Send an Action Batch from JSON (needs the Control Lock): a list of Actions as in the API
+    /// (plus `{"type":"wait","ms":N}`), or a whole request body, which is sent as-is.
+    Batch {
+        device: String,
+        /// JSON file; `-` reads stdin.
+        file: PathBuf,
+        /// Observation mode: shot, frames or none.
+        #[arg(long, default_value = "shot")]
+        observe: String,
+        /// Display to observe, index or `all`; default: the display last acted on.
+        #[arg(long)]
+        display: Option<String>,
+        /// Directory to save images in.
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -110,6 +139,8 @@ enum LockCommand {
     Acquire { device: String },
     Release { device: String },
     Status { device: String },
+    /// Admin: end someone else's lock (audited).
+    ForceRelease { device: String },
 }
 
 #[derive(Subcommand)]
@@ -196,8 +227,8 @@ fn display_sel(s: Option<String>) -> anyhow::Result<Value> {
     })
 }
 
-/// Saves each image as `<out>/display-<N>.jpg`; one line per image.
-fn save_observation(obs: &Value, out: &Path) -> anyhow::Result<String> {
+/// Saves each image as `<out>/display-<N>.jpg` (frames: `display-<N>-<at_ms>ms.jpg`); one line per image.
+fn save_observation(obs: &Value, out: &Path, frames: bool) -> anyhow::Result<String> {
     let mut text = String::new();
     for i in obs["images"].as_array().into_iter().flatten() {
         let display = &i["display"];
@@ -207,9 +238,13 @@ fn save_observation(obs: &Value, out: &Path) -> anyhow::Result<String> {
         }
         let data = base64::engine::general_purpose::STANDARD.decode(str_of(&i["data"]))?;
         std::fs::create_dir_all(out)?;
-        let path = out.join(format!("display-{display}.jpg"));
+        let (name, label) = match frames {
+            true => (format!("display-{display}-{}ms.jpg", i["at_ms"]), format!("display {display} +{}ms", i["at_ms"])),
+            false => (format!("display-{display}.jpg"), format!("display {display}")),
+        };
+        let path = out.join(name);
         std::fs::write(&path, data)?;
-        text += &format!("display {display}: {}x{} {}\n", i["width"], i["height"], path.display());
+        text += &format!("{label}: {}x{} {}\n", i["width"], i["height"], path.display());
     }
     if let Some(marks) = obs["marks"].as_array() {
         text += &format!("observation {}\n{:<4}  {:<7}  {:<12}  {:<19}  {}\n", obs["observation"], "MARK", "DISPLAY", "ROLE", "BOX", "TEXT");
@@ -226,7 +261,7 @@ fn save_observation(obs: &Value, out: &Path) -> anyhow::Result<String> {
 
 fn lock_text(lock: &Value) -> String {
     match lock["holder"].as_str() {
-        Some(h) => format!("held by {h} since {}\n", str_of(&lock["acquired_at"])),
+        Some(h) => format!("held by {h} since {}, expires {}\n", str_of(&lock["acquired_at"]), str_of(&lock["expires_at"])),
         None => "free\n".into(),
     }
 }
@@ -296,6 +331,18 @@ enum DeviceCommand {
     Show { device: String },
     /// The Device's process list, fetched from its Agent now.
     Processes { device: String },
+    /// Rename a Device (admin).
+    Rename { device: String, name: String },
+    /// Delete a Device and its history (admin).
+    Delete { device: String },
+    /// Revoke a Device's credential so its Agent can no longer connect (admin).
+    Revoke { device: String },
+    /// Move an old Device's history into a new one (e.g. after a reinstall), then delete the old one (admin).
+    Merge {
+        old: String,
+        #[arg(long)]
+        into: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -396,6 +443,28 @@ where
             }
             (procs, text)
         }
+        Command::Device(DeviceCommand::Rename { device, name }) => {
+            let path = format!("/api/v1/devices/{}", path_segment(&device));
+            let d = api.call(reqwest::Method::PATCH, &path, Some(&serde_json::json!({ "name": name }))).await?;
+            let text = format!("renamed {} to {}\n", str_of(&d["id"]), str_of(&d["name"]));
+            (d, text)
+        }
+        Command::Device(DeviceCommand::Delete { device }) => {
+            let path = format!("/api/v1/devices/{}", path_segment(&device));
+            (api.call(reqwest::Method::DELETE, &path, None).await?, format!("deleted {device}\n"))
+        }
+        Command::Device(DeviceCommand::Revoke { device }) => {
+            let path = format!("/api/v1/devices/{}/revoke", path_segment(&device));
+            let d = api.call(reqwest::Method::POST, &path, None).await?;
+            let text = format!("revoked {} at {}\n", str_of(&d["name"]), str_of(&d["revoked_at"]));
+            (d, text)
+        }
+        Command::Device(DeviceCommand::Merge { old, into }) => {
+            let path = format!("/api/v1/devices/{}/merge", path_segment(&into));
+            let d = api.call(reqwest::Method::POST, &path, Some(&serde_json::json!({ "from": old }))).await?;
+            let text = format!("merged {old} into {} ({})\n", str_of(&d["name"]), str_of(&d["id"]));
+            (d, text)
+        }
         Command::Metrics(MetricsCommand::History { device, from, to, resolution }) => {
             let query: Vec<String> = [("from", from), ("to", to), ("resolution", resolution)]
                 .into_iter()
@@ -464,6 +533,7 @@ where
                 LockCommand::Acquire { device } => (reqwest::Method::POST, device, ""),
                 LockCommand::Release { device } => (reqwest::Method::POST, device, "/release"),
                 LockCommand::Status { device } => (reqwest::Method::GET, device, ""),
+                LockCommand::ForceRelease { device } => (reqwest::Method::POST, device, "/force-release"),
             };
             let lock = api.call(method, &format!("/api/v1/devices/{device}/lock{suffix}"), None).await?;
             let text = lock_text(&lock);
@@ -487,8 +557,21 @@ where
         Command::Shot { device, display, marks, out } => {
             let body = json!({ "actions": [], "display": display_sel(display)?, "marks": marks });
             let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
-            let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
+            let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
             (obs, text)
+        }
+        Command::Exec { device, run_as, timeout, command } => {
+            let body = json!({ "command": command.join(" "), "as": run_as, "timeout_secs": timeout });
+            let r = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{}/exec", path_segment(&device)), Some(&body)).await?;
+            if !cli.json {
+                write!(out, "{}", str_of(&r["stdout"]))?;
+                eprint!("{}", str_of(&r["stderr"]));
+                let code = r["exit_code"].as_i64().unwrap_or(0) as i32;
+                if r["timed_out"] == true || code != 0 {
+                    return Err(RemoteExit { code, timed_out: r["timed_out"] == true }.into());
+                }
+            }
+            (r, String::new())
         }
         Command::Audit { device, user, since, until } => {
             let query: Vec<String> = [("device", device), ("user", user), ("since", since), ("until", until)]
@@ -519,7 +602,21 @@ where
                 "marks": marks,
             });
             let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
-            let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
+            let text = if cli.json { String::new() } else { save_observation(&obs, &out, observe == "frames")? };
+            (obs, text)
+        }
+        Command::Batch { device, file, observe, display, out } => {
+            let json = match file.to_str() {
+                Some("-") => std::io::read_to_string(std::io::stdin())?,
+                _ => std::fs::read_to_string(&file)?,
+            };
+            let body = match serde_json::from_str(&json)? {
+                Value::Array(actions) => json!({ "actions": actions, "observe": observe, "display": display_sel(display)? }),
+                body => body,
+            };
+            let frames = body["observe"] == "frames";
+            let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
+            let text = if cli.json { String::new() } else { save_observation(&obs, &out, frames)? };
             (obs, text)
         }
         Command::Update(UpdateCommand::Keygen { .. }) => unreachable!("handled before connecting"),
@@ -546,6 +643,31 @@ where
     }
     Ok(())
 }
+
+/// `rcli exec`'s remote command failed or timed out; `main` exits with `exit_code()` and prints nothing more.
+#[derive(Debug)]
+pub struct RemoteExit {
+    pub code: i32,
+    pub timed_out: bool,
+}
+
+impl RemoteExit {
+    /// The remote exit code, or 124 (like `timeout(1)`) when the command timed out.
+    pub fn exit_code(&self) -> i32 {
+        if self.timed_out { 124 } else { self.code }
+    }
+}
+
+impl std::fmt::Display for RemoteExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.timed_out {
+            true => write!(f, "command timed out"),
+            false => write!(f, "command exited with code {}", self.code),
+        }
+    }
+}
+
+impl std::error::Error for RemoteExit {}
 
 fn write_private(path: &str, bytes: &[u8]) -> anyhow::Result<()> {
     let mut opts = std::fs::OpenOptions::new();
@@ -604,7 +726,8 @@ impl Api {
         let body: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
             let e = &body["error"];
-            anyhow::bail!("{} ({}): {}", str_of(&e["code"]), status, str_of(&e["message"]));
+            let step = e["step"].as_u64().map(|s| format!(" (step {s})")).unwrap_or_default();
+            anyhow::bail!("{} ({}): {}{step}", str_of(&e["code"]), status, str_of(&e["message"]));
         }
         Ok(body)
     }

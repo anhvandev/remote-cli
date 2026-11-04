@@ -47,15 +47,17 @@ struct Stream {
     stop: Arc<AtomicBool>,
 }
 
-/// Open live streams by session id. Outlives Server connections: media is peer-to-peer.
+/// Open live streams by session id, and the control indicator, which shows while the Control Lock is held
+/// (the Server says so) or any live stream is open. Outlives Server connections: media is peer-to-peer.
 pub struct Live {
     platform: Arc<dyn Platform>,
     streams: Mutex<HashMap<String, Stream>>,
+    lock_held: AtomicBool,
 }
 
 impl Live {
     pub fn new(platform: Arc<dyn Platform>) -> Arc<Self> {
-        Arc::new(Self { platform, streams: Default::default() })
+        Arc::new(Self { platform, streams: Default::default(), lock_held: AtomicBool::new(false) })
     }
 
     /// Answers a viewer's offer and starts streaming once connected.
@@ -76,9 +78,17 @@ impl Live {
         self.update_indicator();
     }
 
+    /// The Server's view of the Control Lock (`ControlIndicator`).
+    pub fn set_lock_indicator(&self, on: bool) {
+        self.lock_held.store(on, Ordering::SeqCst);
+        self.update_indicator();
+    }
+
     fn update_indicator(&self) {
-        let visible = !self.streams.lock().unwrap().is_empty();
-        if let Err(e) = self.platform.control_indicator(visible) {
+        // Under the streams lock so concurrent updates apply in order.
+        let streams = self.streams.lock().unwrap();
+        let visible = self.lock_held.load(Ordering::SeqCst) || !streams.is_empty();
+        if let Err(e) = self.platform.set_control_indicator(visible) {
             tracing::warn!("cannot set the control indicator: {e:#}");
         }
     }
