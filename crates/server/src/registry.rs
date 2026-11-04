@@ -28,6 +28,29 @@ pub struct Device {
     pub status: DeviceStatus,
     /// When the Agent's last connection ended; null while connected or never connected.
     pub last_seen_at: Option<DateTime<Utc>>,
+    /// Version the Agent reported on its last connection; null until it connected once.
+    pub agent_version: Option<String>,
+    /// The Agent update rolled out to this Device, if any.
+    pub update: Option<Update>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct Update {
+    pub version: String,
+    /// "pending" | "updated" | "failed"
+    pub status: &'static str,
+    /// Why the Device could not install `version` (when failed).
+    pub error: Option<String>,
+}
+
+fn update(agent_version: Option<&str>, version: Option<String>, error: Option<String>) -> Option<Update> {
+    let version = version?;
+    let status = match (&error, agent_version == Some(version.as_str())) {
+        (Some(_), _) => "failed",
+        (None, true) => "updated",
+        (None, false) => "pending",
+    };
+    Some(Update { version, status, error })
 }
 
 fn status(connected: bool, last_seen_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> DeviceStatus {
@@ -39,19 +62,23 @@ fn status(connected: bool, last_seen_at: Option<DateTime<Utc>>, now: DateTime<Ut
 }
 
 pub async fn list(state: &AppState) -> anyhow::Result<Vec<Device>> {
-    let rows: Vec<(Uuid, String, Option<DateTime<Utc>>)> =
-        sqlx::query_as("SELECT id, name, last_seen_at FROM devices ORDER BY enrolled_at, id")
-            .fetch_all(&state.db)
-            .await?;
+    type Row = (Uuid, String, Option<DateTime<Utc>>, Option<String>, Option<String>, Option<String>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, name, last_seen_at, agent_version, update_version, update_error FROM devices ORDER BY enrolled_at, id",
+    )
+    .fetch_all(&state.db)
+    .await?;
     let now = state.clock.now();
     let connected = state.connections.0.lock().unwrap();
     Ok(rows
         .into_iter()
-        .map(|(id, name, last_seen_at)| Device {
+        .map(|(id, name, last_seen_at, agent_version, update_version, update_error)| Device {
             id,
             name,
             status: status(connected.contains_key(&id), last_seen_at, now),
             last_seen_at,
+            update: update(agent_version.as_deref(), update_version, update_error),
+            agent_version,
         })
         .collect())
 }

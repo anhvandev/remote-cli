@@ -2,6 +2,7 @@
 
 mod devices;
 mod enrollment;
+mod updates;
 mod users;
 
 use std::sync::Arc;
@@ -24,6 +25,7 @@ pub fn router(state: State) -> Router {
         .route("/api/v1/server-ca", get(|s: axum::extract::State<State>| async move { s.ca.cert_pem.clone() }))
         .merge(devices::routes())
         .merge(enrollment::routes())
+        .merge(updates::routes())
         .merge(users::routes())
         .with_state(state)
 }

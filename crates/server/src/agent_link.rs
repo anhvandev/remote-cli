@@ -14,7 +14,7 @@ use rustls::{
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
-use crate::{enrollment, pki, registry, AppState};
+use crate::{enrollment, pki, registry, updates, AppState};
 
 /// No frame (heartbeats arrive every 10 s) for this long means the connection is dead.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -45,14 +45,14 @@ pub async fn serve(listener: TcpListener, acceptor: TlsAcceptor, state: Arc<AppS
 async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> anyhow::Result<()> {
     let tls = acceptor.accept(tcp).await?;
     let fingerprint = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| pki::fingerprint(c));
-    let mut conn = Conn::new(tls);
     match fingerprint {
-        None => enroll(&mut conn, &state).await,
+        None => enroll(&mut Conn::new(tls), &state).await,
         Some(fp) => {
+            let mut conn = Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME);
             // shortcut: unknown certificates are dropped silently; revocation (ticket 16) should send an error.
             let Some(id) = registry::find_by_cert_fingerprint(&state, &fp).await? else { return Ok(()) };
             registry::agent_connected(&state, id).await?;
-            let result = session(&mut conn).await;
+            let result = session(&mut conn, &state, id).await;
             registry::agent_disconnected(&state, id).await?;
             result
         }
@@ -85,12 +85,34 @@ fn error(code: &str, message: &str) -> rcli_protocol::agent::Error {
 }
 
 /// Runs until the Agent disconnects or goes silent.
-async fn session<T>(conn: &mut Conn<T>) -> anyhow::Result<()>
+async fn session<T>(conn: &mut Conn<T>, state: &AppState, id: uuid::Uuid) -> anyhow::Result<()>
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    while let Some(_msg) = tokio::time::timeout(READ_TIMEOUT, conn.recv::<AgentMessage>()).await?? {
-        // Later tickets dispatch inventory, metrics and Action results here.
+    let mut rollouts = state.rollouts.subscribe();
+    let mut offered = None;
+    loop {
+        tokio::select! {
+            msg = tokio::time::timeout(READ_TIMEOUT, conn.recv::<AgentMessage>()) => {
+                let Some(msg) = msg?? else { return Ok(()) };
+                match msg.msg {
+                    Some(agent_message::Msg::Hello(h)) => updates::agent_hello(state, id, &h).await?,
+                    Some(agent_message::Msg::UpdateFailed(f)) => {
+                        updates::agent_failed(state, id, &f).await?;
+                        continue;
+                    }
+                    // Later tickets dispatch inventory, metrics and Action results here.
+                    _ => continue,
+                }
+            }
+            changed = rollouts.changed() => changed?,
+        }
+        // After a Hello or a rollout: offer the pending update once per session.
+        if let Some(update) = updates::pending(state, id).await? {
+            if offered.as_ref() != Some(&update.version) {
+                offered = Some(update.version.clone());
+                conn.send(&ServerMessage { msg: Some(server_message::Msg::Update(update)) }).await?;
+            }
+        }
     }
-    Ok(())
 }

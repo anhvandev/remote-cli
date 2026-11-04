@@ -2030,6 +2030,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "hex",
+ "rcli-protocol",
  "reqwest",
  "serde",
  "serde_json",
@@ -2042,6 +2044,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "hex",
  "rcgen",
  "rcli-protocol",
  "rustls",
@@ -2063,6 +2066,7 @@ dependencies = [
  "prost",
  "prost-build",
  "protoc-bin-vendored",
+ "ring",
  "tokio",
  "tokio-util",
 ]
@@ -2074,6 +2078,7 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "hex",
  "rcgen",
  "rcli-protocol",
  "rustls",
@@ -2096,6 +2101,7 @@ dependencies = [
  "chrono",
  "rcli",
  "rcli-agent",
+ "rcli-protocol",
  "rcli-server",
  "reqwest",
  "serde_json",

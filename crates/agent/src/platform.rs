@@ -16,6 +16,13 @@ pub trait Platform: Send + Sync + 'static {
     fn power(&self, action: PowerAction) -> anyhow::Result<()>;
     /// Sends a Wake-on-LAN magic packet for `mac` on the local network.
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()>;
+    /// Version of the running Agent.
+    fn agent_version(&self) -> String {
+        env!("CARGO_PKG_VERSION").into()
+    }
+    /// Replaces the Agent binary with `build` (signature already verified) and restarts the Agent
+    /// onto it. Real adapters normally do not return on success; if they do, the Agent reconnects.
+    fn install_update(&self, version: &str, build: &[u8]) -> anyhow::Result<()>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,11 +72,13 @@ struct FakeState {
     session: SessionState,
     keys: Vec<String>,
     wakes: Vec<[u8; 6]>,
+    version: String,
+    installed: Vec<String>,
 }
 
 impl FakePlatform {
     pub fn new(hostname: impl Into<String>) -> Self {
-        let state = FakeState { session: SessionState::LoggedIn, keys: vec![], wakes: vec![] };
+        let state = FakeState { session: SessionState::LoggedIn, keys: vec![], wakes: vec![], version: env!("CARGO_PKG_VERSION").into(), installed: vec![] };
         Self { hostname: hostname.into(), state: Arc::new(Mutex::new(state)) }
     }
 
@@ -83,6 +92,11 @@ impl FakePlatform {
 
     pub fn wakes_sent(&self) -> Vec<[u8; 6]> {
         self.state.lock().unwrap().wakes.clone()
+    }
+
+    /// Versions installed through `install_update`, in order.
+    pub fn installed_updates(&self) -> Vec<String> {
+        self.state.lock().unwrap().installed.clone()
     }
 }
 
@@ -130,6 +144,18 @@ impl Platform for FakePlatform {
 
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()> {
         self.state.lock().unwrap().wakes.push(mac);
+        Ok(())
+    }
+
+    fn agent_version(&self) -> String {
+        self.state.lock().unwrap().version.clone()
+    }
+
+    /// "Restarts" onto `version`: the Agent reports it on its next connection.
+    fn install_update(&self, version: &str, _build: &[u8]) -> anyhow::Result<()> {
+        let mut s = self.state.lock().unwrap();
+        s.installed.push(version.into());
+        s.version = version.into();
         Ok(())
     }
 }

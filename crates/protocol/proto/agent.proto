@@ -8,6 +8,8 @@ message AgentMessage {
   oneof msg {
     EnrollRequest enroll = 1;
     Heartbeat heartbeat = 2;
+    AgentHello hello = 17;
+    UpdateFailed update_failed = 170;
   }
 }
 
@@ -15,6 +17,7 @@ message ServerMessage {
   oneof msg {
     EnrollResponse enrolled = 1;
     Error error = 2;
+    AgentUpdate update = 17;
   }
 }
 
@@ -37,4 +40,26 @@ message Heartbeat {}
 message Error {
   string code = 1;
   string message = 2;
+}
+
+// First message of every Device session: what the Agent runs.
+message AgentHello {
+  string version = 1;
+  // `<os>-<arch>` of the Agent binary, e.g. `linux-x86_64`.
+  string target = 2;
+}
+
+// An Agent build to install. `signature` is Ed25519 over version, target and build
+// (see `rcli_protocol::update`); the Agent checks it with its configured update key.
+message AgentUpdate {
+  string version = 1;
+  string target = 2;
+  bytes build = 3;
+  bytes signature = 4;
+}
+
+// The Agent refused or failed to install an AgentUpdate.
+message UpdateFailed {
+  string version = 1;
+  string reason = 2;
 }

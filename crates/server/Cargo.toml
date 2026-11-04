@@ -8,6 +8,7 @@ version.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
+hex.workspace = true
 rcgen.workspace = true
 rcli-protocol.workspace = true
 rustls.workspace = true

@@ -7,7 +7,10 @@ use std::{sync::Arc, time::Duration};
 
 use platform::Platform;
 use rcli_protocol::{
-    agent::{agent_message, server_message, AgentMessage, EnrollRequest, Heartbeat, ServerMessage},
+    agent::{
+        agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, EnrollRequest, Heartbeat, ServerMessage,
+        UpdateFailed,
+    },
     Conn,
 };
 use rustls::{
@@ -21,12 +24,19 @@ use tokio_rustls::{client::TlsStream, TlsConnector};
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(10);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-/// Where the Server's Agent port is and which CA to trust for it.
+/// Where the Server's Agent port is and what to trust from it.
 #[derive(Clone, Debug)]
 pub struct ServerEndpoint {
     /// `host:port`; `host` must be one of the Server's `agent_hostnames`.
     pub addr: String,
     pub ca_pem: String,
+    /// Raw Ed25519 public key Agent builds must be signed with; `None` rejects every update.
+    pub update_key: Option<Vec<u8>>,
+}
+
+/// `<os>-<arch>` of this Agent binary; Agent builds are signed for one target.
+pub fn target() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 /// The Device's identity, obtained once by enrolling.
@@ -53,7 +63,7 @@ async fn connect(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow
     let name = ServerName::try_from(host.trim_matches(['[', ']']).to_owned())?;
     let tcp = TcpStream::connect(&server.addr).await?;
     let tls = TlsConnector::from(Arc::new(config)).connect(name, tcp).await?;
-    Ok(Conn::new(tls))
+    Ok(Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME))
 }
 
 /// Exchanges a single-use Enrollment Code for this Device's credentials.
@@ -69,18 +79,18 @@ pub async fn enroll(server: &ServerEndpoint, code: &str, platform: &dyn Platform
             Ok(Credentials { device_id: r.device_id, cert_pem: r.cert_pem, key_pem: key.serialize_pem() })
         }
         Some(server_message::Msg::Error(e)) => anyhow::bail!("enrollment rejected: {}: {}", e.code, e.message),
-        None => anyhow::bail!("server closed the connection during enrollment"),
+        _ => anyhow::bail!("server closed the connection during enrollment"),
     }
 }
 
 /// Keeps a connection to the Server open forever, reconnecting with backoff.
-pub async fn run(server: ServerEndpoint, creds: Credentials, _platform: Arc<dyn Platform>) {
+pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn Platform>) {
     let mut backoff = Duration::from_secs(1);
     loop {
         match connect(&server, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
-                if let Err(e) = session(conn).await {
+                if let Err(e) = session(conn, &server, platform.as_ref()).await {
                     tracing::warn!("connection to server lost: {e}");
                 }
             }
@@ -91,7 +101,13 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, _platform: Arc<dyn 
     }
 }
 
-async fn session(mut conn: Conn<TlsStream<TcpStream>>) -> anyhow::Result<()> {
+async fn session(
+    mut conn: Conn<TlsStream<TcpStream>>,
+    server: &ServerEndpoint,
+    platform: &dyn Platform,
+) -> anyhow::Result<()> {
+    let hello = AgentHello { version: platform.agent_version(), target: target() };
+    conn.send(&AgentMessage { msg: Some(agent_message::Msg::Hello(hello)) }).await?;
     let mut tick = tokio::time::interval(HEARTBEAT_EVERY);
     loop {
         tokio::select! {
@@ -99,11 +115,32 @@ async fn session(mut conn: Conn<TlsStream<TcpStream>>) -> anyhow::Result<()> {
                 conn.send(&AgentMessage { msg: Some(agent_message::Msg::Heartbeat(Heartbeat {})) }).await?;
             }
             msg = conn.recv::<ServerMessage>() => {
-                if msg?.is_none() {
-                    anyhow::bail!("server closed the connection");
-                }
+                let Some(msg) = msg? else { anyhow::bail!("server closed the connection") };
                 // Later tickets handle Actions and requests from the Server here.
+                if let Some(server_message::Msg::Update(update)) = msg.msg {
+                    // shortcut: installs inline, blocking heartbeats; fine while installs take well under 30 s.
+                    match install(server, platform, &update) {
+                        // Reconnect so the Server sees the new version (real adapters restart instead).
+                        Ok(()) => return Ok(()),
+                        Err(e) => {
+                            tracing::warn!("rejected Agent update {}: {e:#}", update.version);
+                            let failed = UpdateFailed { version: update.version, reason: format!("{e:#}") };
+                            conn.send(&AgentMessage { msg: Some(agent_message::Msg::UpdateFailed(failed)) }).await?;
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+/// Verifies `update` against the configured update key and target, then installs it.
+fn install(server: &ServerEndpoint, platform: &dyn Platform, update: &AgentUpdate) -> anyhow::Result<()> {
+    let key = server.update_key.as_deref().ok_or_else(|| anyhow::anyhow!("no update key configured on this Agent"))?;
+    anyhow::ensure!(update.target == target(), "build is for {}, this Agent is {}", update.target, target());
+    anyhow::ensure!(
+        rcli_protocol::update::verify(key, &update.version, &update.target, &update.build, &update.signature),
+        "bad signature: build is not signed with this Agent's update key"
+    );
+    platform.install_update(&update.version, &update.build)
 }

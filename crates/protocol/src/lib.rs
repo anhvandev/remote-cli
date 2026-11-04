@@ -4,6 +4,8 @@ pub mod agent {
     include!(concat!(env!("OUT_DIR"), "/rcli.agent.v1.rs"));
 }
 
+pub mod update;
+
 use futures::{SinkExt, StreamExt};
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -17,6 +19,12 @@ pub struct Conn<T> {
 impl<T: AsyncRead + AsyncWrite + Unpin> Conn<T> {
     pub fn new(io: T) -> Self {
         Self { inner: Framed::new(io, LengthDelimitedCodec::new()) }
+    }
+
+    /// Like `new` but frames up to `max` bytes (the 8 MiB default is too small for Agent builds).
+    /// Use it only once the peer is authenticated: the receiver reserves up to `max` per frame.
+    pub fn with_max_frame(io: T, max: usize) -> Self {
+        Self { inner: Framed::new(io, LengthDelimitedCodec::builder().max_frame_length(max).new_codec()) }
     }
 
     pub async fn send<S: Message>(&mut self, msg: &S) -> anyhow::Result<()> {
