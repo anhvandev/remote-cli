@@ -244,37 +244,59 @@ pub async fn set_credentials(state: &AppState, name: &str, password: &str) -> Re
     Ok(TotpEnrollment { secret, url })
 }
 
-/// Checks password + TOTP and opens a session; `None` on any mismatch (no hint which part failed).
+/// Failed sign-ins in a row (wrong password or TOTP code) that lock a user out for `LOCKOUT`.
+pub const MAX_FAILED_SIGN_INS: i32 = 5;
+pub const LOCKOUT: chrono::Duration = chrono::Duration::minutes(15);
+
+pub enum SignInError {
+    /// Wrong name, password or TOTP code (no hint which).
+    Invalid,
+    /// Too many failures; no credentials are checked until then.
+    Locked(chrono::DateTime<chrono::Utc>),
+}
+
+/// Checks password + TOTP and opens a session (no hint which part failed).
 /// A TOTP code is accepted for the current and the previous 30 s step, and each step only once.
-pub async fn sign_in(state: &AppState, name: &str, password: &str, code: &str) -> anyhow::Result<Option<(User, String)>> {
-    let row: Option<(Uuid, Option<String>, Option<Vec<u8>>)> = sqlx::query_as(
-        "SELECT id, password_hash, totp_secret FROM users WHERE name = $1 AND disabled_at IS NULL",
+/// `MAX_FAILED_SIGN_INS` failures in a row lock the user out for `LOCKOUT` (by the Server clock).
+// shortcut: counted per user only, unknown names are not tracked; add a per-IP limit if name spraying becomes a problem.
+pub async fn sign_in(
+    state: &AppState,
+    name: &str,
+    password: &str,
+    code: &str,
+) -> anyhow::Result<Result<(User, String), SignInError>> {
+    let row: Option<(Uuid, Option<String>, Option<Vec<u8>>, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+        "SELECT id, password_hash, totp_secret, sign_in_locked_until FROM users WHERE name = $1 AND disabled_at IS NULL",
     )
     .bind(name)
     .fetch_optional(&state.db)
     .await?;
-    let (id, Some(stored), Some(secret)) = row.unwrap_or_default() else {
+    let (id, Some(stored), Some(secret), locked_until) = row.unwrap_or_default() else {
         // Same cost as a real check, so timing does not reveal which names exist.
         let _ = pbkdf2(password, b"no-such-user-salt", PBKDF2_ITERATIONS);
-        return Ok(None);
+        return Ok(Err(SignInError::Invalid));
     };
-    if !verify_password(password, &stored) {
-        return Ok(None);
-    }
     let now = state.clock.now();
+    if let Some(until) = locked_until.filter(|u| *u > now) {
+        return Ok(Err(SignInError::Locked(until)));
+    }
+    if !verify_password(password, &stored) {
+        return failed(state, id).await;
+    }
     let step = now.timestamp().div_euclid(TOTP_STEP_SECS);
     let Some(step) = [step, step - 1].into_iter().find(|s| code == format!("{:06}", totp_at_step(&secret, *s))) else {
-        return Ok(None);
+        return failed(state, id).await;
     };
     let fresh = sqlx::query(
-        "UPDATE users SET totp_last_step = $2 WHERE id = $1 AND (totp_last_step IS NULL OR totp_last_step < $2)",
+        "UPDATE users SET totp_last_step = $2, failed_sign_ins = 0
+         WHERE id = $1 AND (totp_last_step IS NULL OR totp_last_step < $2)",
     )
     .bind(id)
     .bind(step)
     .execute(&state.db)
     .await?;
     if fresh.rows_affected() == 0 {
-        return Ok(None); // replayed code
+        return failed(state, id).await; // replayed code
     }
     let token = format!("rcli_{}", Uuid::new_v4().simple());
     sqlx::query(
@@ -291,7 +313,23 @@ pub async fn sign_in(state: &AppState, name: &str, password: &str, code: &str) -
         .bind(id)
         .fetch_one(&state.db)
         .await?;
-    Ok(Some((user, token)))
+    Ok(Ok((user, token)))
+}
+
+/// Counts a failed sign-in; the one that reaches `MAX_FAILED_SIGN_INS` starts the lockout (and resets the count).
+async fn failed(state: &AppState, id: Uuid) -> anyhow::Result<Result<(User, String), SignInError>> {
+    sqlx::query(
+        "UPDATE users SET
+            sign_in_locked_until = CASE WHEN failed_sign_ins + 1 >= $2 THEN $3 END,
+            failed_sign_ins = CASE WHEN failed_sign_ins + 1 >= $2 THEN 0 ELSE failed_sign_ins + 1 END
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(MAX_FAILED_SIGN_INS)
+    .bind(state.clock.now() + LOCKOUT)
+    .execute(&state.db)
+    .await?;
+    Ok(Err(SignInError::Invalid))
 }
 
 #[cfg(test)]

@@ -31,8 +31,16 @@ async fn sign_in(
     body: Result<Json<SignIn>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let Json(b) = body.map_err(|e| bad_request(e.body_text()))?;
-    let (user, token) = auth::sign_in(&state, &b.name, &b.password, b.totp.trim()).await?.ok_or_else(|| {
-        ApiError::new(StatusCode::UNAUTHORIZED, "invalid_credentials", "wrong name, password or TOTP code")
+    let (user, token) = auth::sign_in(&state, &b.name, &b.password, b.totp.trim()).await?.map_err(|e| match e {
+        auth::SignInError::Invalid => {
+            ApiError::new(StatusCode::UNAUTHORIZED, "invalid_credentials", "wrong name, password or TOTP code")
+        }
+        auth::SignInError::Locked(until) => ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_attempts",
+            format!("too many failed sign-ins; try again after {until}"),
+        )
+        .with("locked_until", until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
     })?;
     let expires_at = state.clock.now() + auth::SESSION_TTL;
     Ok((StatusCode::CREATED, Json(json!({ "token": token, "user": user, "expires_at": expires_at }))))

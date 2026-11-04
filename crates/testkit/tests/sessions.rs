@@ -1,4 +1,4 @@
-use rcli_testkit::{StatusCode, TestSystem};
+use rcli_testkit::{Clock, StatusCode, TestSystem};
 use serde_json::json;
 
 #[tokio::test]
@@ -102,4 +102,39 @@ async fn admin_sets_credentials_with_rcli() {
         .post_json("/api/v1/sessions", &json!({"name": "vanna", "password": "pw-1234567", "totp": sys.totp(secret)}))
         .await;
     assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn five_failed_sign_ins_lock_the_user_out_for_15_minutes() {
+    let sys = TestSystem::start().await;
+    sys.create_user("vanna", "operator").await;
+    let (_, enrolled) = sys.api.post_json("/api/v1/users/vanna/credentials", &json!({"password": "pw-1234567"})).await;
+    let secret = enrolled["totp_secret"].as_str().unwrap();
+    let anon = &sys.api.with_token(None);
+    let sign_in = |password: &str, totp: String| {
+        let body = json!({"name": "vanna", "password": password, "totp": totp});
+        async move { anon.post_json("/api/v1/sessions", &body).await }
+    };
+
+    // A success resets the count.
+    for _ in 0..4 {
+        assert_eq!(sign_in("wrong", sys.totp(secret)).await.0, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(sign_in("pw-1234567", sys.totp(secret)).await.0, StatusCode::CREATED);
+    sys.advance(30); // fresh TOTP step
+    for _ in 0..5 {
+        assert_eq!(sign_in("wrong", sys.totp(secret)).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    // Locked: even the right password and code are refused, with a typed error saying until when.
+    let (status, body) = sign_in("pw-1234567", sys.totp(secret)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["error"]["code"], "too_many_attempts");
+    let until: chrono::DateTime<chrono::Utc> = body["error"]["locked_until"].as_str().unwrap().parse().unwrap();
+    assert_eq!(until, sys.clock.now() + chrono::Duration::minutes(15));
+
+    sys.advance(14 * 60);
+    assert_eq!(sign_in("pw-1234567", sys.totp(secret)).await.0, StatusCode::TOO_MANY_REQUESTS);
+    sys.advance(60);
+    assert_eq!(sign_in("pw-1234567", sys.totp(secret)).await.0, StatusCode::CREATED);
 }

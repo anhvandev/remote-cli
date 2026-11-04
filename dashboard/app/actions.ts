@@ -17,6 +17,9 @@ export async function signIn(_: SignInState, form: FormData): Promise<SignInStat
     if (e instanceof ApiError && e.code === "invalid_credentials") {
       return { error: "Sai tên đăng nhập, mật khẩu hoặc mã TOTP." };
     }
+    if (e instanceof ApiError && e.code === "too_many_attempts") {
+      return { error: "Đăng nhập sai quá nhiều lần; tài khoản bị khoá tạm 15 phút." };
+    }
     throw e;
   }
   const https = (await headers()).get("x-forwarded-proto") === "https";
