@@ -8,7 +8,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 
 pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState, UiElement};
 use rcli_agent::{Credentials, ServerEndpoint};
-pub use rcli_server::clock::ManualClock;
+pub use rcli_server::clock::{Clock, ManualClock};
 pub use reqwest::StatusCode;
 use serde_json::Value;
 use testcontainers_modules::{
@@ -34,12 +34,17 @@ pub struct TestSystem {
 
 impl TestSystem {
     pub async fn start() -> Self {
+        Self::start_on("127.0.0.1:0".parse().unwrap()).await
+    }
+
+    /// Like `start`, with the Controller API on a fixed address (the Dashboard's Playwright stack).
+    pub async fn start_on(http_addr: std::net::SocketAddr) -> Self {
         let postgres = Postgres::default().with_tag("16-alpine").start().await.expect("start postgres container");
         let port = postgres.get_host_port_ipv4(5432).await.unwrap();
         let clock = Arc::new(ManualClock::default());
         let config = rcli_server::Config {
             database_url: format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
-            http_addr: "127.0.0.1:0".parse().unwrap(),
+            http_addr,
             agent_addr: "127.0.0.1:0".parse().unwrap(),
             agent_hostnames: vec!["localhost".into()],
             bootstrap_admin_token: BOOTSTRAP_TOKEN.into(),
@@ -96,6 +101,12 @@ impl TestSystem {
         body["token"].as_str().unwrap().to_owned()
     }
 
+    /// The current TOTP code for a base32 `secret` (as an authenticator app would show it), by the Server clock.
+    pub fn totp(&self, secret: &str) -> String {
+        let secret = data_encoding::BASE32_NOPAD.decode(secret.as_bytes()).expect("base32 TOTP secret");
+        format!("{:06}", rcli_server::auth::totp(&secret, self.clock.now().timestamp()))
+    }
+
     pub async fn create_enrollment_code(&self) -> String {
         let (status, body) = self.api.post("/api/v1/enrollment-codes").await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -137,6 +148,22 @@ impl TestSystem {
         })
         .await
     }
+
+    /// `GET /api/v1/devices/{id}/history?{query}`, asserting 200.
+    pub async fn history(&self, id: &str, query: &str) -> Value {
+        let (status, body) = self.api.get(&format!("/api/v1/devices/{id}/history?{query}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    /// Polls the Device's history (`query` as for `history`) until `pred` holds; returns it.
+    pub async fn wait_history(&self, id: &str, query: &str, pred: impl Fn(&Value) -> bool) -> Value {
+        eventually(|| async {
+            let h = self.history(id, query).await;
+            pred(&h).then_some(h)
+        })
+        .await
+    }
 }
 
 /// A real Agent running on a FakePlatform. Dropping it disconnects.
@@ -145,12 +172,24 @@ pub struct TestAgent {
     pub platform: FakePlatform,
     pub creds: Credentials,
     task: Option<JoinHandle<()>>,
+    network: NetworkLink,
 }
 
 impl TestAgent {
     /// An Agent for already-enrolled credentials; call `start` to connect.
+    /// It reaches `endpoint` through a link the test can cut (`cut_network`). Needs a Tokio runtime.
     pub fn new(endpoint: ServerEndpoint, platform: FakePlatform, creds: Credentials) -> Self {
-        Self { endpoint, platform, creds, task: None }
+        let network = NetworkLink::new(&endpoint.addr);
+        Self { endpoint, platform, creds, task: None, network }
+    }
+
+    /// Drops the Agent's connection and stalls new ones until `restore_network`; the Agent keeps running.
+    pub fn cut_network(&self) {
+        self.network.up.send_replace(false);
+    }
+
+    pub fn restore_network(&self) {
+        self.network.up.send_replace(true);
     }
 
     pub fn device_id(&self) -> &str {
@@ -158,7 +197,8 @@ impl TestAgent {
     }
 
     pub fn start(&mut self) {
-        let run = rcli_agent::run(self.endpoint.clone(), self.creds.clone(), Arc::new(self.platform.clone()));
+        let endpoint = ServerEndpoint { addr: self.network.addr.clone(), ..self.endpoint.clone() };
+        let run = rcli_agent::run(endpoint, self.creds.clone(), Arc::new(self.platform.clone()));
         self.task = Some(tokio::spawn(run));
     }
 
@@ -173,6 +213,44 @@ impl TestAgent {
 impl Drop for TestAgent {
     fn drop(&mut self) {
         self.stop();
+        self.network.task.abort();
+    }
+}
+
+/// TCP forwarder between an Agent and the Server that a test can take down and bring back.
+struct NetworkLink {
+    /// `localhost:port` to give the Agent (keeps the TLS server name).
+    addr: String,
+    up: Arc<tokio::sync::watch::Sender<bool>>,
+    task: JoinHandle<()>,
+}
+
+impl NetworkLink {
+    fn new(target: &str) -> Self {
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_listener.set_nonblocking(true).unwrap();
+        let addr = format!("localhost:{}", std_listener.local_addr().unwrap().port());
+        let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+        let up = Arc::new(tokio::sync::watch::channel(true).0);
+        let (target, link) = (target.to_owned(), up.clone());
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut agent, _)) = listener.accept().await else { continue };
+                let (target, mut up) = (target.clone(), link.subscribe());
+                tokio::spawn(async move {
+                    // A cut link stalls new connections (no reset), so the Agent reconnects the moment it is restored.
+                    if up.wait_for(|up| *up).await.is_err() {
+                        return;
+                    }
+                    let Ok(mut server) = tokio::net::TcpStream::connect(&target).await else { return };
+                    tokio::select! {
+                        _ = tokio::io::copy_bidirectional(&mut agent, &mut server) => {}
+                        _ = up.wait_for(|up| !*up) => {}
+                    }
+                });
+            }
+        });
+        Self { addr, up, task }
     }
 }
 
@@ -213,6 +291,10 @@ impl ApiClient {
 
     pub async fn post(&self, path: &str) -> (StatusCode, Value) {
         self.send(self.http.post(format!("{}{path}", self.base))).await
+    }
+
+    pub async fn delete(&self, path: &str) -> (StatusCode, Value) {
+        self.send(self.http.delete(format!("{}{path}", self.base))).await
     }
 
     pub async fn post_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {

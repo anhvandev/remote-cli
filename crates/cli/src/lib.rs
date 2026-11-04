@@ -34,6 +34,9 @@ enum Command {
     /// One Device: inventory, current resources, processes.
     #[command(subcommand)]
     Device(DeviceCommand),
+    /// Resource history of Devices.
+    #[command(subcommand)]
+    Metrics(MetricsCommand),
     /// Manage Enrollment Codes (admin).
     #[command(subcommand)]
     EnrollmentCode(EnrollmentCodeCommand),
@@ -63,6 +66,20 @@ enum Command {
         /// Directory to save images in.
         #[arg(long, default_value = ".")]
         out: PathBuf,
+    },
+    /// Audit log of Actions, oldest first (admin).
+    Audit {
+        /// Device id or name.
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long)]
+        user: Option<String>,
+        /// RFC 3339 time, inclusive.
+        #[arg(long)]
+        since: Option<String>,
+        /// RFC 3339 time, inclusive.
+        #[arg(long)]
+        until: Option<String>,
     },
     /// Send one Action (needs the Control Lock) and get an Observation back.
     /// Coordinates are in the Observation image space of `--display`.
@@ -113,7 +130,12 @@ enum ActCommand {
         dy: i32,
     },
     /// Type text.
-    Type { text: String },
+    Type {
+        text: String,
+        /// It is a password: masked in the audit log.
+        #[arg(long)]
+        secret: bool,
+    },
     /// Press a key combination, e.g. ctrl+shift+t.
     Key { keys: String },
 }
@@ -159,7 +181,7 @@ impl ActCommand {
                 (v["dx"], v["dy"]) = (dx.into(), dy.into());
                 v
             }
-            ActCommand::Type { text } => json!({ "type": "type", "text": text }),
+            ActCommand::Type { text, secret } => json!({ "type": "type", "text": text, "secret": secret }),
             ActCommand::Key { keys } => json!({ "type": "key", "keys": keys }),
         }
     }
@@ -252,6 +274,12 @@ enum UserCommand {
     List,
     /// Disable a user; all of their API tokens stop working.
     Disable { name: String },
+    /// Set a user's Dashboard password and enroll a new TOTP secret (shown once; scan the otpauth URL).
+    SetPassword {
+        name: String,
+        #[arg(long, env = "RCLI_NEW_PASSWORD", hide_env_values = true)]
+        password: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -268,6 +296,23 @@ enum DeviceCommand {
     Show { device: String },
     /// The Device's process list, fetched from its Agent now.
     Processes { device: String },
+}
+
+#[derive(Subcommand)]
+enum MetricsCommand {
+    /// Resource samples of a Device (id or name) over time; `--json` has every field.
+    History {
+        device: String,
+        /// Start, RFC 3339 (e.g. 2026-01-01T00:00:00Z). Default: one hour before --to.
+        #[arg(long)]
+        from: Option<String>,
+        /// End, RFC 3339. Default: now.
+        #[arg(long)]
+        to: Option<String>,
+        /// 5s (raw, last 7 days) or 1m (rollups, last 90 days). Default: 5s unless --from is older than 7 days.
+        #[arg(long)]
+        resolution: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -351,6 +396,30 @@ where
             }
             (procs, text)
         }
+        Command::Metrics(MetricsCommand::History { device, from, to, resolution }) => {
+            let query: Vec<String> = [("from", from), ("to", to), ("resolution", resolution)]
+                .into_iter()
+                .filter_map(|(k, v)| Some(format!("{k}={}", path_segment(&v?))))
+                .collect();
+            let path = format!("/api/v1/devices/{}/history?{}", path_segment(&device), query.join("&"));
+            let history = api.call(reqwest::Method::GET, &path, None).await?;
+            let mut text = format!(
+                "{:<20}  {:>6}  {:>14}  {:>12}  {:>12}\n",
+                "AT", "CPU%", "RAM USED BYTES", "NET UP B/S", "NET DOWN B/S"
+            );
+            for s in history["samples"].as_array().into_iter().flatten() {
+                let (r, num) = (&s["resources"], |v: &Value| v.as_f64().map_or("-".into(), |n| format!("{n:.0}")));
+                text += &format!(
+                    "{:<20}  {:>6}  {:>14}  {:>12}  {:>12}\n",
+                    str_of(&s["at"]),
+                    r["cpu_percent"].as_f64().map_or("-".into(), |c| format!("{c:.1}")),
+                    num(&r["ram_used_bytes"]),
+                    num(&r["net_up_bytes_per_sec"]),
+                    num(&r["net_down_bytes_per_sec"]),
+                );
+            }
+            (history, text)
+        }
         Command::EnrollmentCode(EnrollmentCodeCommand::Create) => {
             let created = api.call(reqwest::Method::POST, "/api/v1/enrollment-codes", None).await?;
             let text = format!("{}\n", str_of(&created["code"]));
@@ -374,6 +443,12 @@ where
         Command::User(UserCommand::Disable { name }) => {
             let user = api.call(reqwest::Method::POST, &format!("/api/v1/users/{name}/disable"), None).await?;
             (user, format!("disabled {name}\n"))
+        }
+        Command::User(UserCommand::SetPassword { name, password }) => {
+            let body = serde_json::json!({ "password": password });
+            let set = api.call(reqwest::Method::POST, &format!("/api/v1/users/{name}/credentials"), Some(&body)).await?;
+            let text = format!("totp_secret {}\notpauth_url {}\n", str_of(&set["totp_secret"]), str_of(&set["otpauth_url"]));
+            (set, text)
         }
         Command::Token(TokenCommand::Create { user }) => {
             let issued = api.call(reqwest::Method::POST, &format!("/api/v1/users/{user}/tokens"), None).await?;
@@ -414,6 +489,27 @@ where
             let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{device}/actions"), Some(&body)).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out)? };
             (obs, text)
+        }
+        Command::Audit { device, user, since, until } => {
+            let query: Vec<String> = [("device", device), ("user", user), ("since", since), ("until", until)]
+                .into_iter()
+                .filter_map(|(k, v)| v.map(|v| format!("{k}={}", path_segment(&v))))
+                .collect();
+            let entries = api.call(reqwest::Method::GET, &format!("/api/v1/audit?{}", query.join("&")), None).await?;
+            let mut text = format!("{:<30}  {:<16}  {:<24}  {:<8}  {:<16}  {}\n", "AT", "USER", "DEVICE", "ACTION", "RESULT", "PARAMS");
+            for e in entries.as_array().into_iter().flatten() {
+                let result = if e["result"].get("error").is_some_and(Value::is_null) { "ok".to_owned() } else { e["result"].to_string() };
+                text += &format!(
+                    "{:<30}  {:<16}  {:<24}  {:<8}  {:<16}  {}\n",
+                    str_of(&e["at"]),
+                    str_of(&e["user"]),
+                    e["device"].as_str().or(e["device_id"].as_str()).unwrap_or(""),
+                    str_of(&e["action"]),
+                    result,
+                    e["params"],
+                );
+            }
+            (entries, text)
         }
         Command::Act { device, action, display, observe, observe_display, marks, out } => {
             let body = json!({
