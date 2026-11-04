@@ -11,6 +11,8 @@ use base64::Engine;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 
+pub mod mcp;
+
 #[derive(Parser)]
 #[command(name = "rcli", about = "Remote CLI controller")]
 struct Cli {
@@ -118,6 +120,8 @@ enum Command {
         #[arg(long, global = true, default_value = ".")]
         out: PathBuf,
     },
+    /// Serve the Controller operations as MCP tools on stdio, for AI agents (Claude Code etc.).
+    Mcp,
     /// Send an Action Batch from JSON (needs the Control Lock): a list of Actions as in the API
     /// (plus `{"type":"wait","ms":N}`), or a whole request body, which is sent as-is.
     Batch {
@@ -638,6 +642,7 @@ where
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, frames)? };
             (obs, text)
         }
+        Command::Mcp => return mcp::serve(api.base, api.token, tokio::io::stdin(), tokio::io::stdout()).await,
         Command::Update(UpdateCommand::Keygen { .. }) => unreachable!("handled before connecting"),
         Command::Update(UpdateCommand::Publish { file, version, target, key }) => {
             let build = std::fs::read(&file)?;
