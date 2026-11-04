@@ -6,7 +6,7 @@ use rcli_agent::{
     contract::{self, Env, Step},
     platform::{
         DisplayInfo, FakePlatform, Frame, Input, Inventory, Platform, PowerAction, Process, Resources, RunAs, SessionState,
-        ShellOutput,
+        ShellOutput, UiElement,
     },
 };
 
@@ -20,9 +20,20 @@ fn scripted_operator(fake: &FakePlatform) -> impl FnMut(Step) + '_ {
     }
 }
 
+/// A FakePlatform scripted with an accessibility tree and on-screen text.
+fn fake() -> FakePlatform {
+    let fake = FakePlatform::new("lab-pc");
+    let clock = UiElement { role: "text".into(), text: "09:41".into(), x: 10, y: 10, width: 80, height: 20 };
+    fake.update(|s| {
+        s.accessibility = Some(vec![UiElement { role: "button".into(), ..clock.clone() }]);
+        s.screen_text = vec![clock];
+    });
+    fake
+}
+
 #[test]
 fn fake_platform_passes_every_check_in_every_environment() {
-    let fake = FakePlatform::new("lab-pc");
+    let fake = fake();
     let report = contract::run(&fake, &mut scripted_operator(&fake));
     assert_eq!(report.failures(), vec![]);
     assert_eq!(
@@ -34,6 +45,8 @@ fn fake_platform_passes_every_check_in_every_environment() {
 | capture | ✅ | ✅ | ✅ |
 | key shows on screen | ✅ | ✅ | ✅ |
 | session state | ✅ | ✅ | ✅ |
+| text recognition | ✅ | ✅ | ✅ |
+| accessibility tree | ✅ | | |
 | metrics | ✅ | | |
 | inventory | ✅ | | |
 | processes | ✅ | | |
@@ -71,6 +84,12 @@ impl Platform for Broken {
             Ok(())
         }
     }
+    fn accessibility(&self, display: u32) -> anyhow::Result<Option<Vec<UiElement>>> {
+        self.fake.accessibility(display)
+    }
+    fn recognize_text(&self, frame: &Frame) -> anyhow::Result<Vec<UiElement>> {
+        self.fake.recognize_text(frame)
+    }
     fn session_state(&self) -> anyhow::Result<SessionState> {
         if self.detects_session {
             self.fake.session_state()
@@ -103,7 +122,7 @@ impl Platform for Broken {
 
 #[test]
 fn keys_that_never_reach_the_screen_fail_in_every_environment() {
-    let fake = FakePlatform::new("lab-pc");
+    let fake = fake();
     let broken = Broken { fake: fake.clone(), keys_reach_screen: false, detects_session: true };
     let report = contract::run(&broken, &mut scripted_operator(&fake));
     assert_eq!(
@@ -119,7 +138,7 @@ fn keys_that_never_reach_the_screen_fail_in_every_environment() {
 
 #[test]
 fn session_state_that_ignores_reality_fails_at_lock_and_login_screens() {
-    let fake = FakePlatform::new("lab-pc");
+    let fake = fake();
     let broken = Broken { fake: fake.clone(), keys_reach_screen: true, detects_session: false };
     let report = contract::run(&broken, &mut scripted_operator(&fake));
     assert_eq!(

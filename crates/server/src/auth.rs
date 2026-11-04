@@ -1,5 +1,6 @@
 //! Auth: users with a role (admin, operator) and per-user API tokens.
 //! The bootstrap token from config acts as an admin only until an enabled admin has a live API token (first run).
+//! Dashboard sign-in: password + TOTP gives a session, which is an API token with an expiry.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -49,10 +50,12 @@ const USER_COLS: &str = "id, name, role, disabled_at";
 pub async fn authenticate(state: &AppState, token: &str) -> anyhow::Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(&format!(
         "SELECT u.{} FROM api_tokens t JOIN users u ON u.id = t.user_id
-         WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND u.disabled_at IS NULL",
+         WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND u.disabled_at IS NULL
+           AND (t.expires_at IS NULL OR t.expires_at > $2)",
         USER_COLS.replace(", ", ", u.")
     ))
     .bind(hash(token))
+    .bind(state.clock.now())
     .fetch_optional(&state.db)
     .await?;
     if user.is_some() || token != state.config.bootstrap_admin_token {
@@ -134,4 +137,161 @@ pub async fn revoke_token(state: &AppState, id: Uuid) -> Result<(), Error> {
         return Err(Error::NotFound);
     }
     Ok(())
+}
+
+/// Revokes the token itself (Dashboard sign-out).
+pub async fn revoke_by_token(state: &AppState, token: &str) -> anyhow::Result<()> {
+    sqlx::query("UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, $2) WHERE token_hash = $1")
+        .bind(hash(token))
+        .bind(state.clock.now())
+        .execute(&state.db)
+        .await?;
+    Ok(())
+}
+
+/// How long a Dashboard session lasts.
+pub const SESSION_TTL: chrono::Duration = chrono::Duration::hours(12);
+const PBKDF2_ITERATIONS: u32 = 600_000;
+const TOTP_STEP_SECS: i64 = 30;
+
+fn pbkdf2(password: &str, salt: &[u8], iterations: u32) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    let n = std::num::NonZeroU32::new(iterations).unwrap();
+    ring::pbkdf2::derive(ring::pbkdf2::PBKDF2_HMAC_SHA256, n, salt, password.as_bytes(), &mut out);
+    out
+}
+
+fn random<const N: usize>() -> [u8; N] {
+    ring::rand::generate(&ring::rand::SystemRandom::new()).expect("system RNG").expose()
+}
+
+/// Stored as `pbkdf2-sha256$<iterations>$<salt b64>$<hash b64>`.
+fn hash_password(password: &str) -> String {
+    use data_encoding::BASE64;
+    let salt = random::<16>();
+    let h = pbkdf2(password, &salt, PBKDF2_ITERATIONS);
+    format!("pbkdf2-sha256${PBKDF2_ITERATIONS}${}${}", BASE64.encode(&salt), BASE64.encode(&h))
+}
+
+fn verify_password(password: &str, stored: &str) -> bool {
+    use data_encoding::BASE64;
+    let parts: Vec<&str> = stored.split('$').collect();
+    let [_, iterations, salt, h] = parts[..] else { return false };
+    let (Ok(iterations), Ok(salt), Ok(h)) = (iterations.parse(), BASE64.decode(salt.as_bytes()), BASE64.decode(h.as_bytes())) else {
+        return false;
+    };
+    let n = std::num::NonZeroU32::new(iterations).unwrap_or(std::num::NonZeroU32::MIN);
+    ring::pbkdf2::verify(ring::pbkdf2::PBKDF2_HMAC_SHA256, n, &salt, password.as_bytes(), &h).is_ok()
+}
+
+/// RFC 6238 TOTP (HMAC-SHA1, 30 s steps, 6 digits) for time `unix_secs`.
+pub fn totp(secret: &[u8], unix_secs: i64) -> u32 {
+    totp_at_step(secret, unix_secs.div_euclid(TOTP_STEP_SECS))
+}
+
+fn totp_at_step(secret: &[u8], step: i64) -> u32 {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, secret);
+    let mac = ring::hmac::sign(&key, &step.to_be_bytes());
+    let m = mac.as_ref();
+    let i = (m[19] & 0x0f) as usize;
+    (u32::from_be_bytes([m[i], m[i + 1], m[i + 2], m[i + 3]]) & 0x7fff_ffff) % 1_000_000
+}
+
+pub struct TotpEnrollment {
+    /// Base32, for typing into an authenticator app.
+    pub secret: String,
+    /// `otpauth://` URL, for a QR code.
+    pub url: String,
+}
+
+/// Sets a user's Dashboard password and enrolls a new TOTP secret (any previous one stops working).
+pub async fn set_credentials(state: &AppState, name: &str, password: &str) -> Result<TotpEnrollment, Error> {
+    if password.chars().count() < 8 {
+        return Err(Error::BadRequest("password must be at least 8 characters".into()));
+    }
+    let secret = random::<20>();
+    let updated = sqlx::query(
+        "UPDATE users SET password_hash = $2, totp_secret = $3, totp_last_step = NULL WHERE name = $1",
+    )
+    .bind(name)
+    .bind(hash_password(password))
+    .bind(&secret[..])
+    .execute(&state.db)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(Error::NotFound);
+    }
+    let secret = data_encoding::BASE32_NOPAD.encode(&secret);
+    // `name` is URL-safe (validated in create_user).
+    let url = format!("otpauth://totp/Remote%20CLI:{name}?secret={secret}&issuer=Remote%20CLI");
+    Ok(TotpEnrollment { secret, url })
+}
+
+/// Checks password + TOTP and opens a session; `None` on any mismatch (no hint which part failed).
+/// A TOTP code is accepted for the current and the previous 30 s step, and each step only once.
+pub async fn sign_in(state: &AppState, name: &str, password: &str, code: &str) -> anyhow::Result<Option<(User, String)>> {
+    let row: Option<(Uuid, Option<String>, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT id, password_hash, totp_secret FROM users WHERE name = $1 AND disabled_at IS NULL",
+    )
+    .bind(name)
+    .fetch_optional(&state.db)
+    .await?;
+    let (id, Some(stored), Some(secret)) = row.unwrap_or_default() else {
+        // Same cost as a real check, so timing does not reveal which names exist.
+        let _ = pbkdf2(password, b"no-such-user-salt", PBKDF2_ITERATIONS);
+        return Ok(None);
+    };
+    if !verify_password(password, &stored) {
+        return Ok(None);
+    }
+    let now = state.clock.now();
+    let step = now.timestamp().div_euclid(TOTP_STEP_SECS);
+    let Some(step) = [step, step - 1].into_iter().find(|s| code == format!("{:06}", totp_at_step(&secret, *s))) else {
+        return Ok(None);
+    };
+    let fresh = sqlx::query(
+        "UPDATE users SET totp_last_step = $2 WHERE id = $1 AND (totp_last_step IS NULL OR totp_last_step < $2)",
+    )
+    .bind(id)
+    .bind(step)
+    .execute(&state.db)
+    .await?;
+    if fresh.rows_affected() == 0 {
+        return Ok(None); // replayed code
+    }
+    let token = format!("rcli_{}", Uuid::new_v4().simple());
+    sqlx::query(
+        "INSERT INTO api_tokens (id, user_id, token_hash, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(id)
+    .bind(hash(&token))
+    .bind(now)
+    .bind(now + SESSION_TTL)
+    .execute(&state.db)
+    .await?;
+    let user = sqlx::query_as::<_, User>(&format!("SELECT {USER_COLS} FROM users WHERE id = $1"))
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    Ok(Some((user, token)))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn totp_matches_rfc_6238_vectors() {
+        // RFC 6238 appendix B, SHA-1, last 6 of the 8 digits.
+        let secret = b"12345678901234567890";
+        assert_eq!(super::totp(secret, 59), 287082);
+        assert_eq!(super::totp(secret, 1111111109), 81804);
+        assert_eq!(super::totp(secret, 2000000000), 279037);
+    }
+
+    #[test]
+    fn password_hash_round_trips() {
+        let h = super::hash_password("correct horse");
+        assert!(super::verify_password("correct horse", &h));
+        assert!(!super::verify_password("wrong", &h));
+    }
 }
