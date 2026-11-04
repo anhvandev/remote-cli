@@ -164,6 +164,8 @@ pub struct FakeState {
     pub accessibility: Option<Vec<UiElement>>,
     /// What `recognize_text` "reads" from any frame.
     pub screen_text: Vec<UiElement>,
+    /// Every capture differs from the previous one by a little (below what counts as a change), like a blinking caret.
+    pub flicker: bool,
 }
 
 impl FakePlatform {
@@ -187,6 +189,7 @@ impl FakePlatform {
             control_indicator: false,
             accessibility: None,
             screen_text: vec![],
+            flicker: false,
         };
         Self { hostname, state: Arc::new(Mutex::new(state)) }
     }
@@ -250,7 +253,8 @@ impl Platform for FakePlatform {
         let animating = s.animating_until.is_some_and(|t| Instant::now() < t);
         let frame_no = if animating { s.captures } else { 0 };
         // Steps of 40 so every change is noticeable to `frames`.
-        let pixel = [s.session as u8 * 60, (s.inputs.len() * 40) as u8, (frame_no % 6 * 40) as u8, 255];
+        let flicker = if s.flicker { (s.captures % 2 * 8) as u8 } else { 0 };
+        let pixel = [s.session as u8 * 60 + flicker, (s.inputs.len() * 40) as u8, (frame_no % 6 * 40) as u8, 255];
         Ok(Frame { width: d.width, height: d.height, rgba: pixel.repeat((d.width * d.height) as usize) })
     }
 

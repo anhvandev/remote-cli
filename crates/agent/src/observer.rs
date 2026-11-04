@@ -165,18 +165,26 @@ fn noticeable(a: &RgbaImage, b: &RgbaImage) -> bool {
     a.dimensions() != b.dimensions() || a.as_raw().iter().zip(b.as_raw()).any(|(x, y)| x.abs_diff(*y) > NOTICEABLE)
 }
 
-/// Captures until two frames in a row are equal, or `SETTLE_MAX` has passed.
+/// Captures until two frames in a row show no noticeable change (same rule as `frames`), or `SETTLE_MAX` has passed.
 pub fn settle(p: &dyn Platform, display: u32) -> anyhow::Result<Frame> {
     let deadline = Instant::now() + SETTLE_MAX;
-    let mut prev = p.capture(display)?;
+    let (_, mut prev) = compared(p.capture(display)?)?;
     loop {
         std::thread::sleep(SETTLE_POLL);
-        let cur = p.capture(display)?;
-        if cur == prev || Instant::now() >= deadline {
+        let (cur, small) = compared(p.capture(display)?)?;
+        if !noticeable(&prev, &small) || Instant::now() >= deadline {
             return Ok(cur);
         }
-        prev = cur;
+        prev = small;
     }
+}
+
+/// The frame and its small copy for change detection.
+fn compared(frame: Frame) -> anyhow::Result<(Frame, RgbaImage)> {
+    let (width, height) = (frame.width, frame.height);
+    let full = RgbaImage::from_raw(width, height, frame.rgba).ok_or_else(|| anyhow::anyhow!("frame size does not match its pixels"))?;
+    let small = shrink(&full, COMPARE_EDGE);
+    Ok((Frame { width, height, rgba: full.into_raw() }, small))
 }
 
 fn scale(frame: Frame, width: u32, height: u32) -> anyhow::Result<RgbaImage> {
@@ -200,6 +208,15 @@ mod tests {
         let mut img = RgbaImage::from_pixel(2560, 1440, image::Rgba([255, 255, 255, 255]));
         edit(&mut img);
         shrink(&img, COMPARE_EDGE)
+    }
+
+    #[test]
+    fn a_screen_with_only_slight_flicker_counts_as_settled() {
+        let p = crate::platform::FakePlatform::new("pc");
+        p.update(|s| s.flicker = true);
+        let started = Instant::now();
+        settle(&p, 0).unwrap();
+        assert!(started.elapsed() < SETTLE_MAX / 2, "waited {:?}", started.elapsed());
     }
 
     #[test]
