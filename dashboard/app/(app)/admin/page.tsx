@@ -6,8 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Nav } from "../nav";
-import { Status } from "../status";
+import { Status } from "../../status";
 import * as act from "./actions";
 import { Form } from "./form";
 
@@ -23,12 +22,9 @@ export default async function AdminPage() {
   const me = await api<User>("/api/v1/me");
   if (me.role !== "admin") {
     return (
-      <>
-        <Nav />
-        <main className="min-w-0 flex-1 px-5 py-6 md:px-8">
-          <p className="text-sm text-muted-foreground">Chỉ admin mới xem được trang Quản trị.</p>
-        </main>
-      </>
+      <main className="min-w-0 flex-1 px-5 py-6 md:px-8">
+        <p className="text-sm text-muted-foreground">Chỉ admin mới xem được trang Quản trị.</p>
+      </main>
     );
   }
   const [users, tokens, devices] = await Promise.all([
@@ -52,7 +48,6 @@ export default async function AdminPage() {
 
   return (
     <>
-      <Nav />
       <main className="min-w-0 flex-1 px-5 py-6 md:px-8">
         <div className="mx-auto max-w-6xl">
           <h2 className="mb-5 text-xl font-semibold tracking-tight">Quản trị</h2>

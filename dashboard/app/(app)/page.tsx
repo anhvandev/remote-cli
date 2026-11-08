@@ -3,9 +3,8 @@ import { MonitorSmartphone } from "lucide-react";
 import { api, type Device } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Nav } from "./nav";
-import { Refresh } from "./refresh";
-import { Status } from "./status";
+import { Refresh } from "../refresh";
+import { Status } from "../status";
 
 /** "2 phút trước" — easier to scan than an absolute clock. */
 function ago(t: string | null) {
@@ -22,7 +21,6 @@ export default async function FleetPage() {
   const count = (s: string) => devices.filter((d) => d.status === s).length;
   return (
     <>
-      <Nav />
       <Refresh />
       <main className="min-w-0 flex-1 px-5 py-6 md:px-8">
         <div className="mx-auto max-w-6xl">
