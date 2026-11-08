@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { devstack, newUser, signIn } from "./devstack";
+import { adminApi, devstack, newUser, signIn } from "./devstack";
 
 // Devices `delta`, `echo`, `foxtrot` exist only for these tests (rcli-devstack); alpha/bravo/charlie stay untouched.
 
@@ -144,6 +144,89 @@ test("unlock passwords can be set and cleared but are never shown", async ({ pag
 
   await row.getByRole("button", { name: "Xoá" }).click();
   await expect(row).toContainText("chưa có");
+});
+
+test("the overview shows four cards with counts from the Server", async ({ page }) => {
+  await signIn(page, await newUser("admin"));
+  await page.getByRole("link", { name: "Quản trị" }).click();
+  const main = page.getByRole("main");
+  const cards: [string, string][] = [
+    ["User", "/admin/users"],
+    ["Device", "/admin/devices"],
+    ["Cập nhật Agent", "/admin/updates"],
+    ["Enrollment Code", "/admin/enrollment"],
+  ];
+  for (const [name, path] of cards) {
+    await expect(page.getByRole("region", { name })).toBeVisible();
+    await expect(main.getByRole("link", { name, exact: true })).toHaveAttribute("href", path);
+  }
+
+  // Other specs share the devstack, so re-read the Server and the page together until they agree.
+  await expect(async () => {
+    const users = await adminApi("/api/v1/users");
+    const tokens = await adminApi("/api/v1/tokens");
+    const devices = await adminApi("/api/v1/devices");
+    const unlock = await Promise.all(
+      devices.map((d: { id: string }) => adminApi(`/api/v1/devices/${d.id}/unlock-password`)),
+    );
+    await page.goto("/admin");
+    const user = page.getByRole("region", { name: "User" });
+    const admins = users.filter((u: { role: string }) => u.role === "admin").length;
+    await expect(user).toContainText(`${admins} Admin · ${users.length - admins} Operator`);
+    await expect(user).toContainText(`${users.filter((u: { disabled_at: string | null }) => u.disabled_at).length} User đã vô hiệu`);
+    await expect(user).toContainText(`${tokens.length} API token`);
+
+    const device = page.getByRole("region", { name: "Device" });
+    const count = (s: string) => devices.filter((d: { status: string }) => d.status === s).length;
+    await expect(device).toContainText(`${count("Online")} Online · ${count("Offline")} Offline · ${count("Waking")} Waking`);
+    await expect(device).toContainText(`${devices.filter((d: { revoked_at: string | null }) => d.revoked_at).length} Device đã thu hồi`);
+    await expect(device).toContainText(`${unlock.filter((u: { set: boolean }) => !u.set).length} Device chưa có mật khẩu unlock`);
+  }).toPass({ timeout: 20_000 });
+
+  // No API lists Enrollment Codes, so the card offers the action instead of a count.
+  const enrollment = page.getByRole("region", { name: "Enrollment Code" });
+  await expect(enrollment.getByRole("link", { name: "Tạo Enrollment Code" })).toHaveAttribute("href", "/admin/enrollment");
+});
+
+test("the overview lists a failed Agent update with the Device name, error and a link to it", async ({ page }) => {
+  const { api, admin_token, update } = await devstack();
+  const devices = await adminApi("/api/v1/devices");
+  // golf is Online and no other spec asserts on its update state (power-wake only drives its power actions).
+  const golf = devices.find((d: { name: string }) => d.name === "golf");
+
+  // Publish the devstack's signed build for a target no Agent reports, then roll it out: the Online
+  // Device cannot install it, so it ends up with update.status "failed" and the reason.
+  const version = "t07-failed";
+  const target = "t07-fake-x86_64";
+  const res = await fetch(`${api}/api/v1/agent-builds/${version}/${target}?signature=${update.signature}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${admin_token}` },
+    body: update.build,
+  });
+  expect(res.status, await res.text()).toBe(201);
+  await adminApi(`/api/v1/agent-builds/${version}/rollout`, { devices: [golf.id] });
+
+  await expect
+    .poll(async () => {
+      const now = await adminApi("/api/v1/devices");
+      return now.find((d: { id: string }) => d.id === golf.id)?.update?.status;
+    }, { timeout: 15_000 })
+    .toBe("failed");
+  const error = (await adminApi("/api/v1/devices")).find((d: { id: string }) => d.id === golf.id).update.error;
+
+  await signIn(page, await newUser("admin"));
+  await page.getByRole("link", { name: "Quản trị" }).click();
+  const updates = page.getByRole("region", { name: "Cập nhật Agent" });
+  await expect(updates).toContainText(version);
+  await expect(updates).toContainText("0/1");
+  await expect(updates).toContainText("1 lỗi");
+  const link = updates.getByRole("link", { name: `${golf.name}: ${error}` });
+  await expect(link).toHaveAttribute("href", `/devices/${golf.id}`);
+
+  // The failed Device's name leads straight to its Tổng quan.
+  await link.click();
+  await expect(page).toHaveURL(new RegExp(`/devices/${golf.id}$`));
+  await expect(page.getByRole("heading", { name: /golf/ })).toBeVisible();
 });
 
 test("admin uploads a signed Agent build and rolls it out to selected Devices", async ({ page }) => {
