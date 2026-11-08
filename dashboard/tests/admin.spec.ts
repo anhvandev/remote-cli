@@ -3,10 +3,12 @@ import { devstack, newUser, signIn } from "./devstack";
 
 // Devices `delta`, `echo`, `foxtrot` exist only for these tests (rcli-devstack); alpha/bravo/charlie stay untouched.
 
-async function openAdmin(page: Page) {
+/** Signs in an Admin and reaches a sub-page through the Quản trị root. */
+async function openAdmin(page: Page, sub: string) {
   await signIn(page, await newUser("admin"));
   await page.getByRole("link", { name: "Quản trị" }).click();
   await expect(page.getByRole("heading", { name: "Quản trị" })).toBeVisible();
+  await page.getByRole("main").getByRole("link", { name: sub, exact: true }).click();
 }
 
 /** The row whose first cell (the name) matches; other cells may mention other names (e.g. merge choices). */
@@ -15,15 +17,61 @@ const rowIn = (page: Page, section: string, text: string | RegExp) =>
 
 test("operators don't see the admin screens", async ({ page }) => {
   await signIn(page, await newUser("operator"));
-  await expect(page.getByRole("navigation")).toContainText("operator");
+  const nav = page.getByRole("navigation");
+  await expect(nav).toContainText("operator");
   await expect(page.getByRole("link", { name: "Quản trị" })).toHaveCount(0);
-  await page.goto("/admin");
-  await expect(page.getByText("Chỉ admin")).toBeVisible();
-  await expect(page.getByRole("region", { name: "User & API token" })).toHaveCount(0);
+  for (const name of ["User", "Enrollment Code", "Cập nhật Agent"]) {
+    await expect(nav.getByRole("link", { name, exact: true })).toHaveCount(0);
+  }
+  await expect(nav.getByRole("link", { name: "Device", exact: true })).toHaveCount(1);
+
+  for (const url of ["/admin", "/admin/users", "/admin/devices", "/admin/enrollment", "/admin/updates"]) {
+    await page.goto(url);
+    await expect(page.getByText("Chỉ admin")).toBeVisible();
+    await expect(page.getByRole("region")).toHaveCount(0);
+    await expect(page.getByRole("table")).toHaveCount(0);
+  }
+});
+
+test("the sidebar shows the four Quản trị sub-entries and marks the current one", async ({ page }) => {
+  await signIn(page, await newUser("admin"));
+  const nav = page.getByRole("navigation");
+  const subs: [string, string][] = [
+    ["User", "/admin/users"],
+    ["Device (Admin)", "/admin/devices"],
+    ["Enrollment Code", "/admin/enrollment"],
+    ["Cập nhật Agent", "/admin/updates"],
+  ];
+  for (const [label, path] of subs) {
+    await nav.getByRole("link", { name: label, exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`${path}$`));
+    await expect(nav.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(nav.getByRole("link", { name: "Quản trị" })).not.toHaveAttribute("aria-current", "page");
+  }
+  // The top-level Device entry stays unambiguous and inactive on admin pages.
+  await expect(nav.getByRole("link", { name: "Device", exact: true })).toHaveCount(1);
+});
+
+test("the Quản trị root links to each sub-page", async ({ page }) => {
+  await signIn(page, await newUser("admin"));
+  await page.getByRole("link", { name: "Quản trị" }).click();
+  const main = page.getByRole("main");
+  const pages: [string, string][] = [
+    ["User", "/admin/users"],
+    ["Device", "/admin/devices"],
+    ["Enrollment Code", "/admin/enrollment"],
+    ["Cập nhật Agent", "/admin/updates"],
+  ];
+  for (const [name, path] of pages) {
+    await main.getByRole("link", { name, exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`${path}$`));
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "Quản trị" })).toBeVisible();
+  }
 });
 
 test("admin creates a user, sets their password, issues and revokes a token, disables them", async ({ page }) => {
-  await openAdmin(page);
+  await openAdmin(page, "User");
   const users = page.getByRole("region", { name: "User & API token" });
   const name = `bot-${Date.now()}`;
   await users.getByLabel("Tên user mới").fill(name);
@@ -50,14 +98,14 @@ test("admin creates a user, sets their password, issues and revokes a token, dis
 });
 
 test("admin creates a single-use Enrollment Code", async ({ page }) => {
-  await openAdmin(page);
+  await openAdmin(page, "Enrollment Code");
   const codes = page.getByRole("region", { name: "Enrollment Code" });
   await codes.getByRole("button", { name: "+ Tạo mã" }).click();
   await expect(codes.getByRole("status")).toContainText("dùng một lần");
 });
 
 test("admin renames, revokes, deletes and merges Devices", async ({ page }) => {
-  await openAdmin(page);
+  await openAdmin(page, "Device");
   const delta = rowIn(page, "Device", /^delta /);
   await delta.getByLabel("Tên mới cho delta").fill("delta-2");
   await delta.getByRole("button", { name: "Đổi tên" }).click();
@@ -81,7 +129,7 @@ test("admin renames, revokes, deletes and merges Devices", async ({ page }) => {
 });
 
 test("unlock passwords can be set and cleared but are never shown", async ({ page }) => {
-  await openAdmin(page);
+  await openAdmin(page, "Device");
   const row = rowIn(page, "Mật khẩu unlock", "bravo");
   await expect(row).toContainText("chưa có");
   const input = row.getByLabel("Mật khẩu unlock cho bravo");
@@ -100,7 +148,7 @@ test("unlock passwords can be set and cleared but are never shown", async ({ pag
 
 test("admin uploads a signed Agent build and rolls it out to selected Devices", async ({ page }) => {
   const { update } = await devstack();
-  await openAdmin(page);
+  await openAdmin(page, "Cập nhật Agent");
   const card = page.getByRole("region", { name: "Cập nhật Agent" });
   await card.getByLabel("File build").setInputFiles({ name: "rcli-agent", mimeType: "application/octet-stream", buffer: Buffer.from(update.build) });
   await card.getByLabel("Phiên bản").first().fill(update.version);
@@ -114,5 +162,8 @@ test("admin uploads a signed Agent build and rolls it out to selected Devices", 
   await rollout.getByLabel("bravo").check();
   await rollout.getByRole("button", { name: "Cập nhật Device đã chọn" }).click();
   await expect(rowIn(page, "Cập nhật Agent", update.version)).toContainText("0/1");
+
+  // The Device sub-page shows the rollout on the Device itself.
+  await page.goto("/admin/devices");
   await expect(rowIn(page, "Device", /^bravo /)).toContainText(`${update.version} · pending`);
 });
