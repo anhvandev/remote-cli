@@ -51,3 +51,15 @@ _Avoid_: invite, pairing code, install key
 **Control Lock**:
 Exclusive right held by one Controller at a time to send mouse and keyboard Actions to a Device; others may still observe, read metrics and use the terminal. It cannot be taken over by another Controller: it ends only when its holder releases it, sends no Action for 10 minutes, or stays disconnected for 60 seconds, or when an admin force-releases it.
 _Avoid_: session lock, ownership
+
+**Live View**:
+A continuous stream of a Device's screen to a person in the Dashboard; the holder of the Control Lock can also send mouse and keyboard Actions through it. Unlike an Observation, it is not tied to any Action.
+_Avoid_: screen share, remote desktop, xem màn hình
+
+**Operator**:
+A User who observes and controls Devices but cannot administer the Server.
+_Avoid_: staff, normal user
+
+**Admin**:
+A User who, besides everything an Operator can do, manages Users, Enrollment Codes, Agent updates and Devices.
+_Avoid_: administrator, superuser, quản trị viên
