@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { MonitorSmartphone } from "lucide-react";
-import { api, type Device } from "@/lib/api";
+import { api, type Device, type DeviceStatus } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Refresh } from "../refresh";
-import { Status } from "../status";
+import { Status, updateStatus } from "../status";
 import { FleetFilter } from "./fleet-filter";
 
 /** "2 phút trước" — easier to scan than an absolute clock. */
@@ -17,14 +17,16 @@ function ago(t: string | null) {
   return `${Math.floor(s / 86400)} ngày trước`;
 }
 
-export default async function FleetPage({ searchParams }: { searchParams: Promise<{ q?: string; status?: string }> }) {
+export default async function FleetPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string; status?: DeviceStatus }>;
+}) {
   const devices = await api<Device[]>("/api/v1/devices");
   const { q, status } = await searchParams;
   const name = q?.toLowerCase() ?? "";
-  const shown = devices.filter(
-    (d) => d.name.toLowerCase().includes(name) && (!status || status === "All" || d.status === status),
-  );
-  const count = (s: string) => devices.filter((d) => d.status === s).length;
+  const shown = devices.filter((d) => d.name.toLowerCase().includes(name) && (!status || d.status === status));
+  const count = (s: DeviceStatus) => devices.filter((d) => d.status === s).length;
   return (
     <>
       <Refresh />
@@ -68,7 +70,7 @@ export default async function FleetPage({ searchParams }: { searchParams: Promis
                       {d.update && d.update.status !== "updated" && (
                         <span className={d.update.status === "failed" ? "text-destructive" : ""}>
                           {" → "}
-                          {d.update.version} · {d.update.status}
+                          {d.update.version} · {updateStatus(d.update.status)}
                         </span>
                       )}
                     </TableCell>

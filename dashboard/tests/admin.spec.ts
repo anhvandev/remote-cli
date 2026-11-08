@@ -248,5 +248,5 @@ test("admin uploads a signed Agent build and rolls it out to selected Devices", 
 
   // The Device sub-page shows the rollout on the Device itself.
   await page.goto("/admin/devices");
-  await expect(rowIn(page, "Device", /^bravo /)).toContainText(`${update.version} · pending`);
+  await expect(rowIn(page, "Device", /^bravo /)).toContainText(`${update.version} · đang chờ`);
 });

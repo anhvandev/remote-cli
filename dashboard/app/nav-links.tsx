@@ -5,11 +5,11 @@ import { usePathname } from "next/navigation";
 const item = "rounded-md px-2.5 py-2 text-sm transition-colors hover:bg-accent hover:text-foreground";
 const tone = (active: boolean) => `${item} ${active ? "bg-accent text-foreground" : "text-muted-foreground"}`;
 
-// The Device sub-entry needs a distinct accessible name: an exact "Device" link would make the top-level
+// The Device sub-entry's visible name says (Admin): an exact "Device" link would make the top-level
 // Device link ambiguous in role/name queries.
 const adminPages = [
   { href: "/admin/users", name: "User" },
-  { href: "/admin/devices", name: "Device", label: "Device (Admin)" },
+  { href: "/admin/devices", name: "Device (Admin)" },
   { href: "/admin/enrollment", name: "Enrollment Code" },
   { href: "/admin/updates", name: "Cập nhật Agent" },
 ];
@@ -33,7 +33,6 @@ export function NavLinks({ admin }: { admin: boolean }) {
               <Link
                 key={p.href}
                 href={p.href}
-                aria-label={p.label}
                 aria-current={path.startsWith(p.href) ? "page" : undefined}
                 className={tone(path.startsWith(p.href))}
               >
