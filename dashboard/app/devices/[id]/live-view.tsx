@@ -4,6 +4,9 @@
 // While the person holds the Control Lock, their mouse and keyboard on the view become Actions (POST .../actions),
 // which the Server checks against the lock and audits like any Controller's.
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type WheelEvent } from "react";
+import { MonitorPlay } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useHolding } from "./control";
 
 /** Waits until all ICE candidates are in the offer (the Server relays one offer, no trickle); gives up after 5 s. */
@@ -174,18 +177,19 @@ export function LiveView({ device, name }: { device: string; name: string }) {
   useEffect(() => () => stop(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <section className="card" aria-label="Live view" style={{ gridColumn: "1/-1" }}>
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <h3>Live view</h3>
+    <Card aria-label="Live view" role="region" className="gap-3">
+      <CardHeader className="flex flex-row items-center justify-between gap-3">
+        <CardTitle className="text-sm font-medium text-muted-foreground">Live view</CardTitle>
         {state === "idle" ? (
-          <button className="btn primary" onClick={() => start()}>
+          <Button size="sm" onClick={() => start()}>
             Xem trực tiếp
-          </button>
+          </Button>
         ) : (
-          <span className="row">
+          <span className="flex items-center gap-2">
             {displays.length > 1 && (
               <select
                 aria-label="Chọn màn hình"
+                className="h-8 rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 value={display}
                 onChange={(e) => {
                   stop();
@@ -199,27 +203,38 @@ export function LiveView({ device, name }: { device: string; name: string }) {
                 ))}
               </select>
             )}
-            <button className="btn" onClick={stop}>
+            <Button size="sm" variant="secondary" onClick={stop}>
               Dừng xem
-            </button>
+            </Button>
           </span>
         )}
-      </div>
-      {error && <p className="muted">Không xem được: {error}</p>}
-      {state === "connecting" && <p className="muted">Đang kết nối…</p>}
-      {state === "live" && !holding && <p className="muted">Chỉ xem: cần giữ Control Lock để điều khiển.</p>}
-      {control && inputError && <p className="muted">Không điều khiển được: {inputError}</p>}
-      {state !== "idle" && (
-        <video
-          ref={video}
-          aria-label={`Màn hình ${name}`}
-          autoPlay
-          muted
-          playsInline
-          style={{ width: "100%", background: "#000", cursor: control ? "crosshair" : undefined }}
-          {...input}
-        />
-      )}
-    </section>
+      </CardHeader>
+      <CardContent className="grid gap-2">
+        {error && <p className="text-sm text-muted-foreground">Không xem được: {error}</p>}
+        {state === "connecting" && <p className="text-sm text-muted-foreground">Đang kết nối…</p>}
+        {state === "live" && !holding && <p className="text-sm text-muted-foreground">Chỉ xem: cần giữ Control Lock để điều khiển.</p>}
+        {control && inputError && <p className="text-sm text-muted-foreground">Không điều khiển được: {inputError}</p>}
+        {state === "idle" && (
+          <div className="grid aspect-video place-items-center rounded-lg border border-dashed border-border bg-muted/30 text-muted-foreground">
+            <div className="flex flex-col items-center gap-2 text-sm">
+              <MonitorPlay className="size-6 opacity-60" />
+              Chưa xem màn hình
+            </div>
+          </div>
+        )}
+        {state !== "idle" && (
+          <video
+            ref={video}
+            aria-label={`Màn hình ${name}`}
+            autoPlay
+            muted
+            playsInline
+            className="w-full bg-black ring-1 ring-border"
+            style={{ cursor: control ? "crosshair" : undefined }}
+            {...input}
+          />
+        )}
+      </CardContent>
+    </Card>
   );
 }

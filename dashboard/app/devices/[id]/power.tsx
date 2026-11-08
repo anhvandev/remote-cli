@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { power, wake, type Sent } from "../../actions";
 import type { DeviceStatus } from "@/lib/api";
+import { Button } from "@/components/ui/button";
 import { useLock } from "./control";
 
 const ACTIONS = [
@@ -36,34 +37,38 @@ export function PowerButtons(props: { device: string; name: string; status: Devi
     ? `Control Lock đang do ${lock.holder} giữ${lock.expires_at ? ` đến ${new Date(lock.expires_at).toLocaleTimeString("vi-VN")}` : ""}`
     : undefined;
   return (
-    <section aria-label="Nguồn">
-      <div className="row">
-        <button className="btn" disabled={online || busy} onClick={() => send("Wake", () => wake(props.device))}>
-          Wake
-        </button>
-        {online &&
-          ACTIONS.map((a) => (
-            <button
-              key={a.action}
-              className={a.action === "shutdown" ? "btn danger" : "btn"}
-              disabled={busy || (a.action !== "lock" && blocked)}
-              title={a.action !== "lock" ? why : undefined}
-              onClick={() => {
-                if ("confirm" in a && !confirm(`${a.label} ${props.name}?`)) return;
-                send(a.label, () => power(props.device, a.action));
-              }}
-            >
-              {a.label}
-            </button>
-          ))}
-      </div>
-      {online && why && <p className="muted">{why}: chỉ Lock screen được phép.</p>}
-      {msg && !msg.error && <p className="muted">Đã gửi {msg.label}{msg.detail && ` ${msg.detail}`}.</p>}
-      {msg?.error && (
-        <p role="alert" className="muted">
-          {msg.label} bị từ chối: {msg.error}
+    <section aria-label="Nguồn" className="flex flex-wrap items-center gap-2">
+      <Button variant="outline" size="sm" disabled={online || busy} onClick={() => send("Wake", () => wake(props.device))}>
+        Wake
+      </Button>
+      {online &&
+        ACTIONS.map((a) => (
+          <Button
+            key={a.action}
+            size="sm"
+            variant={a.action === "shutdown" ? "outline" : "secondary"}
+            className={a.action === "shutdown" ? "text-destructive hover:text-destructive" : undefined}
+            disabled={busy || (a.action !== "lock" && blocked)}
+            title={a.action !== "lock" ? why : undefined}
+            onClick={() => {
+              if ("confirm" in a && !confirm(`${a.label} ${props.name}?`)) return;
+              send(a.label, () => power(props.device, a.action));
+            }}
+          >
+            {a.label}
+          </Button>
+        ))}
+      {(online && why) || msg ? (
+        <p className="basis-full text-xs text-muted-foreground">
+          {msg && !msg.error && <>Đã gửi {msg.label}{msg.detail && ` ${msg.detail}`}.</>}
+          {msg?.error && (
+            <span role="alert">
+              {msg.label} bị từ chối: {msg.error}
+            </span>
+          )}
+          {online && why && <> {why}: chỉ Lock screen được phép.</>}
         </p>
-      )}
+      ) : null}
     </section>
   );
 }

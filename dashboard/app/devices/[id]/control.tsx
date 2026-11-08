@@ -4,6 +4,9 @@
 // open: a closed tab frees it 60 s later.
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { ControlLock } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 const Ctx = createContext<{ device: string; holding: boolean; lock: ControlLock; set: (l: ControlLock) => void }>(null!);
 
@@ -58,45 +61,51 @@ export function LockCard() {
 
   const time = (t: string) => new Date(t).toLocaleTimeString("vi-VN");
   return (
-    <section className="card" aria-label="Control Lock">
-      <h3>Control Lock</h3>
-      {lock.holder ? (
-        <div className="row" style={{ marginBottom: 8 }}>
-          <span className="tag lock">🔒 {lock.holder}</span>
-          <span className="muted">
-            {lock.expires_at ? (
-              <>hết hạn lúc <b className="mono">{time(lock.expires_at)}</b></>
-            ) : (
-              lock.acquired_at && <>giữ từ <b className="mono">{time(lock.acquired_at)}</b></>
-            )}
-          </span>
-        </div>
-      ) : (
-        <div className="muted" style={{ marginBottom: 8 }}>Không ai giữ</div>
-      )}
-      {error && <p className="muted">Lỗi: {error}</p>}
-      <div className="row">
-        {holding ? (
-          <button className="btn" onClick={() => post("/release")}>
-            Trả Control Lock
-          </button>
-        ) : waiting ? (
-          <>
-            <span className="muted">Đang chờ người giữ trả lock…</span>
-            <button className="btn" onClick={() => setWaiting(false)}>
-              Huỷ chờ
-            </button>
-          </>
-        ) : lock.holder ? (
-          <button className="btn primary" onClick={() => (setError(undefined), setWaiting(true))}>
-            Chờ Control Lock
-          </button>
+    <Card aria-label="Control Lock" role="region" className="gap-3">
+      <CardHeader>
+        <CardTitle className="text-sm font-medium text-muted-foreground">Control Lock</CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        {lock.holder ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge className="border border-chart-4/25 bg-chart-4/15 text-chart-4">
+              🔒 {lock.holder}
+            </Badge>
+            <span className="text-sm text-muted-foreground">
+              {lock.expires_at ? (
+                <>hết hạn lúc <b className="font-mono font-medium text-foreground">{time(lock.expires_at)}</b></>
+              ) : (
+                lock.acquired_at && <>giữ từ <b className="font-mono font-medium text-foreground">{time(lock.acquired_at)}</b></>
+              )}
+            </span>
+          </div>
         ) : (
-          <button className="btn primary" onClick={() => (setError(undefined), post(""))}>
-            Lấy Control Lock
-          </button>
+          <div className="text-sm text-muted-foreground">Không ai giữ</div>
         )}
-      </div>
-    </section>
+        {error && <p className="text-sm text-muted-foreground">Lỗi: {error}</p>}
+        <div className="flex flex-wrap items-center gap-2">
+          {holding ? (
+            <Button size="sm" variant="secondary" onClick={() => post("/release")}>
+              Trả Control Lock
+            </Button>
+          ) : waiting ? (
+            <>
+              <span className="text-sm text-muted-foreground">Đang chờ người giữ trả lock…</span>
+              <Button size="sm" variant="ghost" onClick={() => setWaiting(false)}>
+                Huỷ chờ
+              </Button>
+            </>
+          ) : lock.holder ? (
+            <Button size="sm" onClick={() => (setError(undefined), setWaiting(true))}>
+              Chờ Control Lock
+            </Button>
+          ) : (
+            <Button size="sm" onClick={() => (setError(undefined), post(""))}>
+              Lấy Control Lock
+            </Button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

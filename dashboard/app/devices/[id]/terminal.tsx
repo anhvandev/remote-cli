@@ -4,6 +4,10 @@
 import "@xterm/xterm/css/xterm.css";
 import type { Terminal as Xterm } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 
 type Line = { session?: string; as?: string; output?: string; exit_code?: number; error?: { code: string; message: string } };
 
@@ -106,31 +110,42 @@ export function Terminal({ device, admin }: { device: string; admin: boolean }) 
   useEffect(() => () => close(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <section className="card" aria-label="Terminal" style={{ gridColumn: "1/-1" }}>
-      <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
-        <h3 style={{ margin: 0 }}>Terminal</h3>
-        <div className="row">
-          {runAs && <span className="tag">chạy dưới: {runAs}</span>}
+    <Card aria-label="Terminal" role="region" className="gap-3">
+      <CardHeader className="flex flex-row items-center justify-between gap-3">
+        <CardTitle className="text-sm font-medium text-muted-foreground">Terminal</CardTitle>
+        <div className="flex items-center gap-3">
+          {runAs && (
+            <span className="rounded-full border border-border bg-secondary px-2 py-0.5 text-xs text-muted-foreground">chạy dưới: {runAs}</span>
+          )}
           {state === "open" || state === "connecting" ? (
-            <button className="btn" onClick={stop}>
+            <Button size="sm" variant="secondary" onClick={stop}>
               Đóng terminal
-            </button>
+            </Button>
           ) : (
             <>
               {admin && (
-                <label className="muted">
-                  <input type="checkbox" checked={asRoot} onChange={(e) => setAsRoot(e.target.checked)} /> as root
-                </label>
+                <div className="flex items-center gap-1.5">
+                  <Checkbox id="as-root" aria-label="as root" checked={asRoot} onCheckedChange={(v) => setAsRoot(v === true)} />
+                  <Label htmlFor="as-root" className="text-xs font-normal text-muted-foreground">
+                    as root
+                  </Label>
+                </div>
               )}
-              <button className="btn primary" onClick={open}>
+              <Button size="sm" onClick={open}>
                 Mở terminal
-              </button>
+              </Button>
             </>
           )}
         </div>
-      </div>
-      {note && <p className="muted">{note}</p>}
-      <div ref={box} style={{ background: "#000", borderRadius: 8, padding: state === "idle" && !note ? 0 : 8 }} />
-    </section>
+      </CardHeader>
+      <CardContent className="grid gap-2">
+        {note && <p className="text-sm text-muted-foreground">{note}</p>}
+        <div
+          ref={box}
+          className="overflow-hidden rounded-lg bg-black"
+          style={{ padding: state === "idle" && !note ? 0 : 8, minHeight: state === "idle" && !note ? 0 : 160 }}
+        />
+      </CardContent>
+    </Card>
   );
 }
