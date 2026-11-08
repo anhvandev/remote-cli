@@ -3,6 +3,7 @@ import { ApiError } from "@/lib/api";
 import { Refresh } from "../../../refresh";
 import { Status } from "../../../status";
 import { ControlProvider } from "./control";
+import { ControlReminder } from "./control-reminder";
 import { getDevice, getLock, getMe } from "./device-data";
 import { PowerButtons } from "./power";
 import { Tabs } from "./tabs";
@@ -49,7 +50,10 @@ export default async function DeviceLayout({
                 </h2>
                 <p className="mt-1 truncate text-sm text-muted-foreground">{meta.join(" · ")}</p>
               </div>
-              <PowerButtons device={d.id} name={d.name} status={d.status} me={me.name} admin={me.role === "admin"} />
+              <div className="flex flex-col items-end gap-2">
+                <PowerButtons device={d.id} name={d.name} status={d.status} me={me.name} admin={me.role === "admin"} />
+                <ControlReminder />
+              </div>
             </div>
             <Tabs device={d.id} />
             <div className="mt-5">{children}</div>
