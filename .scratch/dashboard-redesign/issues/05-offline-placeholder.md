@@ -4,9 +4,13 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Offline Device: Màn hình and Terminal show the Offline message and a Wake button, no Live View or terminal
 - [ ] Waking Device: both show "Đang chờ Device Online…"
 - [ ] When the Device comes Online the normal content appears (on the next refresh, as the rest of the page does)
 - [ ] Playwright: an Offline Device's Màn hình and Terminal show the message; Wake moves the Device to Waking
+
+## Comments
+
+- 2026-11-09: Resolved on integration branch `feat/dashboard-redesign` (tip after review fixes: 45fa22e). Code review findings fixed on branch `review-fixes`. Playwright suite: 32 passed.

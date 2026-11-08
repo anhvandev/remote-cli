@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Shared Device layout fetches the Device, its Control Lock and the current User once and renders header + tab bar on every tab
 - [ ] Tabs are links with their visible names; the active one has `aria-current="page"`
@@ -14,3 +14,7 @@
 - [ ] An unknown Device still shows the not-found page
 - [ ] Existing specs for live view, direct control, terminal, history and power/wake updated to open the right tab, and passing
 - [ ] Playwright: clicking a Device lands on Tổng quan; each tab opens its own URL and is marked active
+
+## Comments
+
+- 2026-11-09: Resolved on integration branch `feat/dashboard-redesign` (tip after review fixes: 45fa22e). Code review findings fixed on branch `review-fixes`. Playwright suite: 32 passed.

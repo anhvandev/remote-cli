@@ -6,7 +6,7 @@ Assumes the shadcn restyle in progress on `feat/remote-cli` has been committed.
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] One shared layout renders the sidebar for all signed-in pages; no page renders the sidebar itself
 - [ ] The sign-in page has no sidebar
@@ -14,3 +14,7 @@ Assumes the shadcn restyle in progress on `feat/remote-cli` has been committed.
 - [ ] Name, role and sign-out stay in the sidebar
 - [ ] On narrow screens the sidebar still collapses to a top bar
 - [ ] The whole existing Playwright suite passes unchanged (or with locator-only updates)
+
+## Comments
+
+- 2026-11-09: Resolved on integration branch `feat/dashboard-redesign` (tip after review fixes: 45fa22e). Code review findings fixed on branch `review-fixes`. Playwright suite: 32 passed.

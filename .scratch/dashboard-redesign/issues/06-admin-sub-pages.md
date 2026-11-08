@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Four sub-pages under Quản trị, each with the same sections (region labels unchanged) and behaviour as today
 - [ ] Unlock password section lives on the Device sub-page
@@ -13,3 +13,7 @@
 - [ ] Quản trị root links to the four sub-pages
 - [ ] Admin spec updated to reach each section through its sub-page, and passing
 - [ ] Playwright: an Operator opening each sub-page URL sees only the Admin-only message
+
+## Comments
+
+- 2026-11-09: Resolved on integration branch `feat/dashboard-redesign` (tip after review fixes: 45fa22e). Code review findings fixed on branch `review-fixes`. Playwright suite: 32 passed.

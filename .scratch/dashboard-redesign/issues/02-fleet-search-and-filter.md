@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Search box filters Devices by name (case-insensitive, substring)
 - [ ] Status filter offers All, Online, Offline, Waking
@@ -14,3 +14,7 @@
 - [ ] When nothing matches, a message says no Device matches (distinct from "Chưa có Device nào.")
 - [ ] Clicking a row still opens the Device
 - [ ] Playwright: search narrows the list; status filter narrows the list; filtered URL survives Back; no-match message
+
+## Comments
+
+- 2026-11-09: Resolved on integration branch `feat/dashboard-redesign` (tip after review fixes: 45fa22e). Code review findings fixed on branch `review-fixes`. Playwright suite: 32 passed.

@@ -4,9 +4,13 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Reminder appears in the header only while the current User holds the Control Lock
 - [ ] Reminder stays visible after switching to any other tab
 - [ ] "Nhả" in the reminder releases the lock; the reminder disappears and Màn hình shows the lock as free
 - [ ] Playwright: take the lock on Màn hình, switch to Tổng quan, see the reminder and the lock still held; release from the reminder frees it
+
+## Comments
+
+- 2026-11-09: Resolved on integration branch `feat/dashboard-redesign` (tip after review fixes: 45fa22e). Code review findings fixed on branch `review-fixes`. Playwright suite: 32 passed.
