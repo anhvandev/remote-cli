@@ -3,6 +3,7 @@ import { Server } from "lucide-react";
 import { api, type User } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { signOut } from "./actions";
+import { NavLinks } from "./nav-links";
 
 export async function Nav() {
   const me = await api<User>("/api/v1/me");
@@ -14,22 +15,7 @@ export async function Nav() {
         </span>
         Remote CLI
       </Link>
-      <div className="flex flex-1 gap-1 md:flex-col">
-        <Link
-          href="/"
-          className="rounded-md px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          Danh sách Device
-        </Link>
-        {me.role === "admin" && (
-          <Link
-            href="/admin"
-            className="rounded-md px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            Quản trị
-          </Link>
-        )}
-      </div>
+      <NavLinks admin={me.role === "admin"} />
       <div className="mt-4 flex items-center justify-between gap-2 border-t border-border pt-4 md:flex-col md:items-stretch">
         <div className="min-w-0 truncate px-2 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">{me.name}</span> · {me.role}

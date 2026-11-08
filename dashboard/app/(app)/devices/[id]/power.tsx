@@ -3,7 +3,7 @@
 // rules; the buttons only mirror them (Restart/Shut down/Sleep need the Control Lock free, held by me, or admin).
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { power, wake, type Sent } from "../../actions";
+import { power, wake, type Sent } from "../../../actions";
 import type { DeviceStatus } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { useLock } from "./control";

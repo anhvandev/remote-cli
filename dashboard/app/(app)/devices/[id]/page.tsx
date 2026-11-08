@@ -1,9 +1,8 @@
 import { notFound } from "next/navigation";
 import { api, ApiError, type ControlLock, type DeviceDetails, type Resources, type User } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Nav } from "../../nav";
-import { Refresh } from "../../refresh";
-import { Status } from "../../status";
+import { Refresh } from "../../../refresh";
+import { Status } from "../../../status";
 import { History } from "./history";
 import { ControlProvider, LockCard } from "./control";
 import { LiveView } from "./live-view";
@@ -74,7 +73,6 @@ export default async function DevicePage({
 
   return (
     <>
-      <Nav />
       <Refresh />
       <main className="min-w-0 flex-1 px-5 py-6 md:px-8">
         <div className="mx-auto max-w-6xl">
