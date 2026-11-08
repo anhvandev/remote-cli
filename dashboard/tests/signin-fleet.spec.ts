@@ -23,6 +23,9 @@ test("sign in with password + TOTP and open a Device", async ({ page }) => {
   await expect(resources).toContainText("Màn khoá · an");
   await expect(resources).toContainText("CPU13%"); // FakePlatform reports 12.5 %
   await expect(resources).toContainText("4.0 GB / 16.0 GB");
+
+  // The Control Lock card lives on Màn hình.
+  await page.getByRole("link", { name: "Màn hình" }).click();
   const lock = page.getByRole("region", { name: "Control Lock" });
   await expect(lock).toContainText("Không ai giữ");
 

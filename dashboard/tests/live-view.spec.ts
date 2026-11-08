@@ -6,6 +6,7 @@ import { newUser, signIn } from "./devstack";
 test("watch a Device live over WebRTC", async ({ page }) => {
   await signIn(page, await newUser());
   await page.getByRole("link", { name: "alpha" }).click();
+  await page.getByRole("link", { name: "Màn hình" }).click();
 
   const live = page.getByRole("region", { name: "Live view" });
   await live.getByRole("button", { name: "Xem trực tiếp" }).click();
