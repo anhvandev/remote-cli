@@ -2,8 +2,9 @@ import { defineConfig } from "@playwright/test";
 
 // Runs against the in-process system (crates/testkit/src/bin/rcli-devstack.rs): real Server on Postgres in a
 // test container + FakePlatform Agents, with a manual clock. Needs Docker (export DOCKER_HOST for Colima).
-const API_PORT = 18080;
-const WEB_PORT = 3100;
+// Overridable so several worktrees can run the suite at once.
+const API_PORT = Number(process.env.RCLI_TEST_API_PORT ?? 18080);
+const WEB_PORT = Number(process.env.RCLI_TEST_WEB_PORT ?? 3100);
 
 export default defineConfig({
   testDir: "tests",
