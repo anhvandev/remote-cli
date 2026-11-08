@@ -39,7 +39,7 @@ services:
     environment:
       RCLI_API_URL: http://server:8080
     ports:
-      - "3000:3000" # Dashboard (put TLS in front of it outside localhost)
+      - "3080:3000" # Dashboard (put TLS in front of it outside localhost)
 
   coturn:
     image: coturn/coturn:4.6
