@@ -8,15 +8,30 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-const Ctx = createContext<{ device: string; holding: boolean; lock: ControlLock; set: (l: ControlLock) => void }>(null!);
+/** POSTs to the lock API; returns an error message, or undefined on success. */
+type Post = (path: string) => Promise<string | undefined>;
+
+const Ctx = createContext<{ device: string; holding: boolean; lock: ControlLock; post: Post }>(null!);
 
 /** True while the signed-in person holds the Device's Control Lock (direct input is allowed). */
 export const useHolding = () => useContext(Ctx).holding;
 /** The Device's Control Lock as the watch last reported it. */
 export const useLock = () => useContext(Ctx).lock;
+/** Releases the Control Lock the signed-in person holds. */
+export const useRelease = () => {
+  const { post } = useContext(Ctx);
+  return () => post("/release");
+};
 
 export function ControlProvider(props: { device: string; me: string; initial: ControlLock; children: ReactNode }) {
   const [lock, set] = useState(props.initial);
+  const post: Post = async (path) => {
+    const res = await fetch(`/api/devices/${encodeURIComponent(props.device)}/lock${path}`, { method: "POST" });
+    const body = await res.json().catch(() => null);
+    if (res.ok) set(body);
+    else if (body?.error?.code === "control_lock_held") set({ holder: body.error.holder, expires_at: body.error.expires_at });
+    else return body?.error?.message ?? res.statusText;
+  };
   useEffect(() => {
     const abort = new AbortController();
     (async () => {
@@ -35,28 +50,24 @@ export function ControlProvider(props: { device: string; me: string; initial: Co
     return () => abort.abort();
   }, [props.device]);
   return (
-    <Ctx.Provider value={{ device: props.device, holding: lock.holder === props.me, lock, set }}>{props.children}</Ctx.Provider>
+    <Ctx.Provider value={{ device: props.device, holding: lock.holder === props.me, lock, post }}>{props.children}</Ctx.Provider>
   );
 }
 
 export function LockCard() {
-  const { device, holding, lock, set } = useContext(Ctx);
+  const { holding, lock, post } = useContext(Ctx);
   const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState<string>();
-  const base = `/api/devices/${encodeURIComponent(device)}/lock`;
 
-  async function post(path: string) {
-    const res = await fetch(base + path, { method: "POST" });
-    const body = await res.json().catch(() => null);
-    if (res.ok) set(body);
-    else if (body?.error?.code === "control_lock_held") set({ holder: body.error.holder, expires_at: body.error.expires_at });
-    else setError(body?.error?.message ?? res.statusText);
-    return res.ok;
+  async function send(path: string) {
+    const err = await post(path);
+    if (err) setError(err);
+    return !err;
   }
 
   // Waiting: try to acquire each time the watch reports the lock free.
   useEffect(() => {
-    if (waiting && !lock.holder) post("").then((ok) => ok && setWaiting(false));
+    if (waiting && !lock.holder) send("").then((ok) => ok && setWaiting(false));
   }, [waiting, lock.holder]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const time = (t: string) => new Date(t).toLocaleTimeString("vi-VN");
@@ -85,7 +96,7 @@ export function LockCard() {
         {error && <p className="text-sm text-muted-foreground">Lỗi: {error}</p>}
         <div className="flex flex-wrap items-center gap-2">
           {holding ? (
-            <Button size="sm" variant="secondary" onClick={() => post("/release")}>
+            <Button size="sm" variant="secondary" onClick={() => send("/release")}>
               Trả Control Lock
             </Button>
           ) : waiting ? (
@@ -100,7 +111,7 @@ export function LockCard() {
               Chờ Control Lock
             </Button>
           ) : (
-            <Button size="sm" onClick={() => (setError(undefined), post(""))}>
+            <Button size="sm" onClick={() => (setError(undefined), send(""))}>
               Lấy Control Lock
             </Button>
           )}
