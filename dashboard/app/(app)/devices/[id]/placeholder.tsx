@@ -23,7 +23,7 @@ export function Placeholder({ device, status }: { device: string; status: "Offli
   }
 
   return (
-    <Card aria-label="Device Status" role="region" className="gap-3">
+    <Card aria-label="Không xem được" role="region" className="gap-3">
       <CardContent className="grid place-items-center gap-3 py-16 text-center text-sm text-muted-foreground">
         {status === "Waking" ? (
           <p>Đang chờ Device Online…</p>

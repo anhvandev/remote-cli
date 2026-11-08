@@ -10,5 +10,12 @@ export default async function AdminLayout({ children }: { children: React.ReactN
       </main>
     );
   }
-  return children;
+  return (
+    <main className="min-w-0 flex-1 px-5 py-6 md:px-8">
+      <div className="mx-auto max-w-6xl">
+        <h2 className="mb-5 text-xl font-semibold tracking-tight">Quản trị</h2>
+        {children}
+      </div>
+    </main>
+  );
 }

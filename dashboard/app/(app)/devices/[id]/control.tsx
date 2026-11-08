@@ -8,10 +8,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-/** POSTs to the lock API; returns an error message, or undefined on success. */
-type Post = (path: string) => Promise<string | undefined>;
+/** POSTs to the lock API; `ok` is false when the Server refused, with `error` unless the lock is merely held elsewhere. */
+type Post = (path: string) => Promise<{ ok: boolean; error?: string }>;
 
-const Ctx = createContext<{ device: string; holding: boolean; lock: ControlLock; post: Post }>(null!);
+const Ctx = createContext<{ holding: boolean; lock: ControlLock; post: Post }>(null!);
 
 /** True while the signed-in person holds the Device's Control Lock (direct input is allowed). */
 export const useHolding = () => useContext(Ctx).holding;
@@ -28,9 +28,15 @@ export function ControlProvider(props: { device: string; me: string; initial: Co
   const post: Post = async (path) => {
     const res = await fetch(`/api/devices/${encodeURIComponent(props.device)}/lock${path}`, { method: "POST" });
     const body = await res.json().catch(() => null);
-    if (res.ok) set(body);
-    else if (body?.error?.code === "control_lock_held") set({ holder: body.error.holder, expires_at: body.error.expires_at });
-    else return body?.error?.message ?? res.statusText;
+    if (res.ok) {
+      set(body);
+      return { ok: true };
+    }
+    if (body?.error?.code === "control_lock_held") {
+      set({ holder: body.error.holder, expires_at: body.error.expires_at });
+      return { ok: false };
+    }
+    return { ok: false, error: body?.error?.message ?? res.statusText };
   };
   useEffect(() => {
     const abort = new AbortController();
@@ -50,7 +56,7 @@ export function ControlProvider(props: { device: string; me: string; initial: Co
     return () => abort.abort();
   }, [props.device]);
   return (
-    <Ctx.Provider value={{ device: props.device, holding: lock.holder === props.me, lock, post }}>{props.children}</Ctx.Provider>
+    <Ctx.Provider value={{ holding: lock.holder === props.me, lock, post }}>{props.children}</Ctx.Provider>
   );
 }
 
@@ -60,9 +66,9 @@ export function LockCard() {
   const [error, setError] = useState<string>();
 
   async function send(path: string) {
-    const err = await post(path);
+    const { ok, error: err } = await post(path);
     if (err) setError(err);
-    return !err;
+    return ok;
   }
 
   // Waiting: try to acquire each time the watch reports the lock free.
