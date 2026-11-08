@@ -5,6 +5,7 @@ import { newUser, signIn } from "./devstack";
 test("open a web terminal and run a command", async ({ page }) => {
   await signIn(page, await newUser());
   await page.getByRole("link", { name: "alpha" }).click();
+  await page.getByRole("link", { name: "Terminal" }).click();
 
   const term = page.getByRole("region", { name: "Terminal" });
   await expect(term.getByLabel("as root")).toHaveCount(0); // operators can't run as root
@@ -26,6 +27,7 @@ test("open a web terminal and run a command", async ({ page }) => {
 test("admins can open the terminal as root", async ({ page }) => {
   await signIn(page, await newUser("admin"));
   await page.getByRole("link", { name: "alpha" }).click();
+  await page.getByRole("link", { name: "Terminal" }).click();
 
   const term = page.getByRole("region", { name: "Terminal" });
   await term.getByLabel("as root").check();

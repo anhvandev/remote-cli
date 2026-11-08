@@ -10,6 +10,7 @@ test("wait for the Control Lock, take it, then drive the Device with mouse and k
   try {
     await signIn(page, user);
     await page.getByRole("link", { name: "charlie" }).click();
+    await page.getByRole("link", { name: "Màn hình" }).click();
 
     const lock = page.getByRole("region", { name: "Control Lock" });
     await expect(lock).toContainText("🔒 admin");
