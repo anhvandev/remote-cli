@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Refresh } from "../refresh";
 import { Status } from "../status";
+import { FleetFilter } from "./fleet-filter";
 
 /** "2 phút trước" — easier to scan than an absolute clock. */
 function ago(t: string | null) {
@@ -16,8 +17,13 @@ function ago(t: string | null) {
   return `${Math.floor(s / 86400)} ngày trước`;
 }
 
-export default async function FleetPage() {
+export default async function FleetPage({ searchParams }: { searchParams: Promise<{ q?: string; status?: string }> }) {
   const devices = await api<Device[]>("/api/v1/devices");
+  const { q, status } = await searchParams;
+  const name = q?.toLowerCase() ?? "";
+  const shown = devices.filter(
+    (d) => d.name.toLowerCase().includes(name) && (!status || status === "All" || d.status === status),
+  );
   const count = (s: string) => devices.filter((d) => d.status === s).length;
   return (
     <>
@@ -30,6 +36,7 @@ export default async function FleetPage() {
               · {count("Online")} Online · {count("Offline")} Offline · {count("Waking")} Waking
             </span>
           </h2>
+          <FleetFilter />
           <div className="overflow-hidden rounded-xl border border-border bg-card">
             <Table>
               <TableHeader>
@@ -41,7 +48,7 @@ export default async function FleetPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {devices.map((d) => (
+                {shown.map((d) => (
                   <TableRow key={d.id} className="relative cursor-pointer">
                     <TableCell>
                       <Link href={`/devices/${d.id}`} className="font-medium after:absolute after:inset-0 after:content-['']">
@@ -70,10 +77,10 @@ export default async function FleetPage() {
                 ))}
               </TableBody>
             </Table>
-            {devices.length === 0 && (
+            {(devices.length === 0 || shown.length === 0) && (
               <div className="flex flex-col items-center gap-2 px-6 py-14 text-center text-sm text-muted-foreground">
                 <MonitorSmartphone className="size-6 opacity-60" />
-                Chưa có Device nào.
+                {devices.length === 0 ? "Chưa có Device nào." : "Không có Device nào khớp."}
               </div>
             )}
           </div>
