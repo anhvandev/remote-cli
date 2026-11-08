@@ -38,7 +38,7 @@ test("power buttons follow the Control Lock and are audited like the CLI's", asy
   }
 });
 
-test("Wake shows why it can't, the last failure, and the Waking state", async ({ page }) => {
+test("Wake shows why it can't", async ({ page }) => {
   await signIn(page, await newUser());
 
   // bravo never reported a network interface: no Wake Relay can be chosen.
@@ -47,14 +47,33 @@ test("Wake shows why it can't, the last failure, and the Waking state", async ({
   await expect(power.getByRole("button", { name: "Restart" })).toHaveCount(0);
   await power.getByRole("button", { name: "Wake" }).click();
   await expect(power).toContainText("has not reported a network interface with a MAC and an IP address");
+});
+
+// Wakes hotel: the frozen devstack clock keeps it Waking for the rest of the run, so this stays the last test.
+test("an Offline Device shows Wake instead of Live view and Terminal; Waking waits for Online", async ({ page }) => {
+  await signIn(page, await newUser());
 
   // hotel's earlier Wake timed out; alpha is in its LAN and relays the packet.
-  await page.goto("/");
+  await expect(page.getByRole("link", { name: "hotel" })).toBeVisible(); // signed in
   await expect(page.getByRole("row").filter({ hasText: "hotel" })).toContainText("Offline (Wake failed)");
   await page.getByRole("link", { name: "hotel" }).click();
   await expect(page.getByRole("heading", { name: /hotel/ })).toContainText("Offline (Wake failed)");
-  await power.getByRole("button", { name: "Wake" }).click();
-  await expect(power).toContainText("Đã gửi Wake qua alpha (02:00:00:00:00:05)");
+
+  const placeholder = page.getByRole("region", { name: "Device Status" });
+  await page.getByRole("link", { name: "Màn hình" }).click();
+  await expect(placeholder).toContainText("Device đang Offline");
+  await expect(page.getByRole("region", { name: "Live view" })).toHaveCount(0);
+  await page.getByRole("link", { name: "Terminal" }).click();
+  await expect(placeholder).toContainText("Device đang Offline");
+  await expect(page.getByRole("region", { name: "Terminal" })).toHaveCount(0);
+
+  // Waking: both tabs wait for the Device to come Online, and the header follows.
+  await page.getByRole("link", { name: "Màn hình" }).click();
+  await placeholder.getByRole("button", { name: "Wake" }).click();
   await expect(page.getByRole("heading", { name: /hotel/ })).toContainText("Waking");
   await expect(page.getByRole("heading", { name: /hotel/ })).not.toContainText("Wake failed");
+  await expect(placeholder).toContainText("Đang chờ Device Online…");
+  await page.getByRole("link", { name: "Terminal" }).click();
+  await expect(placeholder).toContainText("Đang chờ Device Online…");
+  await expect(page.getByRole("region", { name: "Terminal" })).toHaveCount(0);
 });
