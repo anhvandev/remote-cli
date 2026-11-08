@@ -4,6 +4,7 @@ import { newUser, signIn } from "./devstack";
 test("Device detail charts resource history; long ranges read 1-minute rollups", async ({ page }) => {
   await signIn(page, await newUser());
   await page.getByRole("link", { name: "alpha" }).click();
+  await page.getByRole("link", { name: "Lịch sử" }).click();
 
   const history = page.getByRole("region", { name: "Biểu đồ" });
   // Default range: the last hour from raw 5 s samples.
@@ -17,7 +18,7 @@ test("Device detail charts resource history; long ranges read 1-minute rollups",
 
   // 24h switches to the per-minute rollups (devstack has a completed minute of samples).
   await history.getByRole("link", { name: "24h" }).click();
-  await expect(page).toHaveURL(/range=24h/);
+  await expect(page).toHaveURL(/\/devices\/[0-9a-f-]{36}\/history\?range=24h$/); // the range links stay on this tab
   await expect(history.getByRole("link", { name: "24h" })).toHaveAttribute("aria-current", "page");
   await expect(history).toContainText("trung bình mỗi phút");
   await expect(history.getByRole("figure", { name: "CPU" })).toContainText("13%");
