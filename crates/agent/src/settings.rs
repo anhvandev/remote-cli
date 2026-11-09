@@ -26,17 +26,40 @@ impl RootAccess {
     }
 }
 
+/// `sudo rcli agent accept password|password+accept`: whether a person at the Device must accept each new connection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AcceptMode {
+    /// A Controller with the Device Password connects at once.
+    #[default]
+    #[serde(rename = "password")]
+    Password,
+    /// Each new connection is accepted at the Device; rejected on timeout or when no session can show the prompt.
+    #[serde(rename = "password+accept")]
+    PasswordAccept,
+}
+
+impl AcceptMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            AcceptMode::Password => "password",
+            AcceptMode::PasswordAccept => "password+accept",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeviceSettings {
     /// The account terminal commands and shells run as.
     pub terminal_user: String,
     #[serde(default)]
     pub root: RootAccess,
+    #[serde(default)]
+    pub accept: AcceptMode,
 }
 
 impl Default for DeviceSettings {
     fn default() -> Self {
-        Self { terminal_user: default_terminal_user(), root: RootAccess::default() }
+        Self { terminal_user: default_terminal_user(), root: RootAccess::default(), accept: AcceptMode::default() }
     }
 }
 

@@ -295,6 +295,17 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
                 Err(e) => json!({ "error": format!("cannot save the Device Settings: {e:#}") }),
             }
         }
+        Some("accept.set") => {
+            let accept = match request["accept"].as_str() {
+                Some("password") => settings::AcceptMode::Password,
+                Some("password+accept") => settings::AcceptMode::PasswordAccept,
+                _ => return json!({ "error": "accept must be one of password, password+accept" }),
+            };
+            match status.settings().update(|s| s.accept = accept) {
+                Ok(s) => json!({ "accept": s.accept.name(), "message": format!("new connections now ask for {}", s.accept.name()) }),
+                Err(e) => json!({ "error": format!("cannot save the Device Settings: {e:#}") }),
+            }
+        }
         Some("root.grant") => {
             // The person at the Device: allow root for the Controller named here, for this session only.
             let who = request["who"].as_str().unwrap_or_default().trim();

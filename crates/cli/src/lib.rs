@@ -277,6 +277,8 @@ enum AgentCommand {
     },
     /// Whether `--as root` is never allowed, asked at the Device, or always allowed (root only).
     Root(agent::Root),
+    /// Whether a person at the Device must accept each new connection (root only).
+    Accept(agent::Accept),
 }
 
 #[derive(Subcommand)]
@@ -584,6 +586,7 @@ where
             AgentCommand::Server { command, socket } => agent::run_server(command, socket, out).await,
             AgentCommand::TerminalUser { command, socket } => agent::run_terminal_user(command, socket, out).await,
             AgentCommand::Root(root) => root.run(out).await,
+            AgentCommand::Accept(accept) => accept.run(out).await,
         };
     }
     let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);

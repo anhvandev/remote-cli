@@ -286,6 +286,38 @@ impl Root {
     }
 }
 
+/// `rcli agent accept ...`: whether a person at the Device must accept each new connection (root only).
+#[derive(Args)]
+pub struct Accept {
+    #[command(subcommand)]
+    command: AcceptCommand,
+    /// Local IPC socket of the running Agent.
+    #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+    socket: Option<PathBuf>,
+}
+
+#[derive(clap::Subcommand)]
+pub enum AcceptCommand {
+    /// A Controller with the Device Password connects at once.
+    Password,
+    /// A person at the Device accepts each new connection (rejected after 30 s).
+    #[command(name = "password+accept")]
+    PasswordAccept,
+}
+
+impl Accept {
+    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        let socket = self.socket.unwrap_or_else(ipc::default_socket);
+        let accept = match self.command {
+            AcceptCommand::Password => "password",
+            AcceptCommand::PasswordAccept => "password+accept",
+        };
+        let reply = ipc::send(&socket, serde_json::json!({ "command": "accept.set", "accept": accept })).await?;
+        writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
+        Ok(())
+    }
+}
+
 /// `rcli agent server ...`: which Server the Agent connects to (root only).
 #[derive(Args)]
 pub struct Server {
