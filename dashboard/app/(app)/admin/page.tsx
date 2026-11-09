@@ -1,13 +1,14 @@
 import Link from "next/link";
-import { api, type ApiToken, type Device, type DeviceStatus, type User } from "@/lib/api";
+import { api, type ApiToken, type Device, type DeviceStatus, type ServerSettings, type User } from "@/lib/api";
 import { card, cardHead, title } from "../styles";
 import { groupRollouts, unlockPasswords } from "./data";
 
 export default async function AdminPage() {
-  const [users, tokens, devices] = await Promise.all([
+  const [users, tokens, devices, settings] = await Promise.all([
     api<User[]>("/api/v1/users"),
     api<ApiToken[]>("/api/v1/tokens"),
     api<Device[]>("/api/v1/devices"),
+    api<ServerSettings>("/api/v1/server-settings"),
   ]);
   const unlock = await unlockPasswords(devices);
   const rollouts = groupRollouts(devices);
@@ -82,6 +83,20 @@ export default async function AdminPage() {
               ))}
             </ul>
           )}
+        </div>
+      </section>
+
+      <section className={card} aria-label="Server Settings">
+        <div className={cardHead}>
+          <h3 className={title}>
+            <Link href="/admin/settings" className="hover:text-foreground">
+              Server Settings
+            </Link>
+          </h3>
+        </div>
+        <div className="grid gap-1.5 px-5 text-sm">
+          <p>Server Address: {settings.server_address}</p>
+          <p className="text-muted-foreground">Server Key và Server Address dùng cho bản cài mới.</p>
         </div>
       </section>
     </div>

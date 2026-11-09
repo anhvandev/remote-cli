@@ -136,6 +136,9 @@ rcli token create an                          # token chỉ hiện một lần
 rcli token revoke <token-id>
 rcli user disable an
 rcli server-key show                          # Server Key (rk_<CA fingerprint>_<secret>) để cài Agent
+rcli server-key rotate                        # đổi secret: Device đã đăng ký vẫn Online, bản cài mới cần key mới
+rcli server-address show                      # Server Address Agent dùng
+rcli server-address set vps.example.com       # cấp lại chứng chỉ TLS cho tên mới
 rcli device rename demo-pc may-ke-toan
 rcli device revoke <id>                       # Agent bị cắt và không kết nối lại được
 rcli device merge <id-cũ> --into <id-mới>     # gộp lịch sử sau khi cài lại máy

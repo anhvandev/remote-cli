@@ -41,7 +41,8 @@ pub async fn authenticate_controller(
     controller: &str,
     ip: &str,
 ) -> anyhow::Result<Option<User>> {
-    let expected = crate::server_key::split(&state.server_key).map(|(_, secret)| secret).unwrap_or_default();
+    let key = state.settings.key().await;
+    let expected = crate::server_key::split(&key).map(|(_, secret)| secret).unwrap_or_default();
     let presented = crate::server_key::split(server_key).map(|(_, secret)| secret).unwrap_or("");
     if !crate::server_key::secret_matches(expected, presented) {
         return Ok(None);

@@ -9,6 +9,7 @@ mod history;
 mod power;
 mod live;
 mod sessions;
+mod settings;
 mod shell;
 mod updates;
 mod users;
@@ -36,6 +37,7 @@ pub fn router(state: State) -> Router {
         .route("/api/v1/server-key", get(server_key))
         // Public: `rcli setup` pins it over the channel the Server Key's fingerprint verifies.
         .route("/api/v1/update-key", get(update_key))
+        .merge(settings::routes())
         .merge(devices::routes())
         .merge(history::routes())
         .merge(updates::routes())
@@ -58,7 +60,7 @@ async fn server_key(
     _: Admin,
     axum::extract::State(state): axum::extract::State<State>,
 ) -> Json<serde_json::Value> {
-    Json(json!({ "server_key": state.server_key, "ca_fingerprint": state.ca.fingerprint }))
+    Json(json!({ "server_key": state.settings.key().await, "ca_fingerprint": state.ca.fingerprint }))
 }
 
 /// The update-signing public key (hex), which a Controller pins at `rcli setup`; empty = no updates.

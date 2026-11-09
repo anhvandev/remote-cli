@@ -65,9 +65,12 @@ enum Command {
     /// Resource history of Devices.
     #[command(subcommand)]
     Metrics(MetricsCommand),
-    /// Read the Server Key Agents and Controllers need to connect (admin).
+    /// Read or replace the Server Key Agents and Controllers need to connect (admin).
     #[command(subcommand)]
     ServerKey(ServerKeyCommand),
+    /// Read or set the Server Address Agents use (admin).
+    #[command(subcommand)]
+    ServerAddress(ServerAddressCommand),
     /// Manage users (admin).
     #[command(subcommand)]
     User(UserCommand),
@@ -463,6 +466,16 @@ enum MetricsCommand {
 enum ServerKeyCommand {
     /// Print the Server Key (rk_<CA fingerprint>_<secret>).
     Show,
+    /// Replace the secret. Registered Devices stay Online; new installs and Controllers need the new key.
+    Rotate,
+}
+
+#[derive(Subcommand)]
+enum ServerAddressCommand {
+    /// Print the Server Address.
+    Show,
+    /// Set the Server Address (host or host:port, comma-separated). Reissues the TLS certificate.
+    Set { address: String },
 }
 
 pub async fn run<I, T>(args: I, out: &mut dyn Write) -> anyhow::Result<()>
@@ -642,6 +655,23 @@ where
             let key = api.call(reqwest::Method::GET, "/api/v1/server-key", None).await?;
             let text = format!("{}\n", str_of(&key["server_key"]));
             (key, text)
+        }
+        Command::ServerKey(ServerKeyCommand::Rotate) => {
+            let key = api.call(reqwest::Method::POST, "/api/v1/server-settings/server-key/rotate", None).await?;
+            let text = format!("{}\n", str_of(&key["server_key"]));
+            (key, text)
+        }
+        Command::ServerAddress(ServerAddressCommand::Show) => {
+            let s = api.call(reqwest::Method::GET, "/api/v1/server-settings", None).await?;
+            let address = s["server_address"].clone();
+            let text = format!("{}\n", str_of(&address));
+            (serde_json::json!({ "server_address": address }), text)
+        }
+        Command::ServerAddress(ServerAddressCommand::Set { address }) => {
+            let body = serde_json::json!({ "address": address });
+            let s = api.call(reqwest::Method::PUT, "/api/v1/server-settings/server-address", Some(&body)).await?;
+            let text = format!("server address {}\n", str_of(&s["server_address"]));
+            (s, text)
         }
         Command::User(UserCommand::Create { name, role }) => {
             let body = serde_json::json!({ "name": name, "role": role });

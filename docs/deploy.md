@@ -39,7 +39,7 @@ EOF
 | `RCLI_BOOTSTRAP_ADMIN_TOKEN` | có | Token admin tạm để tạo admin đầu tiên. Chỉ có hiệu lực khi chưa có admin nào còn token hợp lệ. |
 | `RCLI_TURN_SECRET` | có | Secret chung giữa Server và coturn để cấp credential TURN. |
 | `RCLI_TURN_HOST` | nên đặt | Tên/IP public của VPS mà trình duyệt và Agent dùng để tới coturn. Mặc định `localhost`. |
-| `RCLI_AGENT_HOSTNAMES` | nên đặt | Tên mà Agent dùng ở `--server` (đưa vào chứng chỉ TLS cổng 8443). Nhiều tên thì cách nhau bằng dấu phẩy. Mặc định `localhost`. |
+| `RCLI_AGENT_HOSTNAMES` | chỉ lần đầu | Server Address ban đầu (đưa vào chứng chỉ TLS cổng 8443). Sau lần khởi động đầu, đổi bằng `rcli server-address set` hoặc trang Server Settings. Mặc định `localhost`. |
 | `RCLI_MASTER_KEY` | nên đặt | 64 ký tự hex. Mã hoá mật khẩu unlock, CA private key và TOTP secret. |
 | `POSTGRES_PASSWORD` | nên đặt | Mặc định `rcli`. |
 
