@@ -233,19 +233,37 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
     let media = Arc::new(media::Media::default());
     let mut backoff = Duration::from_secs(1);
     loop {
+        // Another Server Address is one switch away; pick up whichever is current.
+        if let Some(rx) = &mut endpoints {
+            endpoint = rx.borrow_and_update().clone();
+        }
+        let mut reconnect = false;
         match connect(&endpoint, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
                 if let Some(s) = &status {
                     s.set_connected(true);
                 }
-                let result =
-                    session(conn, &mut creds, &platform, &executor, &live, &media, &backlog, status.as_deref(), &mut endpoints, &mut changes).await;
+                match session(
+                    conn,
+                    &mut creds,
+                    &platform,
+                    &executor,
+                    &live,
+                    &media,
+                    &backlog,
+                    status.as_deref(),
+                    &endpoint,
+                    &mut endpoints,
+                    &mut changes,
+                )
+                .await
+                {
+                    Ok(now) => reconnect = now,
+                    Err(e) => tracing::warn!("connection to server lost: {e}"),
+                }
                 if let Some(s) = &status {
                     s.set_connected(false);
-                }
-                if let Err(e) = result {
-                    tracing::warn!("connection to server lost: {e}");
                 }
             }
             Err(e) => {
@@ -256,30 +274,24 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
             }
         }
         // A new Server Address reconnects at once; otherwise wait out the backoff.
-        if let Some(rx) = &mut endpoints {
-            tokio::select! {
+        if reconnect {
+            continue;
+        }
+        match &mut endpoints {
+            Some(rx) => tokio::select! {
                 _ = tokio::time::sleep(backoff) => {}
-                changed = rx.changed() => {
-                    if changed.is_ok() {
-                        endpoint = rx.borrow_and_update().clone();
-                        backoff = Duration::from_secs(1);
-                        continue;
-                    }
-                }
-            }
-        } else {
-            tokio::time::sleep(backoff).await;
+                changed = rx.changed() => if changed.is_ok() { continue },
+            },
+            None => tokio::time::sleep(backoff).await,
         }
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
 }
 
-/// Waits for the Server Address to change; never, without a Status.
-async fn endpoints_changed(rx: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>) {
+/// Waits until the Server Address changes; never, without a Status.
+async fn endpoints_changed(rx: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>) -> bool {
     match rx {
-        Some(rx) => {
-            let _ = rx.changed().await;
-        }
+        Some(rx) => rx.changed().await.is_ok(),
         None => std::future::pending().await,
     }
 }
@@ -313,9 +325,10 @@ async fn session(
     media: &Arc<media::Media>,
     backlog: &Backlog,
     status: Option<&ipc::Status>,
+    endpoint: &ServerEndpoint,
     endpoints: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>,
     changes: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let platform = platform_arc.as_ref();
     let hello = AgentHello { version: platform.agent_version(), target: target() };
     let send = |msg| AgentMessage { msg: Some(msg) };
@@ -365,7 +378,11 @@ async fn session(
                 pending.insert(change.update.request_id, change.reply);
                 conn.send(&send(agent_message::Msg::IdentityUpdate(change.update))).await?;
             }
-            _ = endpoints_changed(endpoints) => return Ok(()),
+            // A new Server Address: drop this connection so `run` connects to the new one.
+            _ = endpoints_changed(endpoints) => {
+                let current = endpoints.as_ref().map(|rx| rx.borrow().addr == endpoint.addr).unwrap_or(true);
+                return Ok(!current);
+            }
             msg = conn.recv::<ServerMessage>() => {
                 match msg?.and_then(|m| m.msg) {
                     None => anyhow::bail!("server closed the connection"),
@@ -466,7 +483,7 @@ async fn session(
                         // shortcut: installs inline, blocking heartbeats; fine while installs take well under 30 s.
                         match install(creds, platform, &update) {
                             // Reconnect so the Server sees the new version (real adapters restart instead).
-                            Ok(()) => return Ok(()),
+                            Ok(()) => return Ok(true),
                             Err(e) => {
                                 tracing::warn!("rejected Agent update {}: {e:#}", update.version);
                                 let failed = UpdateFailed { version: update.version, reason: format!("{e:#}") };

@@ -23,6 +23,47 @@ async fn device(sys: &TestSystem, name: &str) -> (rcli_testkit::TestAgent, std::
     (agent, dir.join("agent.sock"))
 }
 
+/// The real permission gate: the socket asks the kernel who called. Unprivileged callers are refused every
+/// change; as root (CI sometimes is) the same calls go through, which is the documented escape hatch.
+#[tokio::test]
+async fn every_change_is_refused_to_a_non_root_caller() {
+    let sys = TestSystem::start().await;
+    let dir = temp_dir("gate");
+    let creds = sys.register(&rcli_testkit::FakePlatform::new("lab-pc")).await.unwrap();
+    let mut agent = rcli_testkit::TestAgent::with_secrets_dir(sys.endpoint(), rcli_testkit::FakePlatform::new("lab-pc"), creds, dir.clone());
+    agent.start();
+    let socket = dir.join("agent.sock");
+    tokio::spawn(rcli_agent::ipc::serve(socket.clone(), agent.status.clone()));
+    eventually(|| async { socket.exists().then_some(()) }).await;
+    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
+
+    let (server, key) = (sys.agent_addr(), sys.server_key());
+    let attempts: [&[&str]; 4] = [
+        &["agent", "password", "set", "--password", "newpassword"],
+        &["agent", "id", "set", "987654321"],
+        &["agent", "name", "set", "impersonator"],
+        &["agent", "server", "set", &server, "--key", &key],
+    ];
+    for args in attempts {
+        let out = sys.agent_rcli(&socket, args).await;
+        if rcli_testkit::running_as_root() {
+            assert!(out.is_ok(), "{args:?}: {:?}", out.err());
+        } else {
+            let err = out.unwrap_err().to_string();
+            assert!(err.contains("root"), "{args:?}: {err}");
+        }
+    }
+    if !rcli_testkit::running_as_root() {
+        // Nothing changed.
+        let info: serde_json::Value =
+            serde_json::from_str(&sys.agent_rcli(&socket, &["agent", "info", "--json"]).await.unwrap()).unwrap();
+        assert_eq!(info["device_id"], agent.device_id());
+        assert_eq!(info["server"], agent.status.endpoint().addr);
+        let device = sys.wait_device(agent.device_id(), |d| d["name"] == "lab-pc").await;
+        assert_eq!(device["device_id"], agent.device_id());
+    }
+}
+
 #[tokio::test]
 async fn a_password_change_needs_eight_characters_and_keeps_open_sessions() {
     let sys = TestSystem::start().await;
