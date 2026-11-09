@@ -1,6 +1,6 @@
 "use server";
-// Admin server actions. Each returns a Result for <Form/>: one-time secrets (token, TOTP) are shown
-// once in `message` and never stored by the Dashboard. The Server enforces admin-only on every call.
+// Admin server actions. Each returns a Result for <Form/>: the one-time TOTP secret is shown once in
+// `message` and never stored by the Dashboard. The Server enforces admin-only on every call.
 import { revalidatePath } from "next/cache";
 import { api, ApiError } from "@/lib/api";
 
@@ -42,17 +42,6 @@ export async function setPassword(_: Result, form: FormData) {
     );
     return `TOTP (chỉ hiện một lần): ${r.totp_secret} · ${r.otpauth_url}`;
   });
-}
-
-export async function createToken(_: Result, form: FormData) {
-  return run(async () => {
-    const r = await api<{ token: string }>(`/api/v1/users/${seg(str(form, "user"))}/tokens`, json("POST"));
-    return `Token (chỉ hiện một lần): ${r.token}`;
-  });
-}
-
-export async function revokeToken(_: Result, form: FormData) {
-  return run(() => api(`/api/v1/tokens/${seg(str(form, "id"))}/revoke`, json("POST")));
 }
 
 export async function disableUser(_: Result, form: FormData) {

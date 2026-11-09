@@ -175,3 +175,34 @@ async fn releasing_by_id_a_lock_taken_by_name_closes_its_watch() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn mcp_reads_the_saved_config_with_no_env_vars() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
+
+    // A saved User session (rcli login) is enough for a MCP client started from the config.
+    let dir = std::path::Path::new("/tmp").join(format!("rcli05mcp-{}-login", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    sys.controller_config(&dir, None).await;
+    let secret = sys.create_dashboard_user("mcp-user", "operator").await;
+    sys.rcli_in(&dir, &["login", "mcp-user", "--password", TestSystem::PASSWORD, "--totp", &sys.totp(&secret)])
+        .await
+        .unwrap();
+    let mcp = sys.mcp_in(&dir).await;
+    let (devices, _) = ok(&mcp, "devices", json!({})).await;
+    assert!(devices["devices"].as_array().is_some_and(|d| !d.is_empty()), "{devices}");
+    mcp.cancel().await.unwrap();
+
+    // No session: a remembered Device Password makes the connection, as `rcli connect` saved it.
+    let dir = std::path::Path::new("/tmp").join(format!("rcli05mcp-{}-connect", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    sys.controller_config(&dir, Some((agent.device_id(), &agent.device_password().unwrap()))).await;
+    let mcp = sys.mcp_in(&dir).await;
+    let (details, _) = ok(&mcp, "device", json!({ "device": agent.device_id() })).await;
+    assert_eq!(details["device_id"], agent.device_id());
+    let (out, _) = ok(&mcp, "exec", json!({ "device": agent.device_id(), "command": "echo hi" })).await;
+    assert_eq!(out["stdout"], "hi\n");
+    mcp.cancel().await.unwrap();
+}

@@ -19,8 +19,10 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let [_, port, out] = &args[..] else { anyhow::bail!("usage: rcli-devstack <http-port> <info.json>") };
     let _ = std::fs::remove_file(out);
-    let sys = TestSystem::start_on(format!("127.0.0.1:{port}").parse()?).await;
+    let mut sys = TestSystem::start_on(format!("127.0.0.1:{port}").parse()?).await;
     sys.clock.advance(chrono::Utc::now() - sys.clock.now());
+    // The jump past the harness's real-time start expired its admin session.
+    sys.sign_in_admin().await;
 
     let alpha = FakePlatform::new("alpha");
     alpha.set_session_state(SessionState::Locked);

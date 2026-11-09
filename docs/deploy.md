@@ -70,7 +70,7 @@ rcli --token rcli_xxxxxxxx user set-password me --password '<mật khẩu Dashbo
 #   → in ra totp_secret và otpauth_url: quét otpauth_url bằng app Authenticator
 ```
 
-Từ lúc admin `me` có token, bootstrap token hết tác dụng. Nó chỉ hoạt động lại nếu mọi admin bị vô hiệu hoá hoặc mất hết token (đường cứu hộ).
+Từ lúc admin `me` đăng nhập, bootstrap token hết tác dụng. Nó chỉ hoạt động lại nếu mọi admin bị vô hiệu hoá hoặc mất hết token (đường cứu hộ).
 
 Mở `http://vps.example.com:3080`, đăng nhập bằng `me` + mật khẩu + mã TOTP. Sai 5 lần liên tiếp thì tài khoản bị khoá 15 phút.
 
@@ -110,9 +110,9 @@ Wake chỉ hoạt động khi trong cùng LAN (cùng subnet) với máy cần b�
 ## 7. Cập nhật Agent (bản build có chữ ký)
 
 ```bash
-rcli update keygen                       # một lần: in private key (giữ bí mật, KHÔNG để trên Server) và public key
-rcli update publish --help               # ký và upload một bản build cho một target OS/arch
-rcli update rollout <version> --all      # hoặc --device <id> ...
+rcli rollout keygen                      # một lần: in private key (giữ bí mật, KHÔNG để trên Server) và public key
+rcli rollout publish --help              # ký và upload một bản build cho một target OS/arch
+rcli rollout <version> --all             # hoặc --device <id> ...
 rcli devices                             # cột AGENT / UPDATE cho biết tiến độ
 ```
 

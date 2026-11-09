@@ -912,7 +912,8 @@ where
             (published, format!("published {version} for {target}\n"))
         }
         Command::Rollout { command: None, version: Some(version), all, device } => {
-            let body = if all || device.is_empty() { serde_json::json!({ "all": true }) } else { serde_json::json!({ "devices": device }) };
+            anyhow::ensure!(all || !device.is_empty(), "give --all or at least one --device");
+            let body = if all { serde_json::json!({ "all": true }) } else { serde_json::json!({ "devices": device }) };
             let path = format!("/api/v1/agent-builds/{version}/rollout");
             let r = api.call(reqwest::Method::POST, &path, Some(&body)).await?;
             let text = format!("rolling out {version} to {} device(s)\n", r["devices"]);

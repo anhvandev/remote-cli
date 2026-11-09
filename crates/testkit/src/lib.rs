@@ -198,6 +198,28 @@ impl TestSystem {
         ().serve(client).await.expect("MCP handshake")
     }
 
+    /// Starts `rcli mcp` like `mcp_as`, but from a config directory: the Server and the session (or a remembered
+    /// Device Password) come only from `rcli setup` / `rcli login` / `rcli connect`, as `rcli mcp` does.
+    pub async fn mcp_in(&self, config_dir: &std::path::Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+        use rmcp::ServiceExt;
+        let api = rcli::Api::from_config(config_dir).expect("MCP config");
+        let (client, server) = tokio::io::duplex(1 << 20);
+        tokio::spawn(async move {
+            let (read, write) = tokio::io::split(server);
+            rcli::mcp::serve(api, read, write).await
+        });
+        ().serve(client).await.expect("MCP handshake")
+    }
+
+    /// A Controller config directory with `rcli setup` (and `rcli connect` when a password is given).
+    pub async fn controller_config(&self, dir: &std::path::Path, device: Option<(&str, &str)>) {
+        let server = format!("http://{}", self.server.http_addr);
+        self.rcli_in(dir, &["setup", "--server", &server, "--key", &self.server_key()]).await.unwrap();
+        if let Some((device, password)) = device {
+            self.rcli_in(dir, &["connect", device, "--password", password]).await.unwrap();
+        }
+    }
+
     /// Creates a user with `role` ("admin" | "operator"), signs them in, and returns their session token.
     pub async fn create_user(&self, name: &str, role: &str) -> String {
         let secret = self.create_dashboard_user(name, role).await;

@@ -74,8 +74,6 @@ async function parse<T>(res: Response): Promise<T> {
 
 // Shapes of Controller API responses (see crates/server/src/api).
 export type User = { id: string; name: string; role: "admin" | "operator"; disabled_at: string | null };
-/** GET /api/v1/tokens: live API tokens (never the secret). */
-export type ApiToken = { id: string; user: string; created_at: string };
 /** GET /api/v1/server-settings: the Server Key and Server Address Admins edit. */
 export type ServerSettings = { server_key: string; ca_fingerprint: string; server_address: string };
 export type DeviceStatus = "Online" | "Offline" | "Waking";

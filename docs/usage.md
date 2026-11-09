@@ -23,6 +23,10 @@ rcli connect 123456789                                                  # hỏi 
 kiểm tra Device ID + Device Password rồi nhớ mật khẩu (file `0600`), nên các lệnh sau chỉ cần Device ID.
 `rcli forget <Device ID>` xoá mật khẩu đã nhớ. `RCLI_SERVER`/`RCLI_TOKEN` không còn dùng.
 
+Lệnh quản trị Server (`user`, `rollout`, `audit`, `server-key`, `server-address`, đổi tên/xoá Device, `lock force-release`,
+`unlock-password`) cần một phiên User: `rcli login <tên>` (mật khẩu Dashboard + mã TOTP), `rcli logout` để xoá.
+Operator đăng nhập được nhưng các lệnh đó trả `admin_required`. Các lệnh trên Device vẫn dùng `rcli connect`.
+
 ## Vai trò
 
 Role chỉ còn quản trị Server; việc gì chạy được trên Device do Device Settings của chính Device đó quyết định.
@@ -130,10 +134,10 @@ rcli wake demo-pc               # Device Offline → Waking; quá 3 phút chưa 
 ## Admin
 
 ```bash
+rcli login an                                 # hỏi mật khẩu Dashboard + mã TOTP, lưu phiên vào config
+rcli logout                                   # thu hồi và xoá phiên đã lưu
 rcli user create an --role operator
 rcli user set-password an --password '...'   # in TOTP secret + otpauth URL cho Dashboard
-rcli token create an                          # token chỉ hiện một lần
-rcli token revoke <token-id>
 rcli user disable an
 rcli server-key show                          # Server Key (rk_<CA fingerprint>_<secret>) để cài Agent
 rcli server-key rotate                        # đổi secret: Device đã đăng ký vẫn Online, bản cài mới cần key mới

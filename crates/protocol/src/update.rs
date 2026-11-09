@@ -1,6 +1,6 @@
 //! Agent build signatures: Ed25519 over the version, the target and the build bytes, so a
 //! signed build cannot be relabeled as another version or OS. The private key stays with the
-//! admin (`rcli update keygen`); Agents are configured with the public key; the Server only stores.
+//! admin (`rcli rollout keygen`); Agents are configured with the public key; the Server only stores.
 
 use ring::{
     rand::SystemRandom,

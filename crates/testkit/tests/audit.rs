@@ -105,7 +105,7 @@ async fn secret_text_and_text_typed_at_a_lock_screen_are_masked() {
 
 #[tokio::test]
 async fn entries_older_than_90_days_are_removed() {
-    let sys = TestSystem::start().await;
+    let mut sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
@@ -113,6 +113,7 @@ async fn entries_older_than_90_days_are_removed() {
     sys.api.post_json(&format!("/api/v1/devices/{dev}/actions"), &observe).await;
 
     sys.advance(90 * DAY - 60);
+    sys.sign_in_admin().await; // the admin session expired 12 h after the harness made it
     assert_eq!(audit(&sys, "").await.len(), 1);
     sys.advance(120);
     assert_eq!(audit(&sys, "").await.len(), 0);
