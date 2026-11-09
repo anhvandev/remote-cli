@@ -174,3 +174,23 @@ async fn parallel_guesses_still_reach_the_lockout() {
     let (status, body) = right.get(&path).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
 }
+
+#[tokio::test]
+async fn a_correct_password_resets_the_failure_count() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
+    let path = format!("/api/v1/devices/{}", agent.device_id());
+    let wrong = sys.device_client(agent.device_id(), "wrongpassword");
+    let right = sys.device_client(agent.device_id(), &agent.device_password().unwrap());
+
+    for _ in 0..4 {
+        assert_eq!(wrong.get(&path).await.0, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(right.get(&path).await.0, StatusCode::OK);
+    // Four more wrong passwords after the success do not add up to the earlier four.
+    for _ in 0..4 {
+        assert_eq!(wrong.get(&path).await.0, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(right.get(&path).await.0, StatusCode::OK, "the count started over");
+}

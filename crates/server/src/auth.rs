@@ -86,10 +86,8 @@ pub async fn authenticate_controller(
     }
     // A Device that exists is keyed by its UUID, so every way of naming it (Device ID, UUID, name) shares one
     // bucket; an unknown Device ID is keyed as presented, so it is counted too and cannot dodge the limiter.
-    let resolved = match crate::registry::resolve(state, device).await? {
-        Ok(id) => id,
-        Err(_) => None,
-    };
+    // An ambiguous name is treated as unknown: it gets no password check and no Device scope.
+    let resolved = crate::registry::resolve(state, device).await?.ok().flatten();
     let bucket = resolved.map_or_else(|| device.to_owned(), |id| id.to_string());
     let now = state.clock.now();
     let locked_until: Option<chrono::DateTime<chrono::Utc>> =

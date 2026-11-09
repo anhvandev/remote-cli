@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] Lockout after 5 failures, doubling up to 1 hour, verified with the injectable clock
-- [ ] Lockouts are per (Device ID, IP): another IP or another Device is unaffected
-- [ ] A correct password after the lockout ends works and resets the counter
-- [ ] Failures and lockouts appear in the audit log
+- [x] Lockout after 5 failures, doubling up to 1 hour, verified with the injectable clock
+- [x] Lockouts are per (Device ID, IP): another IP or another Device is unaffected
+- [x] A correct password after the lockout ends works and resets the counter
+- [x] Failures and lockouts appear in the audit log
