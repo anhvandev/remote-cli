@@ -37,7 +37,7 @@ fn first_address(address: &str) -> &str {
 async fn install_sh(State(state): State<super::State>, headers: HeaderMap) -> Response {
     let script = INSTALL_SH
         .replace("{{ORIGIN}}", &origin(&headers))
-        .replace("{{SERVER}}", &first_address(&state.settings.address().await));
+        .replace("{{SERVER}}", first_address(&state.settings.address().await));
     // no-store: the script is rendered per request from the requesting origin; a shared cache must not serve
     // one client's rendering to the next (that would redirect their download).
     ([("content-type", "text/x-shellscript; charset=utf-8"), ("cache-control", "no-store")], script).into_response()
@@ -46,7 +46,7 @@ async fn install_sh(State(state): State<super::State>, headers: HeaderMap) -> Re
 async fn install_ps1(State(state): State<super::State>, headers: HeaderMap) -> Response {
     let script = INSTALL_PS1
         .replace("{{ORIGIN}}", &origin(&headers))
-        .replace("{{SERVER}}", &first_address(&state.settings.address().await));
+        .replace("{{SERVER}}", first_address(&state.settings.address().await));
     ([("content-type", "text/plain; charset=utf-8"), ("cache-control", "no-store")], script).into_response()
 }
 

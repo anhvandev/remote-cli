@@ -6,7 +6,8 @@ use rcli_testkit::{StatusCode, TestSystem};
 #[tokio::test]
 async fn install_sh_is_a_shell_script_that_installs_the_agent() {
     let sys = TestSystem::start().await;
-    let (status, body) = sys.api.get_bytes("/install.sh").await;
+    // Public: no credentials at all (the one-line install has none before registration).
+    let (status, body) = sys.api.with_token(None).get_bytes("/install.sh").await;
     assert_eq!(status, StatusCode::OK, "{:?}", String::from_utf8_lossy(&body));
     let script = String::from_utf8(body).unwrap();
     assert!(script.starts_with("#!/bin/sh"), "{script}");
@@ -29,7 +30,7 @@ async fn download_serves_the_rolled_out_build_and_unknown_targets_error() {
     let (status, body) = sys.api.post_json("/api/v1/agent-builds/0.2.0/rollout", &serde_json::json!({ "all": true })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    let (status, bytes) = sys.api.get_bytes("/download/linux/x86_64").await;
+    let (status, bytes) = sys.api.with_token(None).get_bytes("/download/linux/x86_64").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(bytes, b"rolled out build");
 
