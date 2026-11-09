@@ -3,12 +3,13 @@
 //! pipe transport can reuse `handle`.
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, RwLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use rcli_protocol::{
@@ -38,6 +39,84 @@ pub struct Change {
     pub reply: oneshot::Sender<Result<String, String>>,
 }
 
+/// Prompts for the person at the Device (tickets 07/08), waiting for the GUI's answer over the IPC.
+#[derive(Default)]
+pub struct Prompts {
+    state: Mutex<PromptState>,
+}
+
+#[derive(Default)]
+struct PromptState {
+    next_id: u64,
+    pending: Vec<PendingPrompt>,
+    answers: HashMap<u64, std::sync::mpsc::Sender<bool>>,
+}
+
+struct PendingPrompt {
+    id: u64,
+    kind: &'static str,
+    who: String,
+    deadline: Instant,
+}
+
+impl Prompts {
+    /// Publishes a prompt and waits for the person's answer, for at most `timeout`; no answer rejects (30 s rule).
+    pub fn ask(&self, kind: &'static str, who: &str, timeout: Duration) -> bool {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let id = {
+            let mut state = self.state.lock().unwrap();
+            state.next_id += 1;
+            let id = state.next_id;
+            state.pending.push(PendingPrompt { id, kind, who: who.to_owned(), deadline: Instant::now() + timeout });
+            state.answers.insert(id, tx);
+            id
+        };
+        let accepted = rx.recv_timeout(timeout).unwrap_or(false);
+        self.forget(id);
+        accepted
+    }
+
+    fn forget(&self, id: u64) {
+        let mut state = self.state.lock().unwrap();
+        state.pending.retain(|p| p.id != id);
+        state.answers.remove(&id);
+    }
+
+    /// The prompts waiting for an answer right now (id, kind, who, seconds left).
+    pub fn list(&self) -> Value {
+        let mut state = self.state.lock().unwrap();
+        let now = Instant::now();
+        state.pending.retain(|p| p.deadline > now);
+        serde_json::Value::Array(
+            state
+                .pending
+                .iter()
+                .map(|p| {
+                    json!({
+                        "id": p.id,
+                        "kind": p.kind,
+                        "who": p.who,
+                        "seconds_left": p.deadline.duration_since(now).as_secs(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Answers a waiting prompt; `Err` names an unknown or already-answered one.
+    pub fn answer(&self, id: u64, accept: bool) -> Result<(), String> {
+        let sender = self.state.lock().unwrap().answers.remove(&id);
+        match sender {
+            Some(sender) => {
+                self.forget(id);
+                let _ = sender.send(accept);
+                Ok(())
+            }
+            None => Err(format!("no prompt {id} is waiting for an answer")),
+        }
+    }
+}
+
 /// What the IPC clients see of the running Agent.
 pub struct Status {
     device_id: RwLock<String>,
@@ -59,6 +138,8 @@ pub struct Status {
     grant: Arc<crate::Grant>,
     /// Controllers currently using this Device, so `rcli agent info` / `disconnect` can see and end them.
     controllers: Arc<crate::Controllers>,
+    /// Prompts for the person at the Device (tickets 07/08), shown and answered by the GUI over the IPC.
+    prompts: Arc<Prompts>,
 }
 
 impl Status {
@@ -79,6 +160,7 @@ impl Status {
             settings: Arc::new(settings::Handle::new()),
             grant: Arc::new(crate::Grant::default()),
             controllers: Arc::new(crate::Controllers::default()),
+            prompts: Arc::new(Prompts::default()),
         }
     }
 
@@ -104,6 +186,11 @@ impl Status {
     /// The connected Controllers, shared with `run` (so `info` / `disconnect` see the live set).
     pub fn controllers(&self) -> Arc<crate::Controllers> {
         self.controllers.clone()
+    }
+
+    /// The prompts waiting for the person at the Device; the GUI lists and answers them here.
+    pub fn prompts(&self) -> Arc<Prompts> {
+        self.prompts.clone()
     }
 
     pub fn set_connected(&self, connected: bool) {
@@ -193,15 +280,24 @@ impl Status {
         }
     }
 
-    fn info(&self) -> Value {
-        json!({
+    fn info(&self, is_root: bool) -> Value {
+        let mut info = json!({
             "device_id": self.device_id(),
             "server": self.endpoint.borrow().addr,
             "connected": self.connected.load(Ordering::Relaxed),
             "controllers": self.controllers.list(),
             // The GUI reads the Device Settings from here; any local user may see (not change) them.
             "settings": self.settings.get(),
-        })
+        });
+        // Secrets: only root sees the Server Key and the unlock password (the GUI reveals them elevated).
+        if is_root {
+            info["server_key"] = self.endpoint.borrow().server_key.clone().into();
+            info["unlock_password"] = match self.unlock_password() {
+                Ok(Some(password)) => password.into(),
+                _ => Value::Null,
+            };
+        }
+        info
     }
 }
 
@@ -269,7 +365,24 @@ where
 async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
     let command = request["command"].as_str();
     if command == Some("info") {
-        return status.info();
+        return status.info(is_root);
+    }
+    if command == Some("prompts") {
+        // Who is asking is status-adjacent: any local user may list the waiting prompts.
+        return status.prompts().list();
+    }
+    if command == Some("prompt.answer") {
+        // Anyone at the Device may refuse a prompt (like `disconnect`); only root may accept one,
+        // so a local process cannot grant root or let a Controller in behind the person's back.
+        let id = request["id"].as_u64().unwrap_or_default();
+        let accept = request["accept"].as_bool().unwrap_or_default();
+        if accept && !is_root {
+            return json!({ "error": "accepting a prompt requires root (run `sudo rcli agent prompt answer …`)" });
+        }
+        return match status.prompts().answer(id, accept) {
+            Ok(()) => json!({ "message": format!("prompt {id} {}", if accept { "accepted" } else { "rejected" }) }),
+            Err(e) => json!({ "error": e }),
+        };
     }
     if command == Some("disconnect") {
         // Any local user may end a Controller: the person at the Device has the last word, no root needed.
@@ -451,6 +564,80 @@ mod tests {
 
         let reply = tokio::runtime::Runtime::new().unwrap().block_on(dispatch(&status, &json!({ "command": "password.set", "password": "short" }), true));
         assert!(reply["error"].as_str().unwrap().contains("8 characters"), "{reply}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prompts_are_listed_answered_or_rejected_on_timeout() {
+        let prompts = Arc::new(Prompts::default());
+        let answerer = {
+            let prompts = prompts.clone();
+            std::thread::spawn(move || {
+                for _ in 0..1000 {
+                    let listed = prompts.list();
+                    if let Some(p) = listed.as_array().and_then(|a| a.first()) {
+                        prompts.answer(p["id"].as_u64().unwrap(), true).unwrap();
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                panic!("the prompt was never listed");
+            })
+        };
+        assert!(prompts.ask("root", "alice", Duration::from_secs(5)));
+        answerer.join().unwrap();
+        assert!(prompts.list().as_array().unwrap().is_empty(), "{:?}", prompts.list());
+        // Nobody answers: the prompt auto-rejects when its time runs out.
+        assert!(!prompts.ask("accept", "dev-laptop (10.0.0.5)", Duration::from_millis(50)));
+        assert!(prompts.answer(999, true).is_err());
+    }
+
+    #[test]
+    fn anyone_may_refuse_a_prompt_but_only_root_accepts_and_sees_secrets() {
+        let dir = std::env::temp_dir().join(format!("rcli-ipc-prompts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = FileSecretStore::new(&dir);
+        store.set(UNLOCK_PASSWORD, "at-the-lock-screen").unwrap();
+        let status = Status::new(
+            "123456789",
+            ServerEndpoint { addr: "localhost:1".into(), server_key: "rk_deadbeef_secret".into() },
+            Arc::new(store),
+        );
+        let block = tokio::runtime::Runtime::new().unwrap();
+        let prompts = status.prompts();
+
+        let waiting = |kind, who| {
+            let prompts = prompts.clone();
+            std::thread::spawn(move || prompts.ask(kind, who, Duration::from_secs(5)))
+        };
+        let next_id = |prompts: &Prompts| loop {
+            let listed = prompts.list();
+            if let Some(p) = listed.as_array().and_then(|a| a.first()) {
+                break p["id"].as_u64().unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+
+        let asker = waiting("root", "alice");
+        let id = next_id(&prompts);
+        let accept = block.block_on(dispatch(&status, &json!({ "command": "prompt.answer", "id": id, "accept": true }), false));
+        assert!(accept["error"].as_str().unwrap().contains("root"), "{accept}");
+        let reject = block.block_on(dispatch(&status, &json!({ "command": "prompt.answer", "id": id, "accept": false }), false));
+        assert!(reject["message"].as_str().is_some(), "{reject}");
+        assert!(!asker.join().unwrap());
+
+        let asker = waiting("accept", "dev-laptop (10.0.0.5)");
+        let id = next_id(&prompts);
+        let accept = block.block_on(dispatch(&status, &json!({ "command": "prompt.answer", "id": id, "accept": true }), true));
+        assert!(accept["message"].as_str().is_some(), "{accept}");
+        assert!(asker.join().unwrap());
+
+        // The Server Key and the unlock password appear in `info` only for root.
+        let as_user = block.block_on(dispatch(&status, &json!({ "command": "info" }), false));
+        assert!(as_user.get("server_key").is_none() && as_user.get("unlock_password").is_none(), "{as_user}");
+        let as_root = block.block_on(dispatch(&status, &json!({ "command": "info" }), true));
+        assert_eq!(as_root["server_key"], "rk_deadbeef_secret");
+        assert_eq!(as_root["unlock_password"], "at-the-lock-screen");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
