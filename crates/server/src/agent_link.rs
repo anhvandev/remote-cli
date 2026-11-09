@@ -225,6 +225,10 @@ where
                         offer_update(conn, state, device, &mut offered).await?;
                     }
                     Some(agent_message::Msg::UpdateFailed(f)) => updates::agent_failed(state, device, &f).await?,
+                    Some(agent_message::Msg::IdentityUpdate(u)) => {
+                        let reply = identity_update(state, device, u).await;
+                        conn.send(&ServerMessage { msg: Some(server_message::Msg::IdentityUpdated(reply)) }).await?;
+                    }
                     // Later tickets dispatch more replies here.
                     _ => {}
                 }
@@ -242,6 +246,50 @@ where
             }
         }
     }
+}
+
+/// A change made at the Device: checks everything first, then applies it, so a refused change changes nothing.
+/// The reply carries the Device ID in effect afterwards.
+async fn identity_update(state: &AppState, device: uuid::Uuid, u: rcli_protocol::agent::IdentityUpdate) -> rcli_protocol::agent::IdentityUpdated {
+    let reply = |error: Option<rcli_protocol::agent::Error>, device_id: String| rcli_protocol::agent::IdentityUpdated {
+        request_id: u.request_id,
+        error,
+        device_id,
+    };
+    let fail = |message: String| reply(Some(error("bad_request", &message)), String::new());
+    if !u.device_password.is_empty() && u.device_password.chars().count() < rcli_protocol::password::MIN_LENGTH {
+        return fail(format!("the Device Password must be at least {} characters", rcli_protocol::password::MIN_LENGTH));
+    }
+    let number = match sqlx::query_scalar::<_, String>("SELECT device_number FROM devices WHERE id = $1")
+        .bind(device)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(Some(n)) => n,
+        Ok(None) => return fail("this Device no longer exists".into()),
+        Err(e) => return fail(format!("{e:#}")),
+    };
+    if !u.device_id.is_empty() {
+        match registry::set_device_number(state, device, &u.device_id).await {
+            Ok(Ok(())) => {}
+            Ok(Err(m)) => return fail(m),
+            Err(e) => return fail(format!("{e:#}")),
+        }
+    }
+    if !u.name.is_empty() {
+        match registry::rename(state, device, &u.name).await {
+            Ok(Ok(())) => {}
+            Ok(Err(m)) => return fail(m),
+            Err(e) => return fail(format!("{e:#}")),
+        }
+    }
+    if !u.device_password.is_empty() {
+        if let Err(e) = registry::set_device_password(state, device, &u.device_password).await {
+            return fail(format!("{e:#}"));
+        }
+    }
+    let number = if u.device_id.is_empty() { number } else { u.device_id };
+    reply(None, number)
 }
 
 /// Sends the Device its pending Agent update, once per version per session.

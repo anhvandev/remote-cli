@@ -161,6 +161,30 @@ pub async fn revoke(state: &AppState, id: Uuid) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Changes the Device ID; `Err` with a message if it is not 9 digits or another Device has it.
+pub async fn set_device_number(state: &AppState, id: Uuid, number: &str) -> anyhow::Result<Result<(), String>> {
+    if number.len() != 9 || !number.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(Err("the Device ID must be 9 digits".into()));
+    }
+    let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM devices WHERE device_number = $1 AND id <> $2)")
+        .bind(number)
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    if taken {
+        return Ok(Err(format!("Device ID {number} is already used by another Device")));
+    }
+    sqlx::query("UPDATE devices SET device_number = $2 WHERE id = $1").bind(id).bind(number).execute(&state.db).await?;
+    Ok(Ok(()))
+}
+
+/// Stores a new Device Password hash; existing connections are unaffected (they were authenticated already).
+pub async fn set_device_password(state: &AppState, id: Uuid, password: &str) -> anyhow::Result<()> {
+    let hash = rcli_protocol::password::hash(password);
+    sqlx::query("UPDATE devices SET device_password_hash = $2 WHERE id = $1").bind(id).bind(hash).execute(&state.db).await?;
+    Ok(())
+}
+
 /// Renames the Device; `Err` with a message if the name is not 1-255 characters.
 pub async fn rename(state: &AppState, id: Uuid, name: &str) -> anyhow::Result<Result<(), String>> {
     let name = name.trim();

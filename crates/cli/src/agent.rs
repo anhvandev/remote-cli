@@ -62,7 +62,9 @@ impl Run {
             }
         };
         tracing::info!("Device {} connecting to {}", creds.device_id, server.addr);
-        let status = Arc::new(ipc::Status::new(&creds.device_id, &server.addr, Arc::new(secrets)));
+        let status = Arc::new(ipc::Status::new(&creds.device_id, server.clone(), Arc::new(secrets)));
+        // A new Device ID set at the Device must survive a restart.
+        status.set_credentials_path(path);
         let socket = self.socket.unwrap_or_else(ipc::default_socket);
         let serve_status = status.clone();
         tokio::spawn(async move {
@@ -104,7 +106,7 @@ impl Info {
     }
 }
 
-/// `rcli agent password ...`: show the Device Password (root only).
+/// `rcli agent password ...`: show or change the Device Password (root only).
 #[derive(Args)]
 pub struct Password {
     #[command(subcommand)]
@@ -122,14 +124,123 @@ pub enum PasswordCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Replace the Device Password (requires root/Administrator); open sessions keep working.
+    Set {
+        /// At least 8 characters.
+        #[arg(long, env = "RCLI_DEVICE_PASSWORD", hide_env_values = true)]
+        password: String,
+    },
 }
 
-/// `rcli agent password show`: the running Agent refuses non-root callers itself (peer credentials).
+/// `rcli agent password show|set`: the running Agent refuses non-root callers itself (peer credentials).
 pub async fn run_password(command: PasswordCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-    let reply = ipc::request(&socket.unwrap_or_else(ipc::default_socket), "password.show").await?;
+    let socket = socket.unwrap_or_else(ipc::default_socket);
     match command {
-        PasswordCommand::Show { json: true } => writeln!(out, "{}", serde_json::to_string_pretty(&reply)?)?,
-        PasswordCommand::Show { json: false } => writeln!(out, "{}", reply["password"].as_str().unwrap_or_default())?,
+        PasswordCommand::Show { json: true } => {
+            let reply = ipc::request(&socket, "password.show").await?;
+            writeln!(out, "{}", serde_json::to_string_pretty(&reply)?)?;
+        }
+        PasswordCommand::Show { json: false } => {
+            let reply = ipc::request(&socket, "password.show").await?;
+            writeln!(out, "{}", reply["password"].as_str().unwrap_or_default())?;
+        }
+        PasswordCommand::Set { password } => {
+            let reply = ipc::send(&socket, serde_json::json!({ "command": "password.set", "password": password })).await?;
+            writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
+        }
     }
+    Ok(())
+}
+
+/// `rcli agent id ...`: the Device ID (root only).
+#[derive(Args)]
+pub struct Id {
+    #[command(subcommand)]
+    command: IdCommand,
+    /// Local IPC socket of the running Agent.
+    #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+    socket: Option<PathBuf>,
+}
+
+#[derive(clap::Subcommand)]
+pub enum IdCommand {
+    /// Replace the Device ID with a free 9-digit one (requires root/Administrator).
+    Set { device_id: String },
+}
+
+pub async fn run_id(command: IdCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    let reply = match command {
+        IdCommand::Set { device_id } => {
+            ipc::send(
+                &socket.unwrap_or_else(ipc::default_socket),
+                serde_json::json!({ "command": "id.set", "device_id": device_id }),
+            )
+            .await?
+        }
+    };
+    writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
+    Ok(())
+}
+
+/// `rcli agent name ...`: the Device name (root only).
+#[derive(Args)]
+pub struct Name {
+    #[command(subcommand)]
+    command: NameCommand,
+    /// Local IPC socket of the running Agent.
+    #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+    socket: Option<PathBuf>,
+}
+
+#[derive(clap::Subcommand)]
+pub enum NameCommand {
+    /// Rename the Device (requires root/Administrator).
+    Set { name: String },
+}
+
+pub async fn run_name(command: NameCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    let reply = match command {
+        NameCommand::Set { name } => {
+            ipc::send(&socket.unwrap_or_else(ipc::default_socket), serde_json::json!({ "command": "name.set", "name": name }))
+                .await?
+        }
+    };
+    writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
+    Ok(())
+}
+
+/// `rcli agent server ...`: which Server the Agent connects to (root only).
+#[derive(Args)]
+pub struct Server {
+    #[command(subcommand)]
+    command: ServerCommand,
+    /// Local IPC socket of the running Agent.
+    #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+    socket: Option<PathBuf>,
+}
+
+#[derive(clap::Subcommand)]
+pub enum ServerCommand {
+    /// Point the Agent at another Server; it reconnects at once (requires root/Administrator).
+    Set {
+        /// host:port of the Server's Agent port.
+        address: String,
+        /// rk_<CA fingerprint>_<secret>.
+        #[arg(long, env = "RCLI_SERVER_KEY", hide_env_values = true)]
+        key: String,
+    },
+}
+
+pub async fn run_server(command: ServerCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    let reply = match command {
+        ServerCommand::Set { address, key } => {
+            ipc::send(
+                &socket.unwrap_or_else(ipc::default_socket),
+                serde_json::json!({ "command": "server.set", "server": address, "key": key }),
+            )
+            .await?
+        }
+    };
+    writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
     Ok(())
 }

@@ -190,12 +190,13 @@ impl TestSystem {
     }
 
     /// Registers a new Device named `hostname` and starts its Agent with its local IPC socket in `dir`.
-    /// The Agent's Secret Store lives in `dir` too, as on a real Device.
+    /// The Agent's Secret Store lives in `dir` too, as on a real Device. The socket trusts every caller as root
+    /// (the unprivileged test process cannot be root); `password_show_is_refused_to_non_root` covers the gate itself.
     pub async fn start_agent_with_socket(&self, hostname: &str, dir: &std::path::Path) -> TestAgent {
         let creds = self.register(&FakePlatform::new(hostname)).await.expect("register");
         let mut agent = TestAgent::with_secrets_dir(self.endpoint(), FakePlatform::new(hostname), creds, dir.to_path_buf());
         agent.start();
-        tokio::spawn(rcli_agent::ipc::serve(dir.join("agent.sock"), agent.status.clone()));
+        tokio::spawn(rcli_agent::ipc::serve_trusting_all(dir.join("agent.sock"), agent.status.clone()));
         agent
     }
 
@@ -290,7 +291,7 @@ impl TestAgent {
         if !creds.device_password.is_empty() {
             secrets.set(rcli_agent::ipc::DEVICE_PASSWORD, &creds.device_password).expect("store the Device Password");
         }
-        let status = Arc::new(rcli_agent::ipc::Status::new(&creds.device_id, &endpoint.addr, secrets));
+        let status = Arc::new(rcli_agent::ipc::Status::new(&creds.device_id, endpoint.clone(), secrets));
         Self { endpoint, platform, creds, status, task: None, network }
     }
 
@@ -308,12 +309,18 @@ impl TestAgent {
         self.network.up.send_replace(true);
     }
 
+    /// Points the Device at another Server's Agent port; the fake name stays so the TLS server name is unchanged.
+    pub fn point_at_server(&self, agent_addr: &str) {
+        self.network.point_at(agent_addr);
+    }
+
     pub fn device_id(&self) -> &str {
         &self.creds.device_id
     }
 
     pub fn start(&mut self) {
         let endpoint = ServerEndpoint { addr: self.network.addr.clone(), ..self.endpoint.clone() };
+        self.status.set_endpoint(endpoint.clone());
         let run = rcli::agent::serve(endpoint, self.creds.clone(), Arc::new(self.platform.clone()), Some(self.status.clone()));
         self.task = Some(tokio::spawn(run));
     }
@@ -333,11 +340,13 @@ impl Drop for TestAgent {
     }
 }
 
-/// TCP forwarder between an Agent and the Server that a test can take down and bring back.
+/// TCP forwarder between an Agent and the Server that a test can take down, bring back, and re-point.
 struct NetworkLink {
     /// `localhost:port` to give the Agent (keeps the TLS server name).
     addr: String,
     up: Arc<tokio::sync::watch::Sender<bool>>,
+    /// The real Server behind `addr`; re-pointing it is how a test changes the Server Address.
+    target: tokio::sync::watch::Sender<String>,
     task: JoinHandle<()>,
 }
 
@@ -348,25 +357,34 @@ impl NetworkLink {
         let addr = format!("localhost:{}", std_listener.local_addr().unwrap().port());
         let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
         let up = Arc::new(tokio::sync::watch::channel(true).0);
-        let (target, link) = (target.to_owned(), up.clone());
+        let target = tokio::sync::watch::channel(target.to_owned()).0;
+        let (link, destinations) = (up.clone(), target.clone());
         let task = tokio::spawn(async move {
             loop {
                 let Ok((mut agent, _)) = listener.accept().await else { continue };
-                let (target, mut up) = (target.clone(), link.subscribe());
+                let (mut up, mut destination) = (link.subscribe(), destinations.subscribe());
                 tokio::spawn(async move {
                     // A cut link stalls new connections (no reset), so the Agent reconnects the moment it is restored.
                     if up.wait_for(|up| *up).await.is_err() {
                         return;
                     }
-                    let Ok(mut server) = tokio::net::TcpStream::connect(&target).await else { return };
+                    let target = destination.borrow_and_update().clone();
+                    let Ok(mut server) = tokio::net::TcpStream::connect(&target).await else {
+                        return;
+                    };
                     tokio::select! {
                         _ = tokio::io::copy_bidirectional(&mut agent, &mut server) => {}
                         _ = up.wait_for(|up| !*up) => {}
+                        _ = destination.changed() => {}
                     }
                 });
             }
         });
-        Self { addr, up, task }
+        Self { addr, up, target, task }
+    }
+
+    fn point_at(&self, target: &str) {
+        self.target.send_replace(target.to_owned());
     }
 }
 
@@ -425,6 +443,22 @@ impl DeviceClient {
 
     pub async fn post_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
         self.send(self.api.http.post(self.url(path)).json(body)).await
+    }
+
+    /// Opens a streaming GET (e.g. the Control Lock `watch`) and waits for its first chunk.
+    pub async fn watch(&self, path: &str) -> reqwest::Response {
+        let req = self
+            .api
+            .http
+            .get(self.url(path))
+            .header("x-rcli-server-key", &self.server_key)
+            .header("x-rcli-device", &self.device_id)
+            .header("x-rcli-device-password", &self.password)
+            .header("x-rcli-controller", self.controller.as_deref().unwrap_or("test-controller"));
+        let mut resp = req.send().await.expect("controller API request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        resp.chunk().await.expect("first chunk").expect("stream ended");
+        resp
     }
 
     fn url(&self, path: &str) -> String {
