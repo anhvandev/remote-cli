@@ -594,8 +594,9 @@ where
         }
         Command::ServerAddress(ServerAddressCommand::Show) => {
             let s = api.call(reqwest::Method::GET, "/api/v1/server-settings", None).await?;
-            let text = format!("{}\n", str_of(&s["server_address"]));
-            (s, text)
+            let address = s["server_address"].clone();
+            let text = format!("{}\n", str_of(&address));
+            (serde_json::json!({ "server_address": address }), text)
         }
         Command::ServerAddress(ServerAddressCommand::Set { address }) => {
             let body = serde_json::json!({ "address": address });
