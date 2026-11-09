@@ -8,6 +8,7 @@ use std::{
 };
 
 pub mod agent;
+pub mod config;
 pub mod media;
 
 use base64::Engine;
@@ -20,12 +21,15 @@ pub mod mcp;
 #[derive(Parser)]
 #[command(name = "rcli", about = "Remote CLI controller")]
 struct Cli {
-    /// Controller API base URL, e.g. http://localhost:8080
-    #[arg(long, env = "RCLI_SERVER", global = true)]
+    /// Controller API base URL; default: the one `rcli setup` saved.
+    #[arg(long, global = true)]
     server: Option<String>,
-    /// API token.
-    #[arg(long, env = "RCLI_TOKEN", global = true, hide_env_values = true)]
+    /// API token (tests and admin scripting); default: the saved Controller configuration.
+    #[arg(long, global = true, hide_env_values = true)]
     token: Option<String>,
+    /// Controller config directory; default: the platform's per-user location.
+    #[arg(long, global = true, hide = true)]
+    config_dir: Option<String>,
     /// Machine-readable JSON output.
     #[arg(long, global = true)]
     json: bool,
@@ -35,6 +39,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Save the Server Address and Server Key (once per Controller).
+    Setup {
+        /// Server Address, e.g. https://server.example.com:8080.
+        #[arg(long)]
+        server: String,
+        /// Server Key, rk_<CA fingerprint>_<secret>.
+        #[arg(long, hide_env_values = true)]
+        key: String,
+    },
+    /// Remember a Device's Device Password, so later commands take just its Device ID.
+    Connect {
+        device: String,
+        /// The Device Password; asked for when omitted.
+        #[arg(long, hide_env_values = true)]
+        password: Option<String>,
+    },
+    /// Remove a remembered Device Password.
+    Forget { device: String },
     /// List Devices with their Device Status.
     Devices,
     /// One Device: inventory, current resources, processes.
@@ -480,12 +502,45 @@ where
             AgentCommand::Password { command, socket } => agent::run_password(command, socket, out).await,
         };
     }
-    let api = Api {
-        base: cli.server.ok_or_else(|| anyhow::anyhow!("--server or RCLI_SERVER is required"))?,
-        token: cli.token.ok_or_else(|| anyhow::anyhow!("--token or RCLI_TOKEN is required"))?,
-        http: reqwest::Client::new(),
-    };
+    let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);
+    if let Command::Setup { server, key } = &cli.command {
+        let text = config::setup(&dir, server, key).await?;
+        let body = config::load_at(&dir)?.map(|c| config::json(&c)).unwrap_or(serde_json::Value::Null);
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),
+            false => Ok(write!(out, "{text}")?),
+        };
+    }
+    if let Command::Connect { device, password } = &cli.command {
+        let (server, key) = match (cli.server.clone(), config::load_at(&dir)?) {
+            (Some(server), config) => (server, config.map(|c| c.server_key).unwrap_or_default()),
+            (None, Some(config)) if !config.server_key.is_empty() => (config.server, config.server_key),
+            _ => anyhow::bail!("run `rcli setup` first (no saved Server Address or Server Key)"),
+        };
+        let password = match password {
+            Some(p) => p.clone(),
+            None => prompt_password("Device Password: ")?,
+        };
+        let controller = config::hostname();
+        config::verify(&server, &key, device, &password, &controller).await?;
+        config::remember(&dir, device, &password, &controller)?;
+        let text = format!("connected to {device} as {controller}\n");
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", json!({ "device_id": device, "controller": controller }))?),
+            false => Ok(write!(out, "{text}")?),
+        };
+    }
+    if let Command::Forget { device } = &cli.command {
+        config::forget(&dir, device)?;
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", json!({ "forgotten": device }))?),
+            false => Ok(write!(out, "forgot {device}\n")?),
+        };
+    }
+    let (base, connection) = api_target(&dir, cli.server, cli.token)?;
+    let api = Api { base, dir, connection, http: reqwest::Client::new() };
     let (body, human) = match cli.command {
+        Command::Setup { .. } | Command::Connect { .. } | Command::Forget { .. } => unreachable!("handled before connecting"),
         Command::Devices => {
             let devices = api.call(reqwest::Method::GET, "/api/v1/devices", None).await?;
             let mut text = format!(
@@ -753,7 +808,7 @@ where
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, frames)? };
             (obs, text)
         }
-        Command::Mcp => return mcp::serve(api.base, api.token, tokio::io::stdin(), tokio::io::stdout()).await,
+        Command::Mcp => return mcp::serve(api, tokio::io::stdin(), tokio::io::stdout()).await,
         Command::Agent(_) => unreachable!("handled before connecting"),
         Command::Update(UpdateCommand::Keygen { .. }) => unreachable!("handled before connecting"),
         Command::Update(UpdateCommand::Publish { file, version, target, key }) => {
@@ -761,7 +816,7 @@ where
             let signature = rcli_protocol::update::sign(&std::fs::read(&key)?, &version, &target, &build)?;
             let url = format!("{}/api/v1/agent-builds/{version}/{target}", api.base.trim_end_matches('/'));
             let req = api.http.put(url).query(&[("signature", hex::encode(signature))]).body(build);
-            let published = api.send(req).await?;
+            let published = api.send(req, None).await?;
             (published, format!("published {version} for {target}\n"))
         }
         Command::Update(UpdateCommand::Rollout { version, all, device }) => {
@@ -815,9 +870,10 @@ async fn shell(
     let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let size = || if tty { crossterm::terminal::size().ok() } else { None };
     let (cols, rows) = size().unwrap_or((80, 24));
-    let url = format!("{}/api/v1/devices/{}/shell", api.base.trim_end_matches('/'), path_segment(device));
+    let path = format!("/api/v1/devices/{}/shell", path_segment(device));
+    let url = format!("{}{path}", api.base.trim_end_matches('/'));
     let body = json!({ "as": run_as, "cols": cols, "rows": rows });
-    let mut resp = api.check(api.http.post(url).json(&body).bearer_auth(&api.token).send().await?).await?;
+    let mut resp = api.check(api.auth(api.http.post(url).json(&body), Some(&path))?.send().await?).await?;
     let _raw = if tty { crossterm::terminal::enable_raw_mode().map(|()| RawMode).ok() } else { None };
     let session_url = |session: &str, what: &str| format!("{}/api/v1/shell-sessions/{session}/{what}", api.base.trim_end_matches('/'));
     let (mut session, mut buf, mut last_size, mut input_open) = (String::new(), Vec::new(), size(), true);
@@ -845,7 +901,8 @@ async fn shell(
             }
             keys = input.recv(), if input_open && !session.is_empty() => match keys {
                 Some(keys) => {
-                    api.check(api.http.post(session_url(&session, "input")).body(keys).bearer_auth(&api.token).send().await?).await?;
+                    let path = format!("/api/v1/devices/{device}/shell");
+                    api.check(api.auth(api.http.post(session_url(&session, "input")).body(keys), Some(&path))?.send().await?).await?;
                 }
                 None => input_open = false,
             },
@@ -853,7 +910,8 @@ async fn shell(
                 if let Some((cols, rows)) = size().filter(|s| Some(*s) != last_size) {
                     last_size = Some((cols, rows));
                     let body = json!({ "cols": cols, "rows": rows });
-                    api.check(api.http.post(session_url(&session, "resize")).json(&body).bearer_auth(&api.token).send().await?).await?;
+                    let path = format!("/api/v1/devices/{device}/shell");
+                    api.check(api.auth(api.http.post(session_url(&session, "resize")).json(&body), Some(&path))?.send().await?).await?;
                 }
             }
         }
@@ -920,17 +978,63 @@ fn str_of(v: &Value) -> &str {
     v.as_str().unwrap_or("")
 }
 
-/// Controller API client (base URL + token).
+/// How the CLI authenticates to the Controller API: a User session when it has one, else a password connection.
+#[derive(Clone, Default)]
+pub struct Connection {
+    /// A User session (`rcli login`, or `--token` in tests).
+    pub token: Option<String>,
+    /// The saved Server Key: with a remembered Device Password this makes a password connection.
+    pub server_key: Option<String>,
+    /// This machine's name, shown in audit entries and as Control Lock holder.
+    pub controller: String,
+}
+
+/// The Controller API target: `--server`/`--token`, else the saved `rcli setup` config.
+fn api_target(dir: &std::path::Path, server: Option<String>, token: Option<String>) -> anyhow::Result<(String, Connection)> {
+    let saved = config::load_at(dir)?;
+    let controller = config::hostname();
+    let (base, token, server_key) = match (server, token) {
+        (Some(base), Some(token)) => (base, Some(token), None),
+        (Some(base), None) => {
+            (base, saved.as_ref().and_then(|c| c.token.clone()), saved.map(|c| c.server_key))
+        }
+        (None, Some(token)) => {
+            let base = saved.map(|c| c.server).ok_or_else(|| anyhow::anyhow!("run `rcli setup` or pass --server"))?;
+            (base, Some(token), None)
+        }
+        (None, None) => match saved.filter(|c| !c.server.is_empty()) {
+            Some(c) => (c.server, c.token, Some(c.server_key)),
+            None => anyhow::bail!("run `rcli setup` first (no saved Server Address or Server Key)"),
+        },
+    };
+    Ok((base, Connection { token, server_key, controller }))
+}
+
+/// Asks for the Device Password without echoing it.
+fn prompt_password(prompt: &str) -> anyhow::Result<String> {
+    eprint!("{prompt}");
+    let password = rpassword::read_password().map_err(|e| anyhow::anyhow!("cannot read the password: {e}"))?;
+    Ok(password)
+}
+
+/// Controller API client (base URL + how to authenticate).
 #[derive(Clone)]
 pub struct Api {
     base: String,
-    token: String,
+    /// Where remembered Device Passwords are read from.
+    dir: std::path::PathBuf,
+    connection: Connection,
     http: reqwest::Client,
 }
 
 impl Api {
     pub fn new(base: String, token: String) -> Self {
-        Self { base, token, http: reqwest::Client::new() }
+        Self {
+            base,
+            dir: config::dir(),
+            connection: Connection { token: Some(token), ..Default::default() },
+            http: reqwest::Client::new(),
+        }
     }
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> anyhow::Result<Value> {
@@ -939,12 +1043,34 @@ impl Api {
         if let Some(body) = body {
             req = req.json(body);
         }
-        self.send(req).await
+        self.send(req, Some(path)).await
     }
 
-    async fn send(&self, req: reqwest::RequestBuilder) -> anyhow::Result<Value> {
-        let resp = self.check(req.bearer_auth(&self.token).send().await?).await?;
+    async fn send(&self, req: reqwest::RequestBuilder, path: Option<&str>) -> anyhow::Result<Value> {
+        let resp = self.check(self.auth(req, path)?.send().await?).await?;
         Ok(resp.json().await.unwrap_or(Value::Null))
+    }
+
+    /// A User session when there is one, else the password connection of the Device in the request `path`.
+    fn auth(&self, req: reqwest::RequestBuilder, path: Option<&str>) -> anyhow::Result<reqwest::RequestBuilder> {
+        if let Some(token) = &self.connection.token {
+            return Ok(req.bearer_auth(token));
+        }
+        let device = path
+            .and_then(|p| p.strip_prefix("/api/v1/devices/"))
+            .and_then(|rest| rest.split('/').next())
+            .filter(|d| !d.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("no User session saved; run `rcli connect <Device ID>` or `rcli login`"))?;
+        let Some(remembered) = config::remembered(&self.dir, &device)? else {
+            anyhow::bail!("no Device Password saved for {device}; run `rcli connect {device}`");
+        };
+        let key = self.connection.server_key.as_deref().unwrap_or_default();
+        Ok(req
+            .header("x-rcli-server-key", key)
+            .header("x-rcli-device", &device)
+            .header("x-rcli-device-password", &remembered.password)
+            .header("x-rcli-controller", &remembered.controller))
     }
 
     /// Turns an API error response into an error naming its code and message.

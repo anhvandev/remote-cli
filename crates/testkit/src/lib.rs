@@ -131,6 +131,16 @@ impl TestSystem {
         self.rcli_as(&self.admin_token, args).await
     }
 
+    /// Runs `rcli <args>` in-process with `config_dir` as the Controller configuration, so `setup`, `connect` and
+    /// remembered Device Passwords work per test. No token is added: password connections are the point.
+    pub async fn rcli_in(&self, config_dir: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {
+        let mut argv = vec!["rcli".to_owned(), "--config-dir".to_owned(), config_dir.to_string_lossy().into_owned()];
+        argv.extend(args.iter().map(|s| s.to_string()));
+        let mut out = Vec::new();
+        rcli::run(argv, &mut out).await?;
+        Ok(String::from_utf8(out)?)
+    }
+
     /// Runs `rcli <args>` in-process with the API token `token`; returns stdout.
     pub async fn rcli_as(&self, token: &str, args: &[&str]) -> anyhow::Result<String> {
         let base = format!("http://{}", self.server.http_addr);
@@ -146,10 +156,10 @@ impl TestSystem {
     pub async fn mcp_as(&self, token: &str) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
         use rmcp::ServiceExt;
         let (client, server) = tokio::io::duplex(1 << 20);
-        let (base, token) = (format!("http://{}", self.server.http_addr), token.to_owned());
+        let api = rcli::Api::new(format!("http://{}", self.server.http_addr), token.to_owned());
         tokio::spawn(async move {
             let (read, write) = tokio::io::split(server);
-            rcli::mcp::serve(base, token, read, write).await
+            rcli::mcp::serve(api, read, write).await
         });
         ().serve(client).await.expect("MCP handshake")
     }

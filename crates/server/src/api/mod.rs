@@ -34,6 +34,8 @@ pub fn router(state: State) -> Router {
     Router::new()
         .route("/api/v1/server-ca", get(|s: axum::extract::State<State>| async move { s.ca.cert_pem.clone() }))
         .route("/api/v1/server-key", get(server_key))
+        // Public: `rcli setup` pins it over the channel the Server Key's fingerprint verifies.
+        .route("/api/v1/update-key", get(update_key))
         .merge(devices::routes())
         .merge(history::routes())
         .merge(updates::routes())
@@ -57,6 +59,12 @@ async fn server_key(
     axum::extract::State(state): axum::extract::State<State>,
 ) -> Json<serde_json::Value> {
     Json(json!({ "server_key": state.server_key, "ca_fingerprint": state.ca.fingerprint }))
+}
+
+/// The update-signing public key (hex), which a Controller pins at `rcli setup`; empty = no updates.
+async fn update_key(axum::extract::State(state): axum::extract::State<State>) -> Json<serde_json::Value> {
+    let key = state.config.update_public_key.as_deref().map(hex::encode).unwrap_or_default();
+    Json(json!({ "update_key": key }))
 }
 
 /// Typed API error: `{"error": {"code": "...", "message": "..."}}`.

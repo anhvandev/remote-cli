@@ -141,35 +141,31 @@ async fn the_terminal_resizes_and_ctrl_c_reaches_the_shell() {
 }
 
 #[tokio::test]
-async fn root_shells_are_for_admins_only_and_nobody_logged_in_needs_an_admin() {
+async fn root_shells_are_not_gated_by_server_roles() {
     let sys = TestSystem::start().await;
     let (dev, _agent) = online(&sys, FakePlatform::new("lab-pc")).await;
     let alice = sys.create_user("alice", "operator").await;
 
-    let (status, body) = Shell::open(&sys, &alice, &dev, json!({ "as": "root" })).await.err().unwrap();
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"]["code"], "admin_required");
-
-    let (mut sh, first) = Shell::open(&sys, &sys.admin_token, &dev, json!({ "as": "root" })).await.unwrap();
+    // The Device's Device Settings decide root access (ticket 07), not the Server role.
+    let (mut sh, first) = Shell::open(&sys, &alice, &dev, json!({ "as": "root" })).await.unwrap();
     assert_eq!(first["as"], "root");
     sh.input("whoami\r").await;
     sh.expect("root\r\n").await;
+    assert_eq!(sh.finish().await, json!({ "exit_code": 0 }));
 
     let platform = FakePlatform::new("kiosk");
     platform.set_session_state(SessionState::LoginScreen);
     let (kiosk, _kiosk_agent) = online(&sys, platform).await;
-    let (status, body) = Shell::open(&sys, &alice, &kiosk, json!({})).await.err().unwrap();
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["error"]["code"], "no_logged_in_user");
-    let (mut sh, first) = Shell::open(&sys, &sys.admin_token, &kiosk, json!({})).await.unwrap();
-    assert_eq!(first["as"], "root", "admins get root when nobody is logged in");
+    let (mut sh, first) = Shell::open(&sys, &alice, &kiosk, json!({})).await.unwrap();
+    assert_eq!(first["as"], "root", "with nobody logged in, commands run as root");
     sh.input("whoami\r").await;
     sh.expect("root\r\n").await;
+    assert_eq!(sh.finish().await, json!({ "exit_code": 0 }));
 
     let starts: Vec<Value> = audit(&sys).await.into_iter().filter(|e| e["action"] == "shell.start").collect();
-    assert_eq!(starts.len(), 3, "the admin_required refusal is not recorded: {starts:?}");
+    assert_eq!(starts.len(), 2, "{starts:?}");
     assert_eq!(starts[0]["params"], json!({ "as": "root" }));
-    assert_eq!(starts[1]["result"], json!({ "error": "no_logged_in_user" }));
+    assert_eq!(starts[0]["user"], "alice");
 }
 
 #[tokio::test]
@@ -231,6 +227,8 @@ async fn rcli_shell_relays_keystrokes_and_exits_with_the_remote_code() {
     let (result, _) = rcli(&sys.admin_token, &["shell", "lab-pc", "--as", "root"], &["exit\r"]).await;
     result.unwrap();
 
-    let (result, _) = rcli(&alice, &["shell", "lab-pc", "--as", "root"], &[]).await;
-    assert!(format!("{:#}", result.unwrap_err()).contains("admin_required"));
+    // Server roles no longer gate Device work; the Device's settings decide root access (ticket 07).
+    let (result, out) = rcli(&alice, &["shell", "lab-pc", "--as", "root"], &["whoami\r", "exit\r"]).await;
+    result.unwrap();
+    assert!(out.contains("root\r\n"), "{out:?}");
 }

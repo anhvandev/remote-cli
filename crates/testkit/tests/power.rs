@@ -26,7 +26,7 @@ async fn an_operator_restarts_a_device_and_it_is_audited() {
 }
 
 #[tokio::test]
-async fn while_a_control_lock_is_held_only_the_holder_or_an_admin_may_restart_shut_down_or_sleep() {
+async fn while_a_control_lock_is_held_only_the_holder_may_restart_shut_down_or_sleep() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
@@ -48,9 +48,11 @@ async fn while_a_control_lock_is_held_only_the_holder_or_an_admin_may_restart_sh
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = alice.post_json(&power(dev), &json!({ "action": "sleep" })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    // Server roles do not bypass the Control Lock: only the holder may restart, shut down or sleep.
     let (status, body) = sys.api.post_json(&power(dev), &json!({ "action": "shutdown" })).await;
-    assert_eq!(status, StatusCode::OK, "admin: {body}");
-    assert_eq!(agent.platform.power_actions(), vec![PowerAction::Lock, PowerAction::Sleep, PowerAction::Shutdown]);
+    assert_eq!(status, StatusCode::CONFLICT, "admin: {body}");
+    assert_eq!(body["error"]["holder"], "alice");
+    assert_eq!(agent.platform.power_actions(), vec![PowerAction::Lock, PowerAction::Sleep]);
 
     // Refusals are not audited; every power Action that ran is.
     let (_, entries) = sys.api.get("/api/v1/audit").await;
@@ -61,7 +63,6 @@ async fn while_a_control_lock_is_held_only_the_holder_or_an_admin_may_restart_sh
     assert_eq!(power, vec![
         (json!("bob"), json!("power.lock")),
         (json!("alice"), json!("power.sleep")),
-        (json!("admin"), json!("power.shutdown")),
     ]);
 }
 

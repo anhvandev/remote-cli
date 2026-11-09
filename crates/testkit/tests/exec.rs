@@ -70,7 +70,7 @@ async fn exec_timeout_is_enforced() {
 }
 
 #[tokio::test]
-async fn root_is_for_admins_only() {
+async fn root_is_not_gated_by_server_roles() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id().to_owned();
@@ -79,25 +79,21 @@ async fn root_is_for_admins_only() {
     let path = format!("/api/v1/devices/{dev}/exec");
     let as_root = json!({ "command": "whoami", "as": "root" });
 
+    // The Device's own Device Settings decide root access (ticket 07), not the Server role.
     let (status, body) = sys.api.with_token(Some(&alice_token)).post_json(&path, &as_root).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"]["code"], "admin_required");
-    let err = sys.rcli_as(&alice_token, &["exec", "lab-pc", "--as", "root", "--", "whoami"]).await.unwrap_err();
-    assert!(format!("{err:#}").contains("admin_required"), "{err:#}");
-
-    let (status, out) = sys.api.post_json(&path, &as_root).await;
-    assert_eq!(status, StatusCode::OK, "{out}");
-    assert_eq!(out["stdout"], "root\n");
-    assert_eq!(out["as"], "root");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["as"], "root");
+    let out = sys.rcli_as(&alice_token, &["exec", "lab-pc", "--as", "root", "--", "whoami"]).await.unwrap();
+    assert_eq!(out, "root\n");
 
     let entries = audit(&sys).await;
-    assert_eq!(entries.len(), 1, "refused requests are not run or recorded: {entries:?}");
-    assert_eq!(entries[0]["user"], "admin");
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    assert_eq!(entries[0]["user"], "alice");
     assert_eq!(entries[0]["params"]["as"], "root");
 }
 
 #[tokio::test]
-async fn with_nobody_logged_in_only_admins_run_commands_as_root() {
+async fn with_nobody_logged_in_any_caller_runs_commands_as_root() {
     let sys = TestSystem::start().await;
     let platform = FakePlatform::new("lab-pc");
     platform.set_session_state(SessionState::LoginScreen);
@@ -107,12 +103,12 @@ async fn with_nobody_logged_in_only_admins_run_commands_as_root() {
     let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
     let path = format!("/api/v1/devices/{dev}/exec");
 
-    let (status, body) = alice.post_json(&path, &json!({ "command": "whoami" })).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["error"]["code"], "no_logged_in_user");
+    let (status, out) = alice.post_json(&path, &json!({ "command": "whoami" })).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["stdout"], "root\n");
+    assert_eq!(out["as"], "root");
 
     let (status, out) = sys.api.post_json(&path, &json!({ "command": "whoami" })).await;
     assert_eq!(status, StatusCode::OK, "{out}");
-    assert_eq!(out["stdout"], "root\n");
     assert_eq!(out["as"], "root");
 }

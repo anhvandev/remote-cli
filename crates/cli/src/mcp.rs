@@ -17,12 +17,12 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{path_segment, Api};
 
 /// Serves MCP on `read`/`write` (stdin/stdout for `rcli mcp`) until the client disconnects.
-pub async fn serve<R, W>(server: String, token: String, read: R, write: W) -> anyhow::Result<()>
+pub async fn serve<R, W>(api: Api, read: R, write: W) -> anyhow::Result<()>
 where
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
 {
-    let mcp = Mcp { api: Api { base: server, token, http: reqwest::Client::new() }, watches: Default::default() };
+    let mcp = Mcp { api, watches: Default::default() };
     mcp.serve((read, write)).await?.waiting().await?;
     Ok(())
 }
@@ -187,7 +187,7 @@ impl Mcp {
     /// Opens the NDJSON lock watch and waits for its first line, so the Server counts us as connected.
     async fn watch(&self, path: &str) -> anyhow::Result<reqwest::Response> {
         let url = format!("{}{path}", self.api.base.trim_end_matches('/'));
-        let mut resp = self.api.http.get(url).bearer_auth(&self.api.token).send().await?.error_for_status()?;
+        let mut resp = self.api.auth(self.api.http.get(url), Some(path))?.send().await?.error_for_status()?;
         resp.chunk().await?;
         Ok(resp)
     }
