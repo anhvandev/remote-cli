@@ -45,7 +45,7 @@
   reload), changes the ID and sees a duplicate refused; operators see no card and the API refuses them.
 - The devstack gained a `kilo` Device for these tests (the specs run in parallel and rename/renumber it). The
   literal `5 Online` counts in `admin.spec.ts`, `fleet-filter.spec.ts` and `signin-fleet.spec.ts` became `6 Online`.
-- Verification: `cargo test --workspace` 148 passed / 0 failed; `cargo clippy --workspace --all-targets` clean;
+- Verification: `cargo test --workspace` 161 passed / 0 failed; `cargo clippy --workspace --all-targets` clean;
   `cd dashboard && npx tsc --noEmit` clean; the **whole** Playwright suite run on ports 18090/3110: 38 passed /
   0 failed (the new spec is 2 of them).
 - Not verified: the Windows named pipe (unchanged ticket 03 `shortcut:`); a real Device changing its ID while a
