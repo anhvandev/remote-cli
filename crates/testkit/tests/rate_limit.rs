@@ -194,3 +194,21 @@ async fn a_correct_password_resets_the_failure_count() {
     }
     assert_eq!(right.get(&path).await.0, StatusCode::OK, "the count started over");
 }
+
+#[tokio::test]
+async fn a_long_quiet_period_starts_the_count_over() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
+    let path = format!("/api/v1/devices/{}", agent.device_id());
+    let wrong = sys.device_client(agent.device_id(), "wrongpassword");
+
+    for _ in 0..5 {
+        assert_eq!(wrong.get(&path).await.0, StatusCode::UNAUTHORIZED);
+    }
+    sys.advance(24 * 3600 + 60);
+    for _ in 0..4 {
+        assert_eq!(wrong.get(&path).await.0, StatusCode::UNAUTHORIZED, "not locked out again");
+    }
+    assert_eq!(wrong.get(&path).await.0, StatusCode::UNAUTHORIZED, "the fifth starts a new lockout, not a 500");
+}
