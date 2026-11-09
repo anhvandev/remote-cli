@@ -208,7 +208,8 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
         return status.info();
     }
     if !is_root {
-        return json!({ "error": format!("changing the Device requires root (run `sudo rcli agent {}`)", command.unwrap_or_default().replace('.', " ")) });
+        let command = command.unwrap_or_default().replace('.', " ");
+        return json!({ "error": format!("this requires root (run `sudo rcli agent {command}`)") });
     }
     match command {
         Some("password.show") => match status.secrets.get(DEVICE_PASSWORD) {
