@@ -88,6 +88,8 @@ async fn change(
 }
 
 /// Sends an identity change to the Device's Agent and returns its refusal message, if any.
+/// shortcut: a reply lost after the Agent applied the change leaves the two sides disagreeing (the Server keeps the
+/// old ID/password); re-read the Device's identity on the next connection if that race ever shows up.
 async fn push(
     state: &super::State,
     id: Uuid,

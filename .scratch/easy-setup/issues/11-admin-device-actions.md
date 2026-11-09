@@ -51,8 +51,10 @@
 - Not verified: the Windows named pipe (unchanged ticket 03 `shortcut:`); a real Device changing its ID while a
   Controller holds an open stream (the ticket 06 tests cover streams surviving a password change; an ID change
   re-authenticates only new connections, which the test shows by connecting with the new ID).
-- `shortcut:` comments: none added by this ticket. Reused ticket 06's `IdentityUpdate` "empty field = unchanged"
-  convention, which is why each change is pushed as its own message.
+- `shortcut:` one, on `api::devices::push`: a reply lost after the Agent applied a change leaves the two sides
+  disagreeing (the Server keeps the old ID/password); re-read the Device's identity on the next connection if that
+  race ever shows up. Reused ticket 06's `IdentityUpdate` "empty field = unchanged" convention, which is why each
+  change is pushed as its own message.
 - Invented where the spec is silent: `ServerMessage.identity_change` / `AgentMessage.identity_updated` as the
   Server-initiated mirror of ticket 06's messages; the Offline-Device refusal (`409 device_not_connected`, no
   queueing) and rename working Offline; `audit` action names `device.id` and `device.password`; the Dashboard card
