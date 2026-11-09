@@ -18,7 +18,7 @@ pub async fn run(config: &Config, path: &Path) -> anyhow::Result<Upgraded> {
 
     let target = rcli_agent::target();
     let resp = reqwest::Client::new()
-        .get(format!("{}/api/v1/agent-builds/current/{target}", config.server.trim_end_matches('/')))
+        .get(format!("{}/api/v1/agent-builds/{target}", config.server.trim_end_matches('/')))
         .send()
         .await?;
     let status = resp.status();
@@ -37,18 +37,14 @@ pub async fn run(config: &Config, path: &Path) -> anyhow::Result<Upgraded> {
     );
     replace(path, &build)?;
     #[cfg(target_os = "linux")]
-    let restarted = if is_root() {
-        restart_service()?;
-        true
-    } else {
-        false
-    };
+    let restarted = restart_service_if_device()?;
     #[cfg(not(target_os = "linux"))]
     let restarted = false;
     Ok(Upgraded { version, target, path: path.to_owned(), restarted })
 }
 
 /// Replaces `path` atomically, so a crash mid-write never leaves a half-written binary behind.
+// shortcut: renaming over a running .exe fails on Windows; ticket 22's installer must move-aside first.
 fn replace(path: &Path, build: &[u8]) -> anyhow::Result<()> {
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     let temp = dir.join(format!(".{}.new", path.file_name().unwrap_or_default().to_string_lossy()));
@@ -64,16 +60,20 @@ fn is_root() -> bool {
     std::process::Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
 }
 
-/// Restarts the installed Agent service onto the new binary. Ticket 16 installs this unit.
-// shortcut: assumes the service runs the binary being replaced and that the unit is named rcli-agent; ticket 16's
-// `rcli agent install` records the real path and name, then this can read them instead.
+/// Run as root, the binary being replaced is the installed Agent's: restart it onto the new build right away.
+/// As a normal user (a Controller-only machine) there is no service to restart.
+// shortcut: assumes the unit is named rcli-agent and runs the binary being replaced; ticket 16's
+// `rcli agent install` records the real name and path, then this can read them instead.
 #[cfg(target_os = "linux")]
-fn restart_service() -> anyhow::Result<()> {
+fn restart_service_if_device() -> anyhow::Result<bool> {
+    if !is_root() {
+        return Ok(false);
+    }
     let installed = std::process::Command::new("systemctl").args(["cat", "rcli-agent"]).output();
     if !matches!(installed, Ok(ref o) if o.status.success()) {
         anyhow::bail!("no rcli-agent service is installed, so the new binary was not restarted");
     }
     let out = std::process::Command::new("systemctl").args(["restart", "rcli-agent"]).output()?;
     anyhow::ensure!(out.status.success(), "restarting the rcli-agent service failed: {}", String::from_utf8_lossy(&out.stderr).trim());
-    Ok(())
+    Ok(true)
 }

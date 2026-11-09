@@ -17,7 +17,7 @@ pub fn routes() -> Router<super::State> {
     Router::new()
         .route("/api/v1/agent-builds/{version}/{target}", put(publish).layer(DefaultBodyLimit::max(MAX_BUILD_BYTES)))
         .route("/api/v1/agent-builds/{version}/rollout", post(rollout))
-        .route("/api/v1/agent-builds/current/{target}", get(current))
+        .route("/api/v1/agent-builds/{target}", get(current))
 }
 
 /// Public like the update key: `rcli upgrade` fetches the newest build for its OS/arch and verifies the signature
