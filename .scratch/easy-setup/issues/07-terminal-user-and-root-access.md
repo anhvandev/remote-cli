@@ -4,7 +4,7 @@
 
 **Blocked by:** 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] exec/shell run as the Terminal User
 - [x] never / ask / always behave as specified, including timeout and no-session rejection
@@ -57,3 +57,21 @@
   `root_decision` field on `ExecResult`/`ShellOpened` and in audit results; `rcli agent root grant <who>` as the
   IPC entry point for "a person at the Device grants root to this session" (the GUI will call the same command);
   storing `rcli root on|off` as a per-Device file in the Controller config; the `Requester` plumbing over the proto.
+
+## Comments
+
+- Implemented by a subagent on branch `t/07` (`a240181`). exec/shell run as the Device's **Terminal User** (default: the
+  account running the Agent), changed with `sudo rcli agent terminal-user set <user>` and persisted in `settings.json`
+  beside the credentials. Root access `never | ask | always` (default `ask`); `ask` prompts through
+  `Platform::ask_root(requester, 30s)` with Accept/Reject, auto-rejects on timeout, and rejects when no session can show
+  the prompt. Refusal is `403 root_denied`. A session grant comes from `rcli agent root grant <who>` and is cleared when
+  the Agent reconnects. `rcli root on|off <ID>` makes `--as root` the Controller's default per Device; the Device still
+  decides. Dashboard Users and password connections obey the same rules; the prompt names `<host> (<IP>)`. Every root run
+  and every prompt answer is audited with `result.root_decision` (`always|session|accepted|rejected|no_session|never`),
+  including refusals.
+- Real bug found and fixed: the Server timed Agent requests out after 10 s while the root prompt allows 30 s, so `ask`
+  always failed; `request_within` now adds 30 s for exec and shell.
+- Verified on the merged integration tree: `cargo test --workspace` 176 passed / 0 failed, clippy and `tsc --noEmit` clean.
+  Affected suites re-run green: `terminal_user` 10, `exec` 4, `shell` 6, `device_identity` 5.
+- Not verified: a real OS adapter running `RunAs::User` as a different account (FakePlatform only; tickets 15+ need
+  `su`/`runas`), the GUI prompt (ticket 14), and the Windows named pipe (ticket 03's existing shortcut).
