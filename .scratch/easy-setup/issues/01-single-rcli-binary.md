@@ -4,8 +4,12 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `rcli agent run` does everything `rcli-agent` did
-- [ ] No `rcli-agent` binary or reference to it remains (container image, docs, test system)
-- [ ] The whole existing test suite passes unchanged
+- [x] `rcli agent run` does everything `rcli-agent` did
+- [x] No `rcli-agent` binary or reference to it remains (container image, docs, test system)
+- [x] The whole existing test suite passes unchanged
+
+## Comments
+
+- Implemented by `ccs ds` on branch `t/01` (cea4dae). Verified on `easy-setup`: `cargo test --workspace` 114 passed / 0 failed, clippy clean. `rcli-agent` remains only as the library crate name and the `rcli-agent-build` update-signature domain string (changing it would break signatures).
