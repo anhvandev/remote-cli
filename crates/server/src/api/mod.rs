@@ -149,6 +149,8 @@ impl FromRequestParts<State> for Caller {
             return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"));
         };
         let controller = header("x-rcli-controller").unwrap_or("unknown");
+        // shortcut: this is the TCP peer, so behind a reverse proxy every Controller shares the proxy's IP and
+        // bucket; trust `X-Forwarded-For` only once the proxy is a known, configured hop.
         let ip = parts
             .extensions
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
