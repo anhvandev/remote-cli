@@ -97,6 +97,19 @@ pub async fn agent_failed(state: &AppState, device: Uuid, failed: &UpdateFailed)
     Ok(())
 }
 
+/// The build `rcli upgrade` fetches for a target: the most recently published one. Rollout state is per Device, so
+/// a Controller-only machine has none; the newest signed build is what an Admin made current for that OS/arch.
+pub async fn latest(state: &AppState, target: &str) -> anyhow::Result<Option<(String, Vec<u8>, Vec<u8>)>> {
+    let row: Option<(String, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        "SELECT version, signature, build FROM agent_builds WHERE target = $1
+         ORDER BY uploaded_at DESC, version DESC LIMIT 1",
+    )
+    .bind(target)
+    .fetch_optional(&state.db)
+    .await?;
+    Ok(row)
+}
+
 /// The build this Device should install now, if any. A missing build for the Device's
 /// target is recorded as a failure instead.
 pub async fn pending(state: &AppState, device: Uuid) -> anyhow::Result<Option<AgentUpdate>> {
