@@ -31,8 +31,45 @@ impl User {
     }
 }
 
+/// Wrong Device Passwords in a row that lock a (Device ID, IP) pair out for a minute.
+pub const MAX_FAILED_DEVICE_PASSWORDS: i32 = 5;
+pub const PASSWORD_LOCKOUT: chrono::Duration = chrono::Duration::minutes(1);
+/// The most a lockout grows to, however many times it repeats.
+pub const PASSWORD_LOCKOUT_MAX: chrono::Duration = chrono::Duration::hours(1);
+/// Failures of a pair not seen for this long start over.
+// shortcut: the window is fixed, not sliding; a slower scanner can try a few per window indefinitely. Move to a
+// sliding window if that shows up.
+pub const PASSWORD_FAILURE_WINDOW: chrono::Duration = chrono::Duration::hours(24);
+
+pub enum ControllerError {
+    /// Wrong Server Key, Device ID or Device Password (no hint which).
+    Unauthorized,
+    /// Too many wrong passwords for this (Device ID, IP); nothing is checked until then.
+    Locked(chrono::DateTime<chrono::Utc>),
+}
+
+/// A real check's cost for an unknown Device, so response time does not reveal whether the Device ID exists.
+fn dummy_password_check(password: &str) {
+    static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let hash = DUMMY.get_or_init(|| rcli_protocol::password::hash("no such Device Password"));
+    let _ = rcli_protocol::password::verify(password, hash);
+}
+
+/// The principal a password connection authenticates as: `<controller hostname> (<IP>)`, with a stable id per
+/// (machine, IP) so the Control Lock holder survives reconnects.
+fn controller_user(controller: &str, ip: &str) -> User {
+    let name = format!("{} ({ip})", controller.trim());
+    let digest = Sha256::digest(name.as_bytes());
+    let id_bytes = <[u8; 16]>::try_from(&digest[..16]).expect("16 bytes");
+    User { id: Uuid::from_bytes(id_bytes), name, role: "controller".into(), disabled_at: None, device_scope: None }
+}
+
 /// A password connection: Server Key secret + Device ID + Device Password. It reaches only its own Device and has
 /// no admin rights. Its display name is `<controller hostname> (<IP>)` in audit entries and as Control Lock holder.
+/// Wrong Device Passwords are counted per (Device ID, IP): the fifth locks the pair out for a minute, each later
+/// lockout doubles, and a correct password after that resets the count.
+// shortcut: a wrong Server Key is not counted (it reveals nothing about a password); a leaked key still has to pass
+// the limiter on the Device Password.
 pub async fn authenticate_controller(
     state: &AppState,
     server_key: &str,
@@ -40,28 +77,118 @@ pub async fn authenticate_controller(
     password: &str,
     controller: &str,
     ip: &str,
-) -> anyhow::Result<Option<User>> {
+) -> anyhow::Result<Result<User, ControllerError>> {
     let key = state.settings.key().await;
     let expected = crate::server_key::split(&key).map(|(_, secret)| secret).unwrap_or_default();
     let presented = crate::server_key::split(server_key).map(|(_, secret)| secret).unwrap_or("");
     if !crate::server_key::secret_matches(expected, presented) {
-        return Ok(None);
+        return Ok(Err(ControllerError::Unauthorized));
     }
-    let Ok(Some(id)) = crate::registry::resolve(state, device).await? else { return Ok(None) };
+    // A Device that exists is keyed by its UUID, so every way of naming it (Device ID, UUID, name) shares one
+    // bucket; an unknown Device ID is keyed as presented, so it is counted too and cannot dodge the limiter.
+    // An ambiguous name is treated as unknown: it gets no password check and no Device scope.
+    let resolved = crate::registry::resolve(state, device).await?.ok().flatten();
+    let bucket = resolved.map_or_else(|| device.to_owned(), |id| id.to_string());
+    let now = state.clock.now();
+    let locked_until: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT locked_until FROM device_password_failures WHERE device = $1 AND ip = $2")
+            .bind(&bucket)
+            .bind(ip)
+            .fetch_optional(&state.db)
+            .await?
+            .flatten();
+    if let Some(until) = locked_until.filter(|u| *u > now) {
+        return Ok(Err(ControllerError::Locked(until)));
+    }
+    let Some(id) = resolved else {
+        dummy_password_check(password);
+        return password_failed(state, &bucket, ip, controller, None, now).await;
+    };
     let stored: Option<String> =
         sqlx::query_scalar("SELECT device_password_hash FROM devices WHERE id = $1 AND revoked_at IS NULL")
             .bind(id)
             .fetch_optional(&state.db)
             .await?;
-    let Some(stored) = stored.filter(|h| !h.is_empty()) else { return Ok(None) };
+    let Some(stored) = stored.filter(|h| !h.is_empty()) else {
+        dummy_password_check(password);
+        return password_failed(state, &bucket, ip, controller, Some(id), now).await;
+    };
     if !rcli_protocol::password::verify(password, &stored) {
-        return Ok(None);
+        return password_failed(state, &bucket, ip, controller, Some(id), now).await;
     }
-    let name = format!("{} ({ip})", controller.trim());
-    // A stable id per (controller machine, IP) so the Control Lock holder survives reconnects.
-    let digest = Sha256::digest(name.as_bytes());
-    let id_bytes = <[u8; 16]>::try_from(&digest[..16]).expect("16 bytes");
-    Ok(Some(User { id: Uuid::from_bytes(id_bytes), name, role: "controller".into(), disabled_at: None, device_scope: Some(id) }))
+    sqlx::query("DELETE FROM device_password_failures WHERE device = $1 AND ip = $2")
+        .bind(&bucket)
+        .bind(ip)
+        .execute(&state.db)
+        .await?;
+    let mut user = controller_user(controller, ip);
+    user.device_scope = Some(id);
+    Ok(Ok(user))
+}
+
+/// Counts one wrong Device Password (or unknown Device ID) for the pair; the one reaching
+/// `MAX_FAILED_DEVICE_PASSWORDS` starts a lockout, doubling each time up to `PASSWORD_LOCKOUT_MAX`.
+async fn password_failed(
+    state: &AppState,
+    bucket: &str,
+    ip: &str,
+    controller: &str,
+    device: Option<Uuid>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<Result<User, ControllerError>> {
+    // One atomic upsert: counting with a read-then-write would lose failures under parallel requests, so a
+    // parallel guesser would never reach the lockout. The lockout length is 1, 2, 4 ... minutes, capped at an hour.
+    let locked_until: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "INSERT INTO device_password_failures AS f (device, ip, failures, lockouts, locked_until, seen_at)
+         VALUES ($1, $2, 1, 0, NULL, $3)
+         ON CONFLICT (device, ip) DO UPDATE SET
+            failures = CASE
+                WHEN f.seen_at < $3 - $4::interval THEN 1
+                WHEN f.failures + 1 >= $5 THEN 0
+                ELSE f.failures + 1 END,
+            lockouts = CASE
+                WHEN f.seen_at < $3 - $4::interval THEN 0
+                WHEN f.failures + 1 >= $5 THEN f.lockouts + 1
+                ELSE f.lockouts END,
+            locked_until = CASE
+                WHEN f.seen_at < $3 - $4::interval THEN NULL
+                WHEN f.failures + 1 >= $5 THEN LEAST(
+                    $3 + $6::interval * power(2, LEAST(f.lockouts, 6))::int, $3 + $7::interval)
+                ELSE NULL END,
+            seen_at = $3
+         RETURNING locked_until",
+    )
+    .bind(bucket)
+    .bind(ip)
+    .bind(now)
+    .bind(PASSWORD_FAILURE_WINDOW)
+    .bind(MAX_FAILED_DEVICE_PASSWORDS)
+    .bind(PASSWORD_LOCKOUT)
+    .bind(PASSWORD_LOCKOUT_MAX)
+    .fetch_one(&state.db)
+    .await?;
+    let user = controller_user(controller, ip);
+    let device = device.unwrap_or(Uuid::nil());
+    let recorded = async {
+        crate::audit::record(state, &user, device, "connect.failed", serde_json::json!({}), serde_json::json!({ "error": "unauthorized" })).await?;
+        if let Some(until) = locked_until {
+            crate::audit::record(
+                state,
+                &user,
+                device,
+                "connect.locked",
+                serde_json::json!({}),
+                serde_json::json!({ "locked_until": until }),
+            )
+            .await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if let Err(e) = recorded {
+        tracing::error!("cannot audit a wrong Device Password: {e:#}");
+    }
+    Ok(Err(ControllerError::Unauthorized))
 }
 
 #[derive(Debug)]

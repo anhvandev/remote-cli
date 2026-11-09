@@ -63,6 +63,12 @@ async fn server_key(
     Json(json!({ "server_key": state.settings.key().await, "ca_fingerprint": state.ca.fingerprint }))
 }
 
+/// Whole seconds left until `until`, rounded up so "try again in 0s" is never shown while still locked.
+fn remaining_secs(until: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chrono::Utc>) -> i64 {
+    let ms = (until - now).num_milliseconds().max(0);
+    (ms + 999) / 1000
+}
+
 /// The update-signing public key (hex), which a Controller pins at `rcli setup`; empty = no updates.
 async fn update_key(axum::extract::State(state): axum::extract::State<State>) -> Json<serde_json::Value> {
     let key = state.config.update_public_key.as_deref().map(hex::encode).unwrap_or_default();
@@ -151,7 +157,17 @@ impl FromRequestParts<State> for Caller {
         crate::auth::authenticate_controller(state, server_key, device, password, controller, &ip)
             .await?
             .map(Caller)
-            .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "wrong Server Key, Device ID or Device Password"))
+            .map_err(|e| match e {
+                crate::auth::ControllerError::Unauthorized => {
+                    ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "wrong Server Key, Device ID or Device Password")
+                }
+                crate::auth::ControllerError::Locked(until) => ApiError::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too_many_attempts",
+                    format!("too many wrong Device Passwords; try again in {}s (after {until})", remaining_secs(until, state.clock.now())),
+                )
+                .with("locked_until", until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            })
     }
 }
 

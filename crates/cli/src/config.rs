@@ -170,14 +170,17 @@ pub async fn verify(server: &str, key: &str, device: &str, password: &str, contr
         .header("x-rcli-controller", controller)
         .send()
         .await?;
-    if resp.status().is_success() {
+    let status = resp.status();
+    if status.is_success() {
         return Ok(());
     }
     let body: serde_json::Value = resp.json().await.unwrap_or_default();
-    anyhow::bail!(
-        "the Device ID or Device Password is wrong: {}",
-        body["error"]["message"].as_str().unwrap_or("unauthorized")
-    )
+    let message = body["error"]["message"].as_str().unwrap_or("unauthorized");
+    // A lockout is not a wrong password: say how long it lasts instead of denying credentials that may be right.
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        anyhow::bail!("{message}");
+    }
+    anyhow::bail!("the Device ID or Device Password is wrong: {message}")
 }
 
 /// The JSON `rcli setup --json` prints.
