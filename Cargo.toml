@@ -17,6 +17,7 @@ chrono = { version = "0.4", features = ["serde"] }
 data-encoding = "2"
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = { version = "0.28", default-features = false, features = ["windows"] }
+eframe = "0.31"
 futures = "0.3"
 mp4 = "0.14"
 openh264 = "0.9"

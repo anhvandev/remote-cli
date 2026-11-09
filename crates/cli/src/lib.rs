@@ -9,6 +9,8 @@ use std::{
 
 pub mod agent;
 pub mod config;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod media;
 pub mod upgrade;
 
