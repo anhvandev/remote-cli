@@ -4,7 +4,7 @@
 
 **Blocked by:** 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] `unlock` works with a password set on the Device and reports clearly when none is set
 - [x] The password never leaves the Device and is masked in audit
@@ -18,3 +18,6 @@
 - **Server side removed.** Deleted `vault.rs`, `api/vault.rs`, the `unlock_passwords` table/migration, the admin `rcli unlock-password` command (and its `admin_only` entry), and the Dashboard unlock-password UI (admin actions/data/pages, the `UnlockPassword` API type, and the Playwright test).
 - **Master key stays.** `MasterKey` moved from the old `vault.rs` to `crates/server/src/master_key.rs`; it still seals the CA private key (`pki.rs`) and TOTP secrets (`auth.rs`) via `RCLI_MASTER_KEY`, which is unchanged. `crates/testkit/tests/master_key.rs` (was `vault.rs`) keeps that coverage.
 - **Tests** (`crates/testkit/tests/unlock_password.rs`, driven via `rcli` in-process + the Controller API): unlock with a stored password types it and the audit has no params; `unlock_password_not_set` when cleared (Agent types nothing); each Device types its own password and replacement keeps the newest; non-root `set`/`clear` refused. `cargo test --workspace` 177 passed / 0 failed; `cargo clippy --workspace --all-targets` clean; `npx tsc --noEmit` clean; Playwright `tests/admin.spec.ts` 9 passed (the unlock-password test removed).
+- Merged into `easy-setup` (fast-forward to `f1b46bb`). Merge-review fixes: `docs/deploy.md` still claimed `RCLI_MASTER_KEY` "mã hoá mật khẩu unlock" and named the removed `vault_unavailable` error — now it documents the CA key and TOTP secrets only; restored a lost newline in `dashboard/lib/api.ts`.
+- Verified on the merged integration tree: `cargo test --workspace` 177 passed / 0 failed; `cargo clippy --workspace --all-targets` clean; `cd dashboard && npx tsc --noEmit` clean; Playwright `tests/admin.spec.ts` 9 passed (ports 18092/3112).
+- Not verified: a real OS lock/login screen (FakePlatform only; tickets 15+ adapters). Left in place: the unused `Status::unlock_password()` accessor in `crates/agent/src/ipc.rs` — likely the seam for the ticket 14 GUI.

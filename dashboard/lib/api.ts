@@ -89,7 +89,8 @@ export type Device = {
   revoked_at: string | null;
   /** "Wake failed" when the last Wake timed out and the Device is still Offline. */
   wake_error: string | null;
-};export type Inventory = {
+};
+export type Inventory = {
   os: string;
   os_version: string;
   hostname: string;
