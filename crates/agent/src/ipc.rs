@@ -199,6 +199,8 @@ impl Status {
             "server": self.endpoint.borrow().addr,
             "connected": self.connected.load(Ordering::Relaxed),
             "controllers": self.controllers.list(),
+            // The GUI reads the Device Settings from here; any local user may see (not change) them.
+            "settings": self.settings.get(),
         })
     }
 }

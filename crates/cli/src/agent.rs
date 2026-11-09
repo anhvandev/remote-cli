@@ -159,9 +159,10 @@ pub enum PasswordCommand {
     },
     /// Replace the Device Password (requires root/Administrator); open sessions keep working.
     Set {
-        /// At least 8 characters.
+        /// At least 8 characters. Reads one line from stdin when omitted, so an elevated helper
+        /// never puts a password on a command line.
         #[arg(long, env = "RCLI_DEVICE_PASSWORD", hide_env_values = true)]
-        password: String,
+        password: Option<String>,
     },
 }
 
@@ -178,6 +179,14 @@ pub async fn run_password(command: PasswordCommand, socket: Option<PathBuf>, out
             writeln!(out, "{}", reply["password"].as_str().unwrap_or_default())?;
         }
         PasswordCommand::Set { password } => {
+            let password = match password {
+                Some(p) => p,
+                None => {
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line)?;
+                    line.trim_end_matches(['\n', '\r']).to_owned()
+                }
+            };
             let reply = ipc::send(&socket, serde_json::json!({ "command": "password.set", "password": password })).await?;
             writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
         }
