@@ -1,4 +1,5 @@
-use rcli_testkit::{StatusCode, TestSystem};
+use rcli_agent::ServerEndpoint;
+use rcli_testkit::{FakePlatform, StatusCode, TestSystem};
 
 #[tokio::test]
 async fn admins_read_the_server_settings_and_operators_are_refused() {
@@ -13,4 +14,31 @@ async fn admins_read_the_server_settings_and_operators_are_refused() {
     let (status, body) = op.get("/api/v1/server-settings").await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["error"]["code"], "admin_required");
+}
+
+#[tokio::test]
+async fn replacing_the_server_key_keeps_registered_devices_and_retires_the_old_key() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
+    let old_key = sys.rcli(&["server-key", "show"]).await.unwrap().trim().to_owned();
+
+    let rotated: serde_json::Value =
+        serde_json::from_str(&sys.rcli(&["server-key", "rotate", "--json"]).await.unwrap()).unwrap();
+    let new_key = rotated["server_key"].as_str().unwrap();
+    assert_ne!(new_key, old_key);
+    // Only the secret changes; the CA fingerprint is the part that pins the Server.
+    assert_eq!(new_key.split('_').nth(1), old_key.split('_').nth(1), "{new_key} {old_key}");
+    assert_eq!(sys.rcli(&["server-key", "show"]).await.unwrap().trim(), new_key);
+
+    // The registered Device keeps its certificate, so it is still Online.
+    let device = sys.wait_device(agent.device_id(), |_| true).await;
+    assert_eq!(device["status"], "Online");
+
+    // The old key no longer registers a Device; the new one does.
+    let old = ServerEndpoint { addr: sys.agent_addr(), server_key: old_key };
+    let err = rcli_agent::register(&old, &FakePlatform::new("impostor")).await.unwrap_err();
+    assert!(err.to_string().contains("invalid_server_key"), "{err}");
+    let new = ServerEndpoint { addr: sys.agent_addr(), server_key: new_key.to_owned() };
+    rcli_agent::register(&new, &FakePlatform::new("new-pc")).await.unwrap();
 }
