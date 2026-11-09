@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import * as act from "../actions";
 import { Form } from "../form";
-import { card, cardHead, day, nativeSelect, title } from "../shared";
+import { card, cardHead, nativeSelect, title } from "../../styles";
 
 export default async function UsersPage() {
   const [users, tokens] = await Promise.all([api<User[]>("/api/v1/users"), api<ApiToken[]>("/api/v1/tokens")]);
@@ -16,8 +16,8 @@ export default async function UsersPage() {
         <Form action={act.createUser}>
           <Input name="name" aria-label="Tên user mới" placeholder="tên user" required className="h-8 w-40" />
           <select name="role" aria-label="Vai trò" defaultValue="operator" className={nativeSelect}>
-            <option value="operator">operator</option>
-            <option value="admin">admin</option>
+            <option value="operator">Operator</option>
+            <option value="admin">Admin</option>
           </select>
           <Button size="sm" variant="secondary">
             + User
@@ -47,7 +47,7 @@ export default async function UsersPage() {
                   )}
                 </TableCell>
                 <TableCell>
-                  <Badge variant="secondary">{u.role}</Badge>
+                  <Badge variant="secondary">{u.role === "admin" ? "Admin" : "Operator"}</Badge>
                 </TableCell>
                 <TableCell className="whitespace-normal">
                   {mine.length} token
@@ -55,7 +55,7 @@ export default async function UsersPage() {
                     <Form key={t.id} action={act.revokeToken} confirm="Thu hồi token này?">
                       <input type="hidden" name="id" value={t.id} />
                       <span className="font-mono text-xs text-muted-foreground">
-                        {t.id.slice(0, 8)} · {day(t.created_at)}
+                        {t.id.slice(0, 8)} · {new Date(t.created_at).toLocaleString("vi-VN")}
                       </span>
                       <Button
                         size="icon-xs"

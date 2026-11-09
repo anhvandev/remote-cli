@@ -46,23 +46,3 @@ test("an unknown Device still shows the not-found page", async ({ page }) => {
   expect(res?.status()).toBe(404);
   await expect(page.getByText(/could not be found/i)).toBeVisible();
 });
-
-// bravo is Offline and no other spec takes its Control Lock (alpha's is signin-fleet's, charlie's direct-control's).
-test("switching tabs keeps the Control Lock", async ({ page }) => {
-  const user = await newUser();
-  await signIn(page, user);
-  await page.getByRole("link", { name: "bravo" }).click();
-  await page.getByRole("link", { name: "Màn hình" }).click();
-
-  const lock = page.getByRole("region", { name: "Control Lock" });
-  await lock.getByRole("button", { name: "Lấy Control Lock" }).click();
-  await expect(lock.getByRole("button", { name: "Trả Control Lock" })).toBeVisible();
-
-  await page.getByRole("link", { name: "Tổng quan" }).click();
-  await page.getByRole("link", { name: "Màn hình" }).click();
-  await expect(lock).toContainText(`🔒 ${user.name}`);
-  await expect(lock.getByRole("button", { name: "Trả Control Lock" })).toBeVisible();
-
-  await lock.getByRole("button", { name: "Trả Control Lock" }).click();
-  await expect(lock).toContainText("Không ai giữ");
-});

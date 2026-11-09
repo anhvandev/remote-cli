@@ -6,7 +6,8 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import * as act from "../actions";
 import { Form } from "../form";
-import { card, cardHead, rollouts as groupRollouts, title } from "../shared";
+import { card, cardHead, title } from "../../styles";
+import { groupRollouts } from "../data";
 
 export default async function UpdatesPage() {
   const devices = await api<Device[]>("/api/v1/devices");

@@ -1,7 +1,8 @@
 import Link from "next/link";
-import { api, type ApiToken, type Device, type UnlockPassword, type User } from "@/lib/api";
+import { api, type ApiToken, type Device, type DeviceStatus, type User } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { card, cardHead, rollouts as groupRollouts, title } from "./shared";
+import { card, cardHead, title } from "../styles";
+import { groupRollouts, unlockPasswords } from "./data";
 
 export default async function AdminPage() {
   const [users, tokens, devices] = await Promise.all([
@@ -9,13 +10,11 @@ export default async function AdminPage() {
     api<ApiToken[]>("/api/v1/tokens"),
     api<Device[]>("/api/v1/devices"),
   ]);
-  const unlock = await Promise.all(
-    devices.map((d) => api<UnlockPassword>(`/api/v1/devices/${d.id}/unlock-password`)),
-  );
+  const unlock = await unlockPasswords(devices);
   const rollouts = groupRollouts(devices);
   const failed = devices.filter((d) => d.update?.status === "failed");
-  const count = (role: string) => users.filter((u) => u.role === role).length;
-  const status = (s: string) => devices.filter((d) => d.status === s).length;
+  const count = (role: User["role"]) => users.filter((u) => u.role === role).length;
+  const status = (s: DeviceStatus) => devices.filter((d) => d.status === s).length;
 
   return (
     <div className="grid items-start gap-5 lg:grid-cols-2">
@@ -77,7 +76,8 @@ export default async function AdminPage() {
               {failed.map((d) => (
                 <li key={d.id}>
                   <Link href={`/devices/${d.id}`} className="text-destructive underline-offset-4 hover:underline">
-                    {d.name}: {d.update!.error}
+                    {d.name}
+                    {d.update!.error && `: ${d.update!.error}`}
                   </Link>
                 </li>
               ))}

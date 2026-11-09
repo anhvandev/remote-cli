@@ -3,10 +3,11 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { wake } from "../../../actions";
+import type { DeviceStatus } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
-export function Placeholder({ device, status }: { device: string; status: "Offline" | "Waking" }) {
+export function Placeholder({ device, status }: { device: string; status: Exclude<DeviceStatus, "Online"> }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();

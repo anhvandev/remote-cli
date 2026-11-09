@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { newUser, signIn } from "./devstack";
 
-// alpha/charlie/golf stay Online, bravo/hotel stay Offline; other specs mutate delta/echo/foxtrot, so filter by names.
+// alpha/charlie/golf/india stay Online, bravo/hotel stay Offline; other specs mutate delta/echo/foxtrot, so filter by names.
 const row = (page: Page, name: string) => page.getByRole("row").filter({ hasText: name });
 
 test("search narrows the fleet by name, case-insensitively, and lands in the URL", async ({ page }) => {
@@ -14,7 +14,7 @@ test("search narrows the fleet by name, case-insensitively, and lands in the URL
   await expect(row(page, "alpha")).toBeVisible();
   await expect(row(page, "bravo")).toHaveCount(0);
   // The counts line still describes the whole fleet, not the filtered list.
-  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("3 Online");
+  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("4 Online");
 });
 
 test("status filter narrows the fleet and lands in the URL", async ({ page }) => {
@@ -25,7 +25,7 @@ test("status filter narrows the fleet and lands in the URL", async ({ page }) =>
   await expect(page).toHaveURL(/[?&]status=Offline(?:&|$)/);
   await expect(row(page, "bravo")).toBeVisible();
   await expect(row(page, "alpha")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("3 Online");
+  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("4 Online");
 });
 
 test("a filtered link opens filtered, and Back from a Device restores it", async ({ page }) => {

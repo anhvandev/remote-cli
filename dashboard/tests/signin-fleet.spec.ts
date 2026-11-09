@@ -5,11 +5,11 @@ test("sign in with password + TOTP and open a Device", async ({ page }) => {
   const user = await newUser();
   await signIn(page, user);
 
-  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("3 Online ·"); // admin tests add/remove Offline Devices
+  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("4 Online ·"); // admin tests add/remove Offline Devices
   const row = (name: string) => page.getByRole("row").filter({ hasText: name });
   await expect(row("alpha")).toContainText("Online");
   await expect(row("bravo")).toContainText("Offline");
-  await expect(page.getByRole("navigation")).toContainText(`${user.name} · operator`);
+  await expect(page.getByRole("navigation")).toContainText(`${user.name} · Operator`);
 
   await page.getByRole("link", { name: "alpha" }).click();
   await expect(page.getByRole("heading", { name: /alpha/ })).toContainText("Online");

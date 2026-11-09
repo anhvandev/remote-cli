@@ -1,13 +1,13 @@
 import type { Resources } from "@/lib/api";
-import { getDevice } from "./device-data";
+import { card, cardHead, title } from "../../styles";
+import { getDevice, uptime } from "./device-data";
 
 const GB = 1 << 30;
 const gb = (b: number) => `${(b / GB).toFixed(1)} GB`;
 const rate = (b?: number) => (b === undefined ? "—" : `${(b / 1e6).toFixed(1)} MB/s`);
 const pct = (p?: number) => (p === undefined ? "—" : `${Math.round(p)}%`);
-const uptime = (s: number) => `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
 
-function Screen({ r }: { r: Resources }) {
+function SessionBadge({ r }: { r: Resources }) {
   switch (r.session) {
     case "Active":
       return <span className="rounded-full bg-secondary px-2 py-0.5 text-xs">Đã đăng nhập · {r.logged_in_user || "?"}</span>;
@@ -40,10 +40,10 @@ export default async function OverviewPage({ params }: { params: Promise<{ id: s
   const r = d.resources;
   return (
     <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
-      <section className="rounded-xl border border-border bg-card" aria-label="Tài nguyên">
-        <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
-          <h3 className="text-sm font-medium text-muted-foreground">Tài nguyên</h3>
-          {r && <Screen r={r} />}
+      <section className={card} aria-label="Tài nguyên">
+        <div className={cardHead}>
+          <h3 className={title}>Tài nguyên</h3>
+          {r && <SessionBadge r={r} />}
         </div>
         <div className="p-5">
           {r ? (
@@ -98,9 +98,9 @@ export default async function OverviewPage({ params }: { params: Promise<{ id: s
         </div>
       </section>
 
-      <section className="rounded-xl border border-border bg-card" aria-label="Phần cứng">
-        <div className="border-b border-border px-5 py-3.5">
-          <h3 className="text-sm font-medium text-muted-foreground">Phần cứng</h3>
+      <section className={card} aria-label="Phần cứng">
+        <div className={cardHead}>
+          <h3 className={title}>Phần cứng</h3>
         </div>
         <div className="p-5">
           {inv ? (

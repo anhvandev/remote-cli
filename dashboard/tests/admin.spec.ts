@@ -18,7 +18,7 @@ const rowIn = (page: Page, section: string, text: string | RegExp) =>
 test("operators don't see the admin screens", async ({ page }) => {
   await signIn(page, await newUser("operator"));
   const nav = page.getByRole("navigation");
-  await expect(nav).toContainText("operator");
+  await expect(nav).toContainText("Operator");
   await expect(page.getByRole("link", { name: "Quản trị" })).toHaveCount(0);
   for (const name of ["User", "Enrollment Code", "Cập nhật Agent"]) {
     await expect(nav.getByRole("link", { name, exact: true })).toHaveCount(0);
@@ -38,18 +38,19 @@ test("the sidebar shows the four Quản trị sub-entries and marks the current 
   const nav = page.getByRole("navigation");
   const subs: [string, string][] = [
     ["User", "/admin/users"],
-    ["Device (Admin)", "/admin/devices"],
+    ["Device", "/admin/devices"],
     ["Enrollment Code", "/admin/enrollment"],
     ["Cập nhật Agent", "/admin/updates"],
   ];
+  const group = nav.getByRole("group", { name: "Quản trị" });
   for (const [label, path] of subs) {
-    await nav.getByRole("link", { name: label, exact: true }).click();
+    await group.getByRole("link", { name: label, exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`${path}$`));
-    await expect(nav.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(group.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
     await expect(nav.getByRole("link", { name: "Quản trị" })).not.toHaveAttribute("aria-current", "page");
   }
-  // The top-level Device entry stays unambiguous and inactive on admin pages.
-  await expect(nav.getByRole("link", { name: "Device", exact: true })).toHaveCount(1);
+  // The top-level Device entry stays inactive on admin pages.
+  await expect(nav.getByRole("link", { name: "Device", exact: true }).first()).not.toHaveAttribute("aria-current", "page");
 });
 
 test("the Quản trị root links to each sub-page", async ({ page }) => {
@@ -78,7 +79,7 @@ test("admin creates a user, sets their password, issues and revokes a token, dis
   await users.getByLabel("Vai trò").selectOption("operator");
   await users.getByRole("button", { name: "+ User" }).click();
   const row = rowIn(page, "User & API token", name);
-  await expect(row).toContainText("operator");
+  await expect(row).toContainText("Operator");
   await expect(row).toContainText("0 token");
 
   await row.getByLabel(`Mật khẩu Dashboard cho ${name}`).fill("a long password");
@@ -177,6 +178,7 @@ test("the overview shows four cards with counts from the Server", async ({ page 
     await expect(user).toContainText(`${tokens.length} API token`);
 
     const device = page.getByRole("region", { name: "Device" });
+    await expect(device).toContainText("4 Online"); // alpha, charlie, golf, india: no spec takes them Offline
     const count = (s: string) => devices.filter((d: { status: string }) => d.status === s).length;
     await expect(device).toContainText(`${count("Online")} Online · ${count("Offline")} Offline · ${count("Waking")} Waking`);
     await expect(device).toContainText(`${devices.filter((d: { revoked_at: string | null }) => d.revoked_at).length} Device đã thu hồi`);
@@ -248,5 +250,5 @@ test("admin uploads a signed Agent build and rolls it out to selected Devices", 
 
   // The Device sub-page shows the rollout on the Device itself.
   await page.goto("/admin/devices");
-  await expect(rowIn(page, "Device", /^bravo /)).toContainText(`${update.version} · đang chờ`);
+  await expect(rowIn(page, "Device", /^bravo /)).toContainText(`${update.version} · pending`);
 });
