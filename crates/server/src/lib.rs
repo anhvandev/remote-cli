@@ -15,6 +15,7 @@ pub mod pki;
 pub mod registration;
 pub mod registry;
 pub mod server_key;
+pub mod settings;
 pub mod shell;
 pub mod updates;
 pub mod wake;
@@ -33,7 +34,7 @@ pub struct Config {
     pub http_addr: SocketAddr,
     /// Agent connections (TLS, mTLS once enrolled).
     pub agent_addr: SocketAddr,
-    /// DNS names / IPs Agents use to reach `agent_addr`; put in the server certificate.
+    /// Seeds the Server Address on first start; after that the stored setting wins (Admins edit it).
     pub agent_hostnames: Vec<String>,
     /// First-run admin token: accepted only until an enabled admin user has a live API token.
     pub bootstrap_admin_token: String,
@@ -74,9 +75,11 @@ pub struct AppState {
     pub db: PgPool,
     pub clock: Arc<dyn Clock>,
     pub ca: pki::Ca,
-    /// `rk_<CA fingerprint>_<secret>`: what Agents and Controllers present to connect.
-    pub server_key: String,
+    /// The Server Key and Server Address, editable by Admins.
+    pub settings: settings::Settings,
     pub config: Config,
+    /// Rebuilt when the Server Address changes, so new connections get the new certificate.
+    pub tls: tokio::sync::RwLock<tokio_rustls::TlsAcceptor>,
     pub connections: registry::Connections,
     pub resources: metrics::CurrentResources,
     pub agents: agent_link::Agents,
@@ -109,7 +112,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
     let db = sqlx::postgres::PgPoolOptions::new().max_connections(10).connect(&config.database_url).await?;
     sqlx::migrate!("./migrations").run(&db).await?;
     let ca = pki::Ca::load_or_create(&db, config.master_key.as_ref()).await?;
-    let server_key = server_key::load_or_create(&db, &ca).await?;
+    let settings = settings::Settings::load(&db, &ca, &config.agent_hostnames.join(",")).await?;
     match &config.master_key {
         Some(key) => auth::seal_totp_secrets(&db, key).await?,
         None => tracing::warn!("no RCLI_MASTER_KEY: the CA private key and TOTP secrets are stored unencrypted"),
@@ -119,13 +122,16 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
     let http = tokio::net::TcpListener::bind(config.http_addr).await?;
     let agents = tokio::net::TcpListener::bind(config.agent_addr).await?;
     let (http_addr, agent_addr) = (http.local_addr()?, agents.local_addr()?);
+    let acceptor = agent_link::acceptor(&ca, settings::hostnames(&settings.address().await))?;
+    let server_key = settings.key().await;
 
     let state = Arc::new(AppState {
         db,
         clock,
         ca,
-        server_key,
+        settings,
         config,
+        tls: tokio::sync::RwLock::new(acceptor),
         connections: Default::default(),
         resources: Default::default(),
         agents: Default::default(),
@@ -134,16 +140,14 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
         shells: Default::default(),
         lock_watchers: Default::default(),
     });
-    let acceptor = agent_link::acceptor(&state)?;
     let router = api::router(state.clone());
-    let server_key = state.server_key.clone();
     let tasks = vec![
         tokio::spawn(async move {
             if let Err(e) = axum::serve(http, router).await {
                 tracing::error!("controller API stopped: {e}");
             }
         }),
-        tokio::spawn(agent_link::serve(agents, acceptor, state.clone())),
+        tokio::spawn(agent_link::serve(agents, state.clone())),
         tokio::spawn({
             let state = state.clone();
             async move {

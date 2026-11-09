@@ -105,23 +105,23 @@ impl Agents {
 /// No frame (heartbeats arrive every 10 s) for this long means the connection is dead.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn acceptor(state: &AppState) -> anyhow::Result<TlsAcceptor> {
+pub fn acceptor(ca: &crate::pki::Ca, hostnames: Vec<String>) -> anyhow::Result<TlsAcceptor> {
     let mut roots = RootCertStore::empty();
-    roots.add(CertificateDer::from_pem_slice(state.ca.cert_pem.as_bytes())?)?;
+    roots.add(CertificateDer::from_pem_slice(ca.cert_pem.as_bytes())?)?;
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots)).allow_unauthenticated().build()?;
-    let leaf = state.ca.issue_server_cert(state.config.agent_hostnames.clone())?;
+    let leaf = ca.issue_server_cert(hostnames)?;
     // The chain carries the CA so an Agent can check its fingerprint against the Server Key (it has no CA file).
-    let chain = vec![leaf.cert_der.into(), state.ca.cert_der.clone().into()];
+    let chain = vec![leaf.cert_der.into(), ca.cert_der.clone().into()];
     let config = ServerConfig::builder()
         .with_client_cert_verifier(verifier)
         .with_single_cert(chain, PrivatePkcs8KeyDer::from(leaf.key_der).into())?;
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-pub async fn serve(listener: TcpListener, acceptor: TlsAcceptor, state: Arc<AppState>) {
+pub async fn serve(listener: TcpListener, state: Arc<AppState>) {
     loop {
         let Ok((tcp, peer)) = listener.accept().await else { continue };
-        let (acceptor, state) = (acceptor.clone(), state.clone());
+        let (acceptor, state) = (state.tls.read().await.clone(), state.clone());
         tokio::spawn(async move {
             if let Err(e) = handle(tcp, acceptor, state).await {
                 tracing::debug!("agent connection from {peer} ended: {e}");

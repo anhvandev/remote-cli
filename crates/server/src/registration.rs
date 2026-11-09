@@ -19,7 +19,8 @@ impl<E: Into<anyhow::Error>> From<E> for RegisterError {
 }
 
 pub async fn register(state: &AppState, req: RegisterRequest) -> Result<RegisterResponse, RegisterError> {
-    let expected = server_key::split(&state.server_key).map(|(_, secret)| secret).unwrap_or_default();
+    let expected = state.settings.key().await;
+    let expected = server_key::split(&expected).map(|(_, secret)| secret).unwrap_or_default();
     let presented = server_key::split(&req.server_key).map(|(_, secret)| secret).unwrap_or("");
     if !server_key::secret_matches(expected, presented) {
         return Err(RegisterError::InvalidKey);

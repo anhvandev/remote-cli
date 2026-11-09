@@ -9,6 +9,7 @@ mod history;
 mod power;
 mod live;
 mod sessions;
+mod settings;
 mod shell;
 mod updates;
 mod users;
@@ -34,6 +35,7 @@ pub fn router(state: State) -> Router {
     Router::new()
         .route("/api/v1/server-ca", get(|s: axum::extract::State<State>| async move { s.ca.cert_pem.clone() }))
         .route("/api/v1/server-key", get(server_key))
+        .merge(settings::routes())
         .merge(devices::routes())
         .merge(history::routes())
         .merge(updates::routes())
@@ -56,7 +58,7 @@ async fn server_key(
     _: Admin,
     axum::extract::State(state): axum::extract::State<State>,
 ) -> Json<serde_json::Value> {
-    Json(json!({ "server_key": state.server_key, "ca_fingerprint": state.ca.fingerprint }))
+    Json(json!({ "server_key": state.settings.key().await, "ca_fingerprint": state.ca.fingerprint }))
 }
 
 /// Typed API error: `{"error": {"code": "...", "message": "..."}}`.
