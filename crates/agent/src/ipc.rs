@@ -52,6 +52,8 @@ pub struct Status {
     settings: Arc<settings::Handle>,
     /// Root granted to the current session, by the person at the Device. Cleared when the Agent reconnects.
     grant: Arc<crate::Grant>,
+    /// Controllers currently using this Device, so `rcli agent info` / `disconnect` can see and end them.
+    controllers: Arc<crate::Controllers>,
 }
 
 impl Status {
@@ -68,6 +70,7 @@ impl Status {
             next_request: AtomicU64::new(0),
             settings: Arc::new(settings::Handle::new()),
             grant: Arc::new(crate::Grant::default()),
+            controllers: Arc::new(crate::Controllers::default()),
         }
     }
 
@@ -83,6 +86,11 @@ impl Status {
     /// The session root grant: shared with `run`, cleared whenever the connection is re-established.
     pub fn grant(&self) -> Arc<crate::Grant> {
         self.grant.clone()
+    }
+
+    /// The connected Controllers, shared with `run` (so `info` / `disconnect` see the live set).
+    pub fn controllers(&self) -> Arc<crate::Controllers> {
+        self.controllers.clone()
     }
 
     pub fn set_connected(&self, connected: bool) {

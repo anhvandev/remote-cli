@@ -29,6 +29,16 @@ impl User {
     pub fn is_admin(&self) -> bool {
         self.role == "admin" && self.device_scope.is_none()
     }
+
+    /// How the person at the Device sees this Controller: `<host> (<IP>)` for a password connection, `<name>
+    /// (Dashboard)` for a Dashboard User. `rcli agent info` lists and `disconnect` matches this name.
+    pub fn controller_display(&self) -> String {
+        if self.device_scope.is_some() {
+            self.name.clone()
+        } else {
+            format!("{} (Dashboard)", self.name)
+        }
+    }
 }
 
 /// Wrong Device Passwords in a row that lock a (Device ID, IP) pair out for a minute.

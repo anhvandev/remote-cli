@@ -49,6 +49,9 @@ pub trait Platform: Send + Sync + 'static {
     /// Asks a person at the Device whether `requester` may run as root, with Accept/Reject, for at most `timeout`.
     /// `true` = Accept; `false` = Reject or no answer in time. Only called while someone is logged in.
     fn ask_root(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool>;
+    /// Asks a person at the Device whether to accept a new connection from `requester`, with Accept/Reject, for at
+    /// most `timeout`. `true` = Accept; `false` = Reject or no answer in time. Only called while someone is logged in.
+    fn ask_accept(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,6 +177,10 @@ pub struct FakeState {
     /// The scripted person's answers: true = Accept, false = Reject. An empty queue = nobody answers, which
     /// auto-rejects; the FakePlatform answers at once instead of waiting out `timeout`.
     pub root_answers: std::collections::VecDeque<bool>,
+    /// Accept-connection prompts shown, in order: who connects, and the timeout the Agent allowed.
+    pub accept_prompts: Vec<(String, Duration)>,
+    /// The scripted person's answers to accept-connection prompts, like `root_answers`.
+    pub accept_answers: std::collections::VecDeque<bool>,
 }
 
 impl FakePlatform {
@@ -200,6 +207,8 @@ impl FakePlatform {
             flicker: false,
             root_prompts: vec![],
             root_answers: Default::default(),
+            accept_prompts: vec![],
+            accept_answers: Default::default(),
         };
         Self { hostname, state: Arc::new(Mutex::new(state)) }
     }
@@ -254,6 +263,16 @@ impl FakePlatform {
     /// the person does not answer and the prompt auto-rejects.
     pub fn answer_root_prompts(&self, answers: impl IntoIterator<Item = bool>) {
         self.state.lock().unwrap().root_answers = answers.into_iter().collect();
+    }
+
+    /// Every accept-connection prompt shown, in order: who connects, and the timeout it was given.
+    pub fn accept_prompts(&self) -> Vec<(String, Duration)> {
+        self.state.lock().unwrap().accept_prompts.clone()
+    }
+
+    /// Scripts the person's answers to accept-connection prompts, like `answer_root_prompts`.
+    pub fn answer_accept_prompts(&self, answers: impl IntoIterator<Item = bool>) {
+        self.state.lock().unwrap().accept_answers = answers.into_iter().collect();
     }
 }
 
@@ -358,6 +377,13 @@ impl Platform for FakePlatform {
         let mut s = self.state.lock().unwrap();
         s.root_prompts.push((requester.to_owned(), timeout));
         Ok(s.root_answers.pop_front().unwrap_or(false))
+    }
+
+    /// Scripted like `ask_root`, for accepting a new connection.
+    fn ask_accept(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
+        let mut s = self.state.lock().unwrap();
+        s.accept_prompts.push((requester.to_owned(), timeout));
+        Ok(s.accept_answers.pop_front().unwrap_or(false))
     }
 }
 

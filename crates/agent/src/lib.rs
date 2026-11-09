@@ -237,6 +237,8 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
     let settings = status.as_ref().map_or_else(|| Arc::new(settings::Handle::new()), |s| s.settings());
     // A root grant lasts one session (one connection to the Server) and only for the Controller it was given to.
     let grant = status.as_ref().map_or_else(|| Arc::new(Grant::default()), |s| s.grant());
+    // Connected Controllers outlive a reconnect: they end on `disconnect`, not when the Server link blips.
+    let controllers = status.as_ref().map_or_else(|| Arc::new(Controllers::default()), |s| s.controllers());
     let mut backoff = Duration::from_secs(1);
     loop {
         // Another Server Address is one switch away; pick up whichever is current.
@@ -263,6 +265,7 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
                     status.as_deref(),
                     &settings,
                     &grant,
+                    &controllers,
                     &mut endpoints,
                     &mut changes,
                 )
@@ -336,6 +339,7 @@ async fn session(
     status: Option<&ipc::Status>,
     settings: &settings::Handle,
     grant: &Arc<Grant>,
+    controllers: &Arc<Controllers>,
     endpoints: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>,
     changes: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>,
 ) -> anyhow::Result<bool> {
@@ -425,8 +429,9 @@ async fn session(
                         // Off the loop: a command may run for minutes; commands run concurrently.
                         let (platform, replies, settings) = (platform_arc.clone(), replies.clone(), settings.get());
                         let grant = grant.clone();
+                        let controllers = controllers.clone();
                         tokio::task::spawn_blocking(move || {
-                            let _ = replies.send(agent_message::Msg::ExecResult(exec(platform.as_ref(), &req, &settings, &grant)));
+                            let _ = replies.send(agent_message::Msg::ExecResult(exec(platform.as_ref(), &req, &settings, &grant, &controllers)));
                         });
                     }
                     Some(server_message::Msg::ShellOpen(req)) => {
@@ -532,6 +537,9 @@ async fn session(
 /// How long the person at the Device has to answer a root prompt.
 const ROOT_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long the person at the Device has to accept a new connection.
+const ACCEPT_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Root granted to the current session: one Controller, for as long as the Agent's connection to the Server lasts.
 /// The person at the Device (or its GUI) gives it; it does not outlive the session.
 #[derive(Default)]
@@ -550,6 +558,45 @@ impl Grant {
     /// Ends the grant, at the end of the session it was given for.
     pub fn clear(&self) {
         *self.0.lock().unwrap() = None;
+    }
+}
+
+/// Controllers using this Device right now, keyed by their display name (as `rcli agent info` lists them), with
+/// whether each has been accepted at the Device (only matters in `password+accept` mode). Survives a reconnect.
+#[derive(Default)]
+pub struct Controllers(std::sync::Mutex<std::collections::HashMap<String, bool>>);
+
+impl Controllers {
+    /// Records `name` as connected (keeping any earlier accept) and returns nothing.
+    fn touch(&self, name: &str) {
+        self.0.lock().unwrap().entry(name.to_owned()).or_insert(false);
+    }
+
+    fn accept(&self, name: &str) {
+        self.0.lock().unwrap().insert(name.to_owned(), true);
+    }
+
+    fn accepted(&self, name: &str) -> bool {
+        self.0.lock().unwrap().get(name).copied().unwrap_or(false)
+    }
+
+    /// The display names of the connected Controllers.
+    pub fn list(&self) -> Vec<String> {
+        self.0.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// Removes Controllers whose display name is `who` or starts with it (so `alice` ends `alice (Dashboard)`),
+    /// returning how many were ended.
+    pub fn remove(&self, who: &str) -> usize {
+        let mut map = self.0.lock().unwrap();
+        let before = map.len();
+        map.retain(|name, _| !(name == who || name.starts_with(who)));
+        before - map.len()
+    }
+
+    /// Removes every Controller, returning their display names.
+    pub fn clear(&self) -> Vec<String> {
+        self.0.lock().unwrap().drain().map(|(k, _)| k).collect()
     }
 }
 
@@ -587,6 +634,35 @@ fn run_as(
     }
 }
 
+/// Gate for a Controller using the Device. In `password+accept` mode a person at the Device accepts each new
+/// Controller once (re-asked after a `disconnect`); refused when no session can show the prompt. `controller` is the
+/// display name `rcli agent info` lists and `disconnect` matches.
+fn accept_connection(
+    platform: &dyn Platform,
+    settings: &settings::DeviceSettings,
+    controller: &str,
+    controllers: &Controllers,
+) -> Result<(), Error> {
+    controllers.touch(controller);
+    if settings.accept == settings::AcceptMode::Password || controllers.accepted(controller) {
+        return Ok(());
+    }
+    if platform.session_state().is_ok_and(|s| s != platform::SessionState::LoggedIn) {
+        return Err(Error {
+            code: "connect_denied".into(),
+            message: "a person at the Device must accept this connection, and nobody can be asked right now".into(),
+        });
+    }
+    match platform.ask_accept(controller, ACCEPT_PROMPT_TIMEOUT) {
+        Ok(true) => {
+            controllers.accept(controller);
+            Ok(())
+        }
+        Ok(false) => Err(Error { code: "connect_denied".into(), message: "the person at the Device did not accept this connection".into() }),
+        Err(e) => Err(Error { code: "platform".into(), message: format!("cannot ask at the Device: {e:#}") }),
+    }
+}
+
 /// Applies an Admin's identity change from the Dashboard: writes a new Device Password to the Secret Store and keeps
 /// a new Device ID. The Server has already checked and stored its side; `error` tells it to leave the Server side
 /// alone (nothing is half-applied here: the password is stored first and an ID change never writes the password).
@@ -611,7 +687,10 @@ fn server_identity_change(u: &IdentityUpdate, status: Option<&ipc::Status>, cred
 }
 
 /// Runs a one-shot command (see `run_as`).
-fn exec(platform: &dyn Platform, req: &ExecRequest, settings: &settings::DeviceSettings, grant: &Grant) -> ExecResult {
+fn exec(platform: &dyn Platform, req: &ExecRequest, settings: &settings::DeviceSettings, grant: &Grant, controllers: &Controllers) -> ExecResult {
+    if let Err(e) = accept_connection(platform, settings, &req.controller, controllers) {
+        return ExecResult { request_id: req.request_id, error: Some(e), ..Default::default() };
+    }
     let failed = |(error, decision): (Error, &'static str)| ExecResult {
         request_id: req.request_id,
         error: Some(error),

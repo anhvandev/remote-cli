@@ -62,6 +62,7 @@ async fn exec(
     let as_root = body.run_as == Some(RunAs::Root);
     // The Device names who asks in a root prompt; a password connection already reads `<host> (<IP>)`.
     let requester = user.name.clone();
+    let controller = user.controller_display();
     let req = |request_id| {
         server_message::Msg::Exec(proto::ExecRequest {
             request_id,
@@ -69,6 +70,7 @@ async fn exec(
             as_root,
             timeout_ms: timeout * 1000,
             requester: requester.clone(),
+            controller: controller.clone(),
         })
     };
     let wait = Duration::from_secs(timeout.into()) + REPLY_SLACK + ROOT_PROMPT_BUDGET;
@@ -81,6 +83,8 @@ async fn exec(
                 Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
                 // The Device's root setting refused, or asked and nobody answered: a plain refusal to the caller.
                 Some(e) if e.code == "root_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "root_denied", e.message)),
+                // `password+accept` refused this new connection (rejected, timed out, or no session to ask in).
+                Some(e) if e.code == "connect_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "connect_denied", e.message)),
                 Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
                 None => Ok(json!({
                     "exit_code": (!r.timed_out).then_some(r.exit_code),

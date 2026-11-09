@@ -349,6 +349,9 @@ message ExecRequest {
   // The Controller as the person at the Device sees it, e.g. "dev-laptop (10.0.0.5)" or "alice (Dashboard)".
   // Named in a root prompt (ticket 07).
   string requester = 6;
+  // The Controller as listed by `rcli agent info` and matched by `disconnect`: the display name, e.g.
+  // "dev-laptop (10.0.0.5)" or "alice (Dashboard)". `requester` stays the bare name a root prompt shows.
+  string controller = 7;
 }
 
 // `error` set = nothing ran (code "no_logged_in_user", or a Platform failure).
