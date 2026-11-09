@@ -167,7 +167,7 @@ test("the overview shows three cards with counts from the Server", async ({ page
     await expect(user).toContainText(`${users.filter((u: { disabled_at: string | null }) => u.disabled_at).length} User đã vô hiệu`);
 
     const device = page.getByRole("region", { name: "Device" });
-    await expect(device).toContainText("5 Online"); // alpha, charlie, golf, india, juliet: no spec takes them Offline
+    await expect(device).toContainText("6 Online"); // alpha, charlie, golf, india, juliet, kilo: no spec takes them Offline
     const count = (s: string) => devices.filter((d: { status: string }) => d.status === s).length;
     await expect(device).toContainText(`${count("Online")} Online · ${count("Offline")} Offline · ${count("Waking")} Waking`);
     await expect(device).toContainText(`${devices.filter((d: { revoked_at: string | null }) => d.revoked_at).length} Device đã thu hồi`);

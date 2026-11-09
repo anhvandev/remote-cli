@@ -70,9 +70,14 @@ fn remaining_secs(until: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<ch
 }
 
 /// The update-signing public key (hex), which a Controller pins at `rcli setup`; empty = no updates.
+/// `mac` is its HMAC under the Server Key's secret, which the Controller already holds; an impostor rewriting
+/// `/api/v1/server-ca` and `/api/v1/update-key` over plain HTTP cannot forge it.
 async fn update_key(axum::extract::State(state): axum::extract::State<State>) -> Json<serde_json::Value> {
     let key = state.config.update_public_key.as_deref().map(hex::encode).unwrap_or_default();
-    Json(json!({ "update_key": key }))
+    let mac = crate::server_key::split(&state.settings.key().await)
+        .map(|(_, secret)| hex::encode(rcli_protocol::update::pin_mac(secret, &key)))
+        .unwrap_or_default();
+    Json(json!({ "update_key": key, "mac": mac }))
 }
 
 /// Typed API error: `{"error": {"code": "...", "message": "..."}}`.

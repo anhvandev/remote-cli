@@ -22,6 +22,7 @@ tokio.workspace = true
 webrtc.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 futures.workspace = true
 sqlx.workspace = true
 base64.workspace = true

@@ -2,7 +2,8 @@ use axum::{
     body::Bytes,
     extract::{rejection::JsonRejection, DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
-    routing::{post, put},
+    response::{IntoResponse, Response},
+    routing::{get, post, put},
     Json, Router,
 };
 use rcli_protocol::update::MAX_BUILD_BYTES;
@@ -16,6 +17,24 @@ pub fn routes() -> Router<super::State> {
     Router::new()
         .route("/api/v1/agent-builds/{version}/{target}", put(publish).layer(DefaultBodyLimit::max(MAX_BUILD_BYTES)))
         .route("/api/v1/agent-builds/{version}/rollout", post(rollout))
+        .route("/api/v1/agent-builds/{target}", get(current))
+}
+
+/// Public like the update key: `rcli upgrade` fetches the newest build for its OS/arch and verifies the signature
+/// against the key it pinned at setup, so serving it needs no credentials.
+async fn current(State(state): State<super::State>, Path(target): Path<String>) -> Result<Response, ApiError> {
+    let (version, signature, build) = updates::latest(&state, &target)
+        .await?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no_build", format!("no build for {target}")))?;
+    Ok((
+        [
+            ("x-rcli-version", version),
+            ("x-rcli-signature", hex::encode(signature)),
+            ("content-type", "application/octet-stream".to_owned()),
+        ],
+        build,
+    )
+        .into_response())
 }
 
 impl From<UpdateError> for ApiError {

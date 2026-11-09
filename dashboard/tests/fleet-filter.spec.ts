@@ -14,7 +14,7 @@ test("search narrows the fleet by name, case-insensitively, and lands in the URL
   await expect(row(page, "alpha")).toBeVisible();
   await expect(row(page, "bravo")).toHaveCount(0);
   // The counts line still describes the whole fleet, not the filtered list.
-  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("5 Online");
+  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("6 Online");
 });
 
 test("status filter narrows the fleet and lands in the URL", async ({ page }) => {
@@ -25,7 +25,7 @@ test("status filter narrows the fleet and lands in the URL", async ({ page }) =>
   await expect(page).toHaveURL(/[?&]status=Offline(?:&|$)/);
   await expect(row(page, "bravo")).toBeVisible();
   await expect(row(page, "alpha")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("5 Online");
+  await expect(page.getByRole("heading", { name: /Device/ })).toContainText("6 Online");
 });
 
 test("a filtered link opens filtered, and Back from a Device restores it", async ({ page }) => {

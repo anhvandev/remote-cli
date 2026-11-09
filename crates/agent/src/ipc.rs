@@ -116,6 +116,11 @@ impl Status {
         self.changes_rx.lock().unwrap().take()
     }
 
+    /// Stores a Device Password the Server set from the Dashboard.
+    pub fn store_password(&self, password: &str) -> anyhow::Result<()> {
+        self.secrets.set(DEVICE_PASSWORD, password)
+    }
+
     pub fn set_device_id(&self, device_id: &str) {
         *self.device_id.write().unwrap() = device_id.to_owned();
         let path = self.credentials.lock().unwrap().clone();
