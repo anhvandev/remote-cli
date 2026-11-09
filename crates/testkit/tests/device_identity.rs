@@ -123,6 +123,7 @@ async fn a_device_id_change_is_unique_and_the_old_id_is_not_found() {
     let stale = sys.device_client(&old, &agent.device_password().unwrap());
     let (status, body) = stale.get("/api/v1/devices").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("no Device with this Device ID"), "{body}");
     let (status, body) = sys.api.get(&format!("/api/v1/devices/{old}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["error"]["code"], "device_not_found");

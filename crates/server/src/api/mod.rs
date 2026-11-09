@@ -151,7 +151,11 @@ impl FromRequestParts<State> for Caller {
         crate::auth::authenticate_controller(state, server_key, device, password, controller, &ip)
             .await?
             .map(Caller)
-            .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "wrong Server Key, Device ID or Device Password"))
+            .ok_or_else(|| ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "wrong Server Key or Device Password, or no Device with this Device ID",
+            ))
     }
 }
 
