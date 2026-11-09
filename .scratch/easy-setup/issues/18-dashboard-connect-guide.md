@@ -4,7 +4,7 @@
 
 **Blocked by:** 17, 10, 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Every block is present, with working copy buttons
 - [x] The http warning shows only over http
@@ -53,3 +53,21 @@
 - Not verified: the one-line install or any download end to end on a real machine (tickets 16/22/24 territory,
   and the ticket's first checkbox style of verification); the https side of the warning is simulated through
   `X-Forwarded-Proto`, not a real TLS server.
+
+## Comments
+
+- Implemented on `t/18` (3 commits). Every signed-in User can now read `GET /api/v1/server-settings` (show endpoint
+  switched from `Admin` to `Caller`; rotate/set-address stay Admin). Dashboard page at
+  `dashboard/app/(app)/connect-guide/` with: Server Address + Server Key (copy buttons), install commands
+  (curl/PowerShell with key filled in), download links (exe/dmg/deb/rpm), headless install, Controller setup
+  (`rcli setup`, `rcli connect <ID>`), MCP snippet (`claude mcp add rcli -- rcli mcp`), SmartScreen/Gatekeeper notes,
+  and a red http warning banner. Nav link "Hướng dẫn kết nối" visible to every User.
+- Verified: `cargo test --workspace` 191 passed / 0 failed, clippy and `tsc` clean. Playwright
+  `connect-guide.spec.ts` 3 passed (ports 18094/3114): all blocks render for Operator, copy button puts the Server
+  Key in the real clipboard, http warning appears over http and disappears when `X-Forwarded-Proto: https` is set.
+- `shortcut:` (1) `X-Forwarded-Proto: https` suppresses the warning even over plain http — upgrade when Dashboard
+  serves its own TLS. (2) Real exe/dmg/deb/rpm packages wait for tickets 16/22/24; download links currently serve
+  raw builds from `/download/<os>/<arch>`.
+- Not verified: end-to-end install on a real machine; https warning path only simulated via header. `rcli setup
+  --server` uses a `<Controller API URL>` placeholder the user must fill in (the page cannot derive it from the
+  Server Address alone).
