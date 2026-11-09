@@ -6,5 +6,16 @@
 
 **Status:** ready-for-agent
 
-- [ ] Screen Actions return the 'no display' error; everything else works
-- [ ] The Dashboard hides the Screen tab and explains why
+- [x] Screen Actions return the 'no display' error; everything else works
+- [x] The Dashboard hides the Screen tab and explains why
+
+## Comments
+
+- Implemented on branch `t/12`. The Agent's Executor and Live refuse when `platform.displays()` is empty with
+  `no_display` / "Device has no display"; the Server maps it to 409 `no_display` on `POST .../actions` and
+  `POST .../live`. `crates/testkit/tests/headless.rs` covers shot, act, batch, Live View and that
+  metrics/exec/shell/power/Wake still work on a zero-display FakePlatform. The Dashboard hides the Screen tab
+  (and explains why) using `inventory.displays`; the devstack gained `juliet` (headless) and now fills inventory
+  displays from the platform. `cargo test --workspace` 95 passed / 0 failed; clippy and `tsc --noEmit` clean.
+  Playwright was not run in this worktree (no local `node_modules`/browser stack); the new
+  `dashboard/tests/headless.spec.ts` is written but unverified.

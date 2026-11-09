@@ -9,12 +9,13 @@ const TABS = [
   ["history", "Lịch sử"],
 ] as const;
 
-export function Tabs({ device }: { device: string }) {
+export function Tabs({ device, headless }: { device: string; headless?: boolean }) {
   // The tab slug below this layout; null on the Device's root (Tổng quan).
   const active = useSelectedLayoutSegment() ?? "";
+  const tabs = headless ? TABS.filter(([slug]) => slug !== "screen") : TABS;
   return (
     <div className="mt-4 flex gap-1 border-b border-border">
-      {TABS.map(([slug, name]) => (
+      {tabs.map(([slug, name]) => (
         <Link
           key={slug}
           href={`/devices/${device}${slug ? `/${slug}` : ""}`}
@@ -28,6 +29,7 @@ export function Tabs({ device }: { device: string }) {
           {name}
         </Link>
       ))}
+      {headless && <span className="px-3 py-2 text-sm text-muted-foreground">Device không có màn hình.</span>}
     </div>
   );
 }

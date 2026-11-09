@@ -167,6 +167,7 @@ fn agent_error(e: proto::Error) -> ApiError {
         "stale_mark" => bad_request("stale_mark"),
         "ambiguous_text" => bad_request("ambiguous_text"),
         "text_not_found" => bad_request("text_not_found"),
+        "no_display" => ApiError::new(StatusCode::CONFLICT, "no_display", e.message),
         _ => ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message),
     }
 }
