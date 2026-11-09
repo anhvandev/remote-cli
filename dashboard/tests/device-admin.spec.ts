@@ -12,6 +12,7 @@ async function freeId(): Promise<string> {
 
 test("an admin changes a Device's name, password and Device ID", async ({ page }) => {
   await signIn(page, await newUser("admin"));
+  await expect(page.getByRole("link", { name: "alpha" })).toBeVisible(); // the session cookie is set
   // Signing in lands on the fleet; the first test renames kilo, so look the Device up by its current name.
   const kilo = (await adminApi("/api/v1/devices")).find((d: { name: string }) => d.name.startsWith("kilo"));
   await page.goto(`/devices/${kilo.id}`);
@@ -20,7 +21,7 @@ test("an admin changes a Device's name, password and Device ID", async ({ page }
   // Rename: applies at once and the header follows.
   await card.getByLabel("Tên mới").fill("kilo-2");
   await card.getByRole("button", { name: "Đổi tên" }).click();
-  await expect(card.getByRole("status")).toContainText("Đổi tên");
+  await expect(card.getByRole("status")).toContainText("Đã đổi tên");
   await expect(page.getByRole("heading", { name: /kilo-2/ })).toBeVisible();
 
   // A new Device Password is pushed to the Device and never shown back.
@@ -29,7 +30,7 @@ test("an admin changes a Device's name, password and Device ID", async ({ page }
   await expect(input).toHaveAttribute("type", "password");
   await input.fill(password);
   await card.getByRole("button", { name: "Đặt mật khẩu" }).click();
-  await expect(card.getByRole("status")).toContainText("Đặt mật khẩu");
+  await expect(card.getByRole("status")).toContainText("Đã đặt mật khẩu mới");
   await expect(input).toHaveValue("");
   expect(await page.content()).not.toContain(password);
   await page.reload();
@@ -39,7 +40,7 @@ test("an admin changes a Device's name, password and Device ID", async ({ page }
   const id = await freeId();
   await card.getByLabel("Device ID mới").fill(id);
   await card.getByRole("button", { name: "Đổi Device ID" }).click();
-  await expect(card.getByRole("status")).toContainText("Đổi Device ID");
+  await expect(card.getByRole("status")).toContainText("Đã đổi Device ID");
   await expect(card).toContainText(`Device ID ${id}`);
   await expect
     .poll(async () => (await adminApi("/api/v1/devices")).find((d: { name: string }) => d.name === "kilo-2")?.device_id)
@@ -57,6 +58,7 @@ test("an admin changes a Device's name, password and Device ID", async ({ page }
 
 test("operators don't see the admin Device actions and the API refuses them", async ({ page, request }) => {
   await signIn(page, await newUser("operator"));
+  await expect(page.getByRole("link", { name: "alpha" })).toBeVisible(); // the session cookie is set
   const kilo = (await adminApi("/api/v1/devices")).find((d: { name: string }) => d.name.startsWith("kilo"));
   await page.goto(`/devices/${kilo.id}`);
   await expect(page.getByRole("heading", { name: /kilo/ })).toContainText("Online");

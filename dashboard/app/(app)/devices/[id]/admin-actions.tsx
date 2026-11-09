@@ -13,13 +13,13 @@ type Field = "name" | "device_id" | "device_password";
 export function AdminActions({ device, deviceId }: { device: string; deviceId: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ label: string } & Sent>();
+  const [msg, setMsg] = useState<{ label: string; done: string } & Sent>();
 
-  async function send(label: string, change: Partial<Record<Field, string>>, form: HTMLFormElement) {
+  async function send(label: string, done: string, change: Partial<Record<Field, string>>, form: HTMLFormElement) {
     setBusy(true);
     try {
       const result = await changeDevice(device, change);
-      setMsg({ label, ...result });
+      setMsg({ label, done, ...result });
       if (!result.error) {
         form.reset();
         router.refresh();
@@ -29,11 +29,11 @@ export function AdminActions({ device, deviceId }: { device: string; deviceId: s
     }
   }
 
-  const submit = (label: string, field: Field) => (e: React.FormEvent<HTMLFormElement>) => {
+  const submit = (label: string, done: string, field: Field) => (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = e.currentTarget;
     const value = String(new FormData(form).get(field) ?? "");
-    send(label, { [field]: value }, form);
+    send(label, done, { [field]: value }, form);
   };
 
   return (
@@ -47,7 +47,7 @@ export function AdminActions({ device, deviceId }: { device: string; deviceId: s
           Device ID và mật khẩu mới được gửi tới Device ngay, nên Device phải Online. Admin không xem được mật khẩu hiện
           tại.
         </p>
-        <form onSubmit={submit("Đổi Device ID", "device_id")} className="flex flex-wrap items-center gap-2">
+        <form onSubmit={submit("Đổi Device ID", "Đã đổi Device ID", "device_id")} className="flex flex-wrap items-center gap-2">
           <Input
             name="device_id"
             aria-label="Device ID mới"
@@ -62,13 +62,13 @@ export function AdminActions({ device, deviceId }: { device: string; deviceId: s
             Đổi Device ID
           </Button>
         </form>
-        <form onSubmit={submit("Đổi tên", "name")} className="flex flex-wrap items-center gap-2">
+        <form onSubmit={submit("Đổi tên", "Đã đổi tên", "name")} className="flex flex-wrap items-center gap-2">
           <Input name="name" aria-label="Tên mới" placeholder="tên mới" maxLength={255} required className="h-8 w-36" />
           <Button size="sm" variant="outline" disabled={busy}>
             Đổi tên
           </Button>
         </form>
-        <form onSubmit={submit("Đặt mật khẩu", "device_password")} className="flex flex-wrap items-center gap-2">
+        <form onSubmit={submit("Đặt mật khẩu", "Đã đặt mật khẩu mới", "device_password")} className="flex flex-wrap items-center gap-2">
           <Input
             type="password"
             name="device_password"
@@ -83,7 +83,7 @@ export function AdminActions({ device, deviceId }: { device: string; deviceId: s
             Đặt mật khẩu
           </Button>
         </form>
-        {msg && !msg.error && <output role="status" className="text-xs text-muted-foreground">Đã {msg.label.toLowerCase()}.</output>}
+        {msg && !msg.error && <output role="status" className="text-xs text-muted-foreground">{msg.done}.</output>}
         {msg?.error && (
           <span role="alert" className="text-sm text-destructive">
             {msg.label} bị từ chối: {msg.error}
