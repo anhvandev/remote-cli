@@ -22,6 +22,7 @@ message AgentMessage {
     ShellOpened shell_opened = 12;
     ShellOutput shell_output = 120;
     ShellExit shell_exit = 121;
+    IdentityUpdate identity_update = 20;
   }
   reserved 30; // was a bare Resources delta; now ResourceSample
 }
@@ -44,6 +45,7 @@ message ServerMessage {
     PowerRequest power = 13;
     LiveOffer live_offer = 21;
     LiveClose live_close = 210;
+    IdentityUpdated identity_updated = 20;
   }
 }
 
@@ -400,6 +402,22 @@ message ShellOutput {
 message ShellExit {
   string session = 1;
   int32 exit_code = 2;
+}
+
+// A change made at the Device itself (`sudo rcli agent password|id|name set`). Empty = unchanged.
+// The Server checks the Device ID for uniqueness and stores a new password as a hash.
+message IdentityUpdate {
+  uint64 request_id = 1;
+  string device_password = 2;
+  string device_id = 3;
+  string name = 4;
+}
+
+// `error` set = nothing was changed. `device_id` is the Device ID in effect after the change.
+message IdentityUpdated {
+  uint64 request_id = 1;
+  Error error = 2;
+  string device_id = 3;
 }
 
 // Show (on) or hide the on-Device indicator that the Device is being controlled.

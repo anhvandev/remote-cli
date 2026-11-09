@@ -262,6 +262,16 @@ impl TestSystem {
         agent
     }
 
+    /// Like `start_agent_with_socket`, but the socket treats every caller as root (the unprivileged test process
+    /// cannot be root). Only for tests of what root may do; the gate itself needs the real `serve`.
+    pub async fn start_agent_trusting_socket(&self, hostname: &str, dir: &std::path::Path) -> TestAgent {
+        let creds = self.register(&FakePlatform::new(hostname)).await.expect("register");
+        let mut agent = TestAgent::with_secrets_dir(self.endpoint(), FakePlatform::new(hostname), creds, dir.to_path_buf());
+        agent.start();
+        tokio::spawn(rcli_agent::ipc::serve_trusting_all(dir.join("agent.sock"), agent.status.clone()));
+        agent
+    }
+
     /// A Controller API client for a password connection: Server Key + Device ID + Device Password.
     pub fn device_client(&self, device_id: &str, password: &str) -> DeviceClient {
         DeviceClient {
@@ -353,7 +363,7 @@ impl TestAgent {
         if !creds.device_password.is_empty() {
             secrets.set(rcli_agent::ipc::DEVICE_PASSWORD, &creds.device_password).expect("store the Device Password");
         }
-        let status = Arc::new(rcli_agent::ipc::Status::new(&creds.device_id, &endpoint.addr, secrets));
+        let status = Arc::new(rcli_agent::ipc::Status::new(&creds.device_id, endpoint.clone(), secrets));
         Self { endpoint, platform, creds, status, task: None, network }
     }
 
@@ -377,6 +387,7 @@ impl TestAgent {
 
     pub fn start(&mut self) {
         let endpoint = ServerEndpoint { addr: self.network.addr.clone(), ..self.endpoint.clone() };
+        self.status.set_endpoint(endpoint.clone());
         let run = rcli::agent::serve(endpoint, self.creds.clone(), Arc::new(self.platform.clone()), Some(self.status.clone()));
         self.task = Some(tokio::spawn(run));
     }
@@ -494,6 +505,22 @@ impl DeviceClient {
 
     pub async fn post_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
         self.send(self.api.http.post(self.url(path)).json(body)).await
+    }
+
+    /// Opens a streaming GET (e.g. the Control Lock `watch`) and waits for its first chunk.
+    pub async fn watch(&self, path: &str) -> reqwest::Response {
+        let req = self
+            .api
+            .http
+            .get(self.url(path))
+            .header("x-rcli-server-key", &self.server_key)
+            .header("x-rcli-device", &self.device_id)
+            .header("x-rcli-device-password", &self.password)
+            .header("x-rcli-controller", self.controller.as_deref().unwrap_or("test-controller"));
+        let mut resp = req.send().await.expect("controller API request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        resp.chunk().await.expect("first chunk").expect("stream ended");
+        resp
     }
 
     fn url(&self, path: &str) -> String {

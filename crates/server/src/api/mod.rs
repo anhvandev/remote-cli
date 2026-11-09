@@ -160,9 +160,11 @@ impl FromRequestParts<State> for Caller {
             .await?
             .map(Caller)
             .map_err(|e| match e {
-                crate::auth::ControllerError::Unauthorized => {
-                    ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "wrong Server Key, Device ID or Device Password")
-                }
+                crate::auth::ControllerError::Unauthorized => ApiError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "wrong Server Key or Device Password, or no Device with this Device ID",
+                ),
                 crate::auth::ControllerError::Locked(until) => ApiError::new(
                     StatusCode::TOO_MANY_REQUESTS,
                     "too_many_attempts",

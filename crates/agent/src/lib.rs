@@ -210,7 +210,12 @@ pub async fn register(server: &ServerEndpoint, platform: &dyn Platform) -> anyho
 
 /// Keeps a connection to the Server open forever, reconnecting with backoff.
 /// Resources are sampled every 5 s whether connected or not; samples taken offline are backfilled on reconnect.
-pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn Platform>, status: Option<Arc<ipc::Status>>) {
+/// With a `status`, a changed Server endpoint reconnects at once and Device identity changes go over the connection.
+pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<dyn Platform>, status: Option<Arc<ipc::Status>>) {
+    // With IPC, the Status owns the endpoint (a change reconnects) and receives the changes to forward.
+    let mut endpoint = status.as_ref().map_or(server, |s| s.endpoint());
+    let mut endpoints = status.as_ref().map(|s| s.subscribe());
+    let mut changes = status.as_ref().and_then(|s| s.take_changes());
     let backlog = Arc::new(Backlog::default());
     let sampler = tokio::spawn(sample_forever(platform.clone(), backlog.clone()));
     // Stop the sampler when `run` is dropped (e.g. aborted).
@@ -228,14 +233,33 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn P
     let media = Arc::new(media::Media::default());
     let mut backoff = Duration::from_secs(1);
     loop {
-        match connect(&server, Some(&creds)).await {
+        // Another Server Address is one switch away; pick up whichever is current.
+        if let Some(rx) = &mut endpoints {
+            endpoint = rx.borrow_and_update().clone();
+        }
+        let mut reconnect = false;
+        match connect(&endpoint, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
                 if let Some(s) = &status {
                     s.set_connected(true);
                 }
-                if let Err(e) = session(conn, &creds, &platform, &executor, &live, &media, &backlog).await {
-                    tracing::warn!("connection to server lost: {e}");
+                match session(
+                    conn,
+                    &mut creds,
+                    &platform,
+                    &executor,
+                    &live,
+                    &media,
+                    &backlog,
+                    status.as_deref(),
+                    &mut endpoints,
+                    &mut changes,
+                )
+                .await
+                {
+                    Ok(now) => reconnect = now,
+                    Err(e) => tracing::warn!("connection to server lost: {e}"),
                 }
                 if let Some(s) = &status {
                     s.set_connected(false);
@@ -248,8 +272,34 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn P
                 tracing::warn!("cannot connect to server: {e}");
             }
         }
-        tokio::time::sleep(backoff).await;
+        // A new Server Address reconnects at once; otherwise wait out the backoff.
+        if reconnect {
+            continue;
+        }
+        match &mut endpoints {
+            Some(rx) => tokio::select! {
+                _ = tokio::time::sleep(backoff) => {}
+                changed = rx.changed() => if changed.is_ok() { continue },
+            },
+            None => tokio::time::sleep(backoff).await,
+        }
         backoff = (backoff * 2).min(MAX_BACKOFF);
+    }
+}
+
+/// Waits until the Server Address changes; never, without a Status.
+async fn endpoints_changed(rx: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>) -> bool {
+    match rx {
+        Some(rx) => rx.changed().await.is_ok(),
+        None => std::future::pending().await,
+    }
+}
+
+/// The next Device identity change to forward; never, without a Status.
+async fn next_change(rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>) -> Option<ipc::Change> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -264,15 +314,19 @@ async fn sample_forever(platform: Arc<dyn Platform>, backlog: Arc<Backlog>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn session(
     mut conn: Conn<TlsStream<TcpStream>>,
-    creds: &Credentials,
+    creds: &mut Credentials,
     platform_arc: &Arc<dyn Platform>,
     executor: &Arc<Mutex<Executor>>,
     live: &Arc<live::Live>,
     media: &Arc<media::Media>,
     backlog: &Backlog,
-) -> anyhow::Result<()> {
+    status: Option<&ipc::Status>,
+    endpoints: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>,
+    changes: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>,
+) -> anyhow::Result<bool> {
     let platform = platform_arc.as_ref();
     let hello = AgentHello { version: platform.agent_version(), target: target() };
     let send = |msg| AgentMessage { msg: Some(msg) };
@@ -283,6 +337,8 @@ async fn session(
     let (mut inventory, mut resources) = (None, Resources::default());
     // Replies from work that runs off this loop (Actions block on the OS for up to seconds).
     let (replies, mut replies_rx) = tokio::sync::mpsc::unbounded_channel();
+    // Device identity changes sent to the Server, awaiting its answer by request_id.
+    let mut pending: std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Result<String, String>>> = Default::default();
     let mut shells = Shells::default();
     loop {
         tokio::select! {
@@ -316,6 +372,12 @@ async fn session(
                 }
                 conn.send(&send(reply)).await?
             }
+            Some(change) = next_change(changes) => {
+                pending.insert(change.update.request_id, change.reply);
+                conn.send(&send(agent_message::Msg::IdentityUpdate(change.update))).await?;
+            }
+            // A new Server Address or Key: drop this connection so `run` connects with the new values.
+            _ = endpoints_changed(endpoints) => return Ok(true),
             msg = conn.recv::<ServerMessage>() => {
                 match msg?.and_then(|m| m.msg) {
                     None => anyhow::bail!("server closed the connection"),
@@ -416,7 +478,7 @@ async fn session(
                         // shortcut: installs inline, blocking heartbeats; fine while installs take well under 30 s.
                         match install(creds, platform, &update) {
                             // Reconnect so the Server sees the new version (real adapters restart instead).
-                            Ok(()) => return Ok(()),
+                            Ok(()) => return Ok(true),
                             Err(e) => {
                                 tracing::warn!("rejected Agent update {}: {e:#}", update.version);
                                 let failed = UpdateFailed { version: update.version, reason: format!("{e:#}") };
@@ -426,6 +488,21 @@ async fn session(
                     }
                     Some(server_message::Msg::ControlIndicator(c)) => {
                         live.set_lock_indicator(c.on);
+                    }
+                    Some(server_message::Msg::IdentityUpdated(r)) => {
+                        if let Some(reply) = pending.remove(&r.request_id) {
+                            let result = match r.error {
+                                Some(e) => Err(e.message),
+                                None => {
+                                    if let Some(s) = status {
+                                        s.set_device_id(&r.device_id);
+                                    }
+                                    creds.device_id = r.device_id.clone();
+                                    Ok(r.device_id)
+                                }
+                            };
+                            let _ = reply.send(result);
+                        }
                     }
                     // Later tickets handle more requests from the Server here.
                     Some(_) => {}

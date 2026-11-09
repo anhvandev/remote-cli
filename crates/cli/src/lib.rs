@@ -221,10 +221,34 @@ enum AgentCommand {
     Run(agent::Run),
     /// Show the Device ID and connection status (any local user).
     Info(agent::Info),
-    /// The Device Password: show it (root only).
+    /// The Device Password: show or change it (root only).
     Password {
         #[command(subcommand)]
         command: agent::PasswordCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
+    },
+    /// The Device ID: set a free 9-digit one (root only).
+    Id {
+        #[command(subcommand)]
+        command: agent::IdCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
+    },
+    /// The Device name: rename it (root only).
+    Name {
+        #[command(subcommand)]
+        command: agent::NameCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
+    },
+    /// The Server the Agent connects to: point it elsewhere (root only).
+    Server {
+        #[command(subcommand)]
+        command: agent::ServerCommand,
         /// Local IPC socket of the running Agent.
         #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
         socket: Option<PathBuf>,
@@ -531,6 +555,9 @@ where
             AgentCommand::Run(run) => run.run().await,
             AgentCommand::Info(info) => info.run(out).await,
             AgentCommand::Password { command, socket } => agent::run_password(command, socket, out).await,
+            AgentCommand::Id { command, socket } => agent::run_id(command, socket, out).await,
+            AgentCommand::Name { command, socket } => agent::run_name(command, socket, out).await,
+            AgentCommand::Server { command, socket } => agent::run_server(command, socket, out).await,
         };
     }
     let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);
