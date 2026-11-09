@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] After a key replacement, registered Devices stay Online and the old key no longer registers or connects
-- [ ] Changing the Server Address reissues the certificate and Agents reconnect on the new name
-- [ ] Operators cannot see the page or use the commands
-- [ ] Playwright test covers the page
+- [x] After a key replacement, registered Devices stay Online and the old key no longer registers or connects
+- [x] Changing the Server Address reissues the certificate and Agents reconnect on the new name
+- [x] Operators cannot see the page or use the commands
+- [x] Playwright test covers the page

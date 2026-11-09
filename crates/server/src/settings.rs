@@ -48,19 +48,32 @@ impl Settings {
     }
 }
 
-/// The names the Server's TLS certificate must carry: address entries without their ports.
+/// The names the Server's TLS certificate carries: the Server Address entries without their ports.
 pub fn hostnames(address: &str) -> Vec<String> {
     address
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| match s.strip_prefix('[') {
-            Some(rest) => rest.split(']').next().unwrap_or(rest).to_owned(),
-            None => s
-                .rsplit_once(':')
-                .filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit()))
-                .map_or(s, |(host, _)| host)
-                .to_owned(),
+        .map(|s| {
+            // `host:8443` names a port; the certificate carries the host. A bare IPv6 literal keeps its colons.
+            let host = s.strip_prefix('[').map_or(s, |rest| rest.split(']').next().unwrap_or(rest));
+            match host.rsplit_once(':') {
+                Some((h, port)) if !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) => h,
+                _ => host,
+            }
         })
+        .map(str::to_owned)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hostnames;
+
+    #[test]
+    fn hostnames_drop_ports_and_keep_ipv6() {
+        assert_eq!(hostnames(" vps.example.com:8443, localhost "), ["vps.example.com", "localhost"]);
+        assert_eq!(hostnames("[::1]:8443,::1"), ["::1", "::1"]);
+        assert!(hostnames(" , ").is_empty());
+    }
 }
