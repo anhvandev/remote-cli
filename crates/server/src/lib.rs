@@ -135,7 +135,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
         lock_watchers: Default::default(),
     });
     let acceptor = agent_link::acceptor(&state)?;
-    let router = api::router(state.clone());
+    let router = api::router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
     let server_key = state.server_key.clone();
     let tasks = vec![
         tokio::spawn(async move {

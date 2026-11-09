@@ -15,15 +15,52 @@ pub const ROLES: [&str; 2] = ["admin", "operator"];
 pub struct User {
     pub id: Uuid,
     pub name: String,
-    /// "admin" or "operator".
+    /// "admin", "operator", or "controller" for a password connection.
     pub role: String,
     pub disabled_at: Option<DateTime<Utc>>,
+    /// Set for a password connection: the only Device it may reach.
+    #[sqlx(default)]
+    #[serde(skip)]
+    pub device_scope: Option<Uuid>,
 }
 
 impl User {
+    /// Server administration only: a password connection is never an admin.
     pub fn is_admin(&self) -> bool {
-        self.role == "admin"
+        self.role == "admin" && self.device_scope.is_none()
     }
+}
+
+/// A password connection: Server Key secret + Device ID + Device Password. It reaches only its own Device and has
+/// no admin rights. Its display name is `<controller hostname> (<IP>)` in audit entries and as Control Lock holder.
+pub async fn authenticate_controller(
+    state: &AppState,
+    server_key: &str,
+    device: &str,
+    password: &str,
+    controller: &str,
+    ip: &str,
+) -> anyhow::Result<Option<User>> {
+    let expected = crate::server_key::split(&state.server_key).map(|(_, secret)| secret).unwrap_or_default();
+    let presented = crate::server_key::split(server_key).map(|(_, secret)| secret).unwrap_or("");
+    if !crate::server_key::secret_matches(expected, presented) {
+        return Ok(None);
+    }
+    let Ok(Some(id)) = crate::registry::resolve(state, device).await? else { return Ok(None) };
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT device_password_hash FROM devices WHERE id = $1 AND revoked_at IS NULL")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+    let Some(stored) = stored.filter(|h| !h.is_empty()) else { return Ok(None) };
+    if !rcli_protocol::password::verify(password, &stored) {
+        return Ok(None);
+    }
+    let name = format!("{} ({ip})", controller.trim());
+    // A stable id per (controller machine, IP) so the Control Lock holder survives reconnects.
+    let digest = Sha256::digest(name.as_bytes());
+    let id_bytes = <[u8; 16]>::try_from(&digest[..16]).expect("16 bytes");
+    Ok(Some(User { id: Uuid::from_bytes(id_bytes), name, role: "controller".into(), disabled_at: None, device_scope: Some(id) }))
 }
 
 #[derive(Debug)]
@@ -68,7 +105,7 @@ pub async fn authenticate(state: &AppState, token: &str) -> anyhow::Result<Optio
         )
         .fetch_one(&state.db)
         .await?;
-    Ok((!admin_exists).then(|| User { id: Uuid::nil(), name: "bootstrap".into(), role: "admin".into(), disabled_at: None }))
+    Ok((!admin_exists).then(|| User { id: Uuid::nil(), name: "bootstrap".into(), role: "admin".into(), disabled_at: None, device_scope: None }))
 }
 
 pub async fn create_user(state: &AppState, name: &str, role: &str) -> Result<User, Error> {

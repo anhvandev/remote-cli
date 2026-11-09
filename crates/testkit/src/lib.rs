@@ -189,6 +189,17 @@ impl TestSystem {
         agent
     }
 
+    /// A Controller API client for a password connection: Server Key + Device ID + Device Password.
+    pub fn device_client(&self, device_id: &str, password: &str) -> DeviceClient {
+        DeviceClient {
+            api: ApiClient::new(format!("http://{}", self.server.http_addr), None),
+            server_key: self.server_key(),
+            device_id: device_id.to_owned(),
+            password: password.to_owned(),
+            controller: None,
+        }
+    }
+
     /// Runs `rcli <args>` in-process against the Agent IPC socket at `socket`; returns stdout.
     pub async fn agent_rcli(&self, socket: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {
         let mut argv: Vec<String> = std::iter::once("rcli".to_owned()).chain(args.iter().map(|s| s.to_string())).collect();
@@ -370,6 +381,55 @@ where
         }
         assert!(tokio::time::Instant::now() < deadline, "condition not met within 10s");
         tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// A Controller API client for a password connection (Server Key + Device ID + Device Password).
+pub struct DeviceClient {
+    api: ApiClient,
+    server_key: String,
+    device_id: String,
+    password: String,
+    /// Controller machine name reported to the Server; the fake name is used when unset.
+    controller: Option<String>,
+}
+
+impl DeviceClient {
+    pub fn with_server_key(mut self, key: &str) -> Self {
+        self.server_key = key.to_owned();
+        self
+    }
+
+    pub fn with_controller(mut self, hostname: &str) -> Self {
+        self.controller = Some(hostname.to_owned());
+        self
+    }
+
+    pub async fn get(&self, path: &str) -> (StatusCode, Value) {
+        self.send(self.api.http.get(self.url(path))).await
+    }
+
+    pub async fn post(&self, path: &str) -> (StatusCode, Value) {
+        self.send(self.api.http.post(self.url(path))).await
+    }
+
+    pub async fn post_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
+        self.send(self.api.http.post(self.url(path)).json(body)).await
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.api.base)
+    }
+
+    async fn send(&self, mut req: reqwest::RequestBuilder) -> (StatusCode, Value) {
+        req = req
+            .header("x-rcli-server-key", &self.server_key)
+            .header("x-rcli-device", &self.device_id)
+            .header("x-rcli-device-password", &self.password)
+            .header("x-rcli-controller", self.controller.as_deref().unwrap_or("test-controller"));
+        let resp = req.send().await.expect("controller API request");
+        let status = resp.status();
+        (status, resp.json().await.unwrap_or(Value::Null))
     }
 }
 

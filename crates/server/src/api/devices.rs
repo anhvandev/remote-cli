@@ -83,8 +83,10 @@ async fn revoke(
     Ok(Json(registry::get(&state, id).await?))
 }
 
-async fn list(_: Caller, State(state): State<super::State>) -> Result<Json<Vec<registry::Device>>, ApiError> {
-    Ok(Json(registry::list(&state).await?))
+async fn list(Caller(user): Caller, State(state): State<super::State>) -> Result<Json<Vec<registry::Device>>, ApiError> {
+    let mut devices = registry::list(&state).await?;
+    devices.retain(|d| user.device_scope.is_none_or(|own| own == d.id));
+    Ok(Json(devices))
 }
 
 /// `{device}` is an id or a unique name.
@@ -93,6 +95,17 @@ pub(super) async fn resolve(state: &super::State, key: &str) -> Result<Uuid, Api
         Ok(Some(id)) => Ok(id),
         Ok(None) => Err(ApiError::new(StatusCode::NOT_FOUND, "device_not_found", format!("no Device {key:?}"))),
         Err(m) => Err(ApiError::new(StatusCode::CONFLICT, "ambiguous_device", m)),
+    }
+}
+
+/// Like `resolve`, but a password connection may only reach its own Device.
+pub(super) async fn resolve_for(user: &crate::auth::User, state: &super::State, key: &str) -> Result<Uuid, ApiError> {
+    let id = resolve(state, key).await?;
+    match user.device_scope {
+        Some(own) if own != id => {
+            Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden_device", "a password connection reaches only its own Device"))
+        }
+        _ => Ok(id),
     }
 }
 
@@ -107,11 +120,11 @@ struct DeviceDetails {
 }
 
 async fn show(
-    _: Caller,
+    Caller(user): Caller,
     State(state): State<super::State>,
     Path(key): Path<String>,
 ) -> Result<Json<DeviceDetails>, ApiError> {
-    let id = resolve(&state, &key).await?;
+    let id = resolve_for(&user, &state, &key).await?;
     let device = registry::get(&state, id).await?;
     let resources = match device.status {
         registry::DeviceStatus::Online => metrics::current_resources(&state, id),
@@ -122,11 +135,11 @@ async fn show(
 
 /// Asks the Agent for its process list now; never streamed.
 async fn processes(
-    _: Caller,
+    Caller(user): Caller,
     State(state): State<super::State>,
     Path(key): Path<String>,
 ) -> Result<Json<Vec<Process>>, ApiError> {
-    let id = resolve(&state, &key).await?;
+    let id = resolve_for(&user, &state, &key).await?;
     let req = |request_id| server_message::Msg::ListProcesses(ProcessListRequest { request_id });
     match state.agents.request(id, req).await? {
         agent_message::Msg::Processes(p) if p.error.is_empty() => Ok(Json(p.processes)),

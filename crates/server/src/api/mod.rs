@@ -111,24 +111,37 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
-/// Extractor: the request carries a valid API token of an enabled user (any role).
+/// Extractor: the request is either a User session (bearer token) or a password connection
+/// (`X-Rcli-Server-Key`, `X-Rcli-Device`, `X-Rcli-Device-Password`, `X-Rcli-Controller`).
 pub struct Caller(pub crate::auth::User);
 
 impl FromRequestParts<State> for Caller {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &State) -> Result<Self, Self::Rejection> {
-        let token = parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "));
-        let user = match token {
-            Some(t) => crate::auth::authenticate(state, t).await?,
-            None => None,
+        let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok());
+        let token = header("authorization").and_then(|v| v.strip_prefix("Bearer "));
+        if let Some(t) = token {
+            return crate::auth::authenticate(state, t)
+                .await?
+                .map(Caller)
+                .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"));
+        }
+        let (Some(server_key), Some(device), Some(password)) =
+            (header("x-rcli-server-key"), header("x-rcli-device"), header("x-rcli-device-password"))
+        else {
+            return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"));
         };
-        user.map(Caller)
-            .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"))
+        let controller = header("x-rcli-controller").unwrap_or("unknown");
+        let ip = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|c| c.0.ip().to_string())
+            .unwrap_or_else(|| "127.0.0.1".into());
+        crate::auth::authenticate_controller(state, server_key, device, password, controller, &ip)
+            .await?
+            .map(Caller)
+            .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "wrong Server Key, Device ID or Device Password"))
     }
 }
 

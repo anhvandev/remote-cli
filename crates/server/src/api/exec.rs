@@ -12,7 +12,7 @@ use rcli_protocol::agent::{self as proto, agent_message, server_message};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{bad_request, devices::resolve, ApiError, Caller};
+use super::{bad_request, devices::resolve_for, ApiError, Caller};
 use crate::{audit, control_lock};
 
 pub fn routes() -> Router<super::State> {
@@ -46,7 +46,7 @@ async fn exec(
     Path(id): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let device = resolve(&state, &id).await?;
+    let device = resolve_for(&user, &state, &id).await?;
     // A command from the Control Lock holder counts as an Action: restarts their idle timer.
     control_lock::touch(&state, device, &user).await?;
     let Json(params) = body.map_err(|e| bad_request(e.body_text()))?;
@@ -56,16 +56,14 @@ async fn exec(
     if !(1..=MAX_TIMEOUT_SECS).contains(&timeout) {
         return Err(bad_request(format!("timeout_secs must be 1..={MAX_TIMEOUT_SECS}")));
     }
+    // Server roles no longer gate what runs on a Device: the Device's own settings do (ticket 07).
     let as_root = body.run_as == Some(RunAs::Root);
-    if as_root && !user.is_admin() {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "admin_required", "running as root/SYSTEM requires the admin role"));
-    }
     let req = |request_id| {
         server_message::Msg::Exec(proto::ExecRequest {
             request_id,
             command: body.command,
             as_root,
-            root_if_nobody_logged_in: user.is_admin(),
+            root_if_nobody_logged_in: true,
             timeout_ms: timeout * 1000,
         })
     };

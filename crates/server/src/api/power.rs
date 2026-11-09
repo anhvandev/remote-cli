@@ -1,4 +1,4 @@
-//! Power Actions. Restart/Shutdown/Sleep respect the Control Lock (holder or admin); Lock screen needs none.
+//! Power Actions. Restart/Shutdown/Sleep respect the Control Lock (holder only); Lock screen needs none.
 
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
@@ -10,7 +10,7 @@ use rcli_protocol::agent::{self as proto, agent_message, server_message};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{bad_request, devices::resolve, ApiError, Caller};
+use super::{bad_request, devices::resolve_for, ApiError, Caller};
 use crate::{audit, control_lock};
 
 pub fn routes() -> Router<super::State> {
@@ -39,14 +39,14 @@ async fn power(
     Path(id): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let device = resolve(&state, &id).await?;
+    let device = resolve_for(&user, &state, &id).await?;
     control_lock::touch(&state, device, &user).await?;
     let Json(params) = body.map_err(|e| bad_request(e.body_text()))?;
     let body: PowerBody = serde_json::from_value(params.clone())
         .map_err(|e| bad_request(e.to_string()))?;
     if body.action != Action::Lock {
         match control_lock::status(&state, device).await? {
-            Some(l) if l.holder_id != user.id && !user.is_admin() => return Err(control_lock::Error::Held(l).into()),
+            Some(l) if l.holder_id != user.id => return Err(control_lock::Error::Held(l).into()),
             _ => {}
         }
     }

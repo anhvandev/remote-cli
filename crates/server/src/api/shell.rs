@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::{bad_request, devices::resolve, ApiError, Caller};
+use super::{bad_request, devices::resolve_for, ApiError, Caller};
 use crate::{audit, control_lock};
 
 pub fn routes() -> Router<super::State> {
@@ -79,17 +79,15 @@ async fn open(
     Path(id): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    let device = resolve(&state, &id).await?;
+    let device = resolve_for(&user, &state, &id).await?;
     // Terminal use by the Control Lock holder counts as an Action: restarts their idle timer.
     control_lock::touch(&state, device, &user).await?;
     let Json(params) = body.map_err(|e| bad_request(e.body_text()))?;
     let body: OpenBody = serde_json::from_value(params).map_err(bad_request)?;
     let (cols, rows) = (body.cols.unwrap_or(80), body.rows.unwrap_or(24));
     check_size(cols, rows)?;
+    // Server roles no longer gate what runs on a Device: the Device's own settings do (ticket 07).
     let as_root = body.run_as == Some(RunAs::Root);
-    if as_root && !user.is_admin() {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "admin_required", "running as root/SYSTEM requires the admin role"));
-    }
     let session = Uuid::new_v4();
     // Registered before the Agent starts the shell so no output is lost.
     let mut output = state.shells.open(session, device, user.id);
@@ -98,7 +96,7 @@ async fn open(
             request_id,
             session: session.to_string(),
             as_root,
-            root_if_nobody_logged_in: user.is_admin(),
+            root_if_nobody_logged_in: true,
             cols,
             rows,
         })

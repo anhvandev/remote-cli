@@ -11,7 +11,7 @@ use rcli_protocol::agent::{self as proto, action::Kind, agent_message, server_me
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{bad_request, devices::resolve, ApiError, Caller};
+use super::{bad_request, devices::resolve_for, ApiError, Caller};
 use crate::{audit, auth::User, control_lock, metrics, vault};
 
 pub fn routes() -> Router<super::State> {
@@ -178,7 +178,7 @@ async fn act(
     Path(id): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let device = resolve(&state, &id).await?;
+    let device = resolve_for(&user, &state, &id).await?;
     let Json(mut params) = body.map_err(|e| bad_request(e.body_text()))?;
     let body: ActBody = serde_json::from_value(params.clone())
         .map_err(|e| bad_request(e.to_string()))?;
@@ -267,7 +267,7 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
 /// `unlock`: the Agent types the Device's stored password + Enter, then observes. Needs the Control Lock.
 /// The password goes only to the Agent; the audit entry has no params at all.
 async fn unlock(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    let device = resolve(&state, &id).await?;
+    let device = resolve_for(&user, &state, &id).await?;
     control_lock::touch(&state, device, &user).await?;
     control_lock::check(&state, device, &user).await?;
     let password = vault::password(&state, device).await?;
@@ -338,8 +338,8 @@ async fn send(state: &super::State, device: uuid::Uuid, req: proto::ActRequest, 
     Ok(Json(reply))
 }
 
-async fn displays(_: Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    let device = resolve(&state, &id).await?;
+async fn displays(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    let device = resolve_for(&user, &state, &id).await?;
     let req = |request_id| server_message::Msg::ListDisplays(proto::DisplaysRequest { request_id });
     let agent_message::Msg::Displays(list) = state.agents.request(device, req).await? else {
         return Err(anyhow::anyhow!("unexpected reply to DisplaysRequest").into());
