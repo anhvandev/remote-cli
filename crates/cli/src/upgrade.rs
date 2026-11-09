@@ -36,10 +36,8 @@ pub async fn run(config: &Config, path: &Path) -> anyhow::Result<Upgraded> {
         "bad signature: the build is not signed with this machine's pinned update key; the old binary is untouched"
     );
     // Check the service first: on a root install, refusing after the swap would leave a new binary unstarted.
-    #[cfg(target_os = "linux")]
     let service = service_to_restart()?;
     replace(path, &build)?;
-    #[cfg(target_os = "linux")]
     let restarted = match service {
         Some(unit) => {
             restart(&unit)?;
@@ -47,8 +45,6 @@ pub async fn run(config: &Config, path: &Path) -> anyhow::Result<Upgraded> {
         }
         None => false,
     };
-    #[cfg(not(target_os = "linux"))]
-    let restarted = false;
     Ok(Upgraded { version, target, path: path.to_owned(), restarted })
 }
 
@@ -64,20 +60,18 @@ fn replace(path: &Path, build: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 fn is_root() -> bool {
     std::process::Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
 }
 
-/// Run as root, the binary being replaced is the installed Agent's: the unit to restart onto it. As a normal user
-/// (a Controller-only machine) there is none.
+/// Run as root on Linux, the binary being replaced is the installed Agent's: the unit to restart onto it. As a
+/// normal user (a Controller-only machine), or off Linux, there is none.
 // shortcut: assumes the unit is named rcli-agent and runs the binary being replaced; ticket 16's
-// `rcli agent install` records the real name and path, then this can read them instead. Not exercised by the
-// suite (it needs a real Linux systemd device); the ordering it relies on is: check the unit, then swap, then
-// restart, so a refused check never leaves a new binary unstarted.
-#[cfg(target_os = "linux")]
+// `rcli agent install` records the real name and path, then this can read them instead. Not exercised here (no
+// Linux systemd device); the ordering it relies on is: check the unit, then swap, then restart, so a refused
+// check never leaves a new binary unstarted.
 fn service_to_restart() -> anyhow::Result<Option<String>> {
-    if !is_root() {
+    if !cfg!(target_os = "linux") || !is_root() {
         return Ok(None);
     }
     let unit = "rcli-agent";
@@ -88,7 +82,6 @@ fn service_to_restart() -> anyhow::Result<Option<String>> {
     Ok(Some(unit.into()))
 }
 
-#[cfg(target_os = "linux")]
 fn restart(unit: &str) -> anyhow::Result<()> {
     let out = std::process::Command::new("systemctl").args(["restart", unit]).output()?;
     anyhow::ensure!(out.status.success(), "restarting the {unit} service failed: {}", String::from_utf8_lossy(&out.stderr).trim());
