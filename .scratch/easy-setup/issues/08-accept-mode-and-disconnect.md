@@ -4,7 +4,7 @@
 
 **Blocked by:** 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] password+accept refuses until accepted; times out to reject
 - [x] `info` lists current Controllers by name
@@ -54,3 +54,23 @@
   tagged per Controller) but the harness has no easy way to assert a stream ending, so the disconnect test checks the
   Control Lock release, `info` removal and reconnect instead. Also not separately asserted: a Dashboard User hitting
   the accept gate (the gate is in the shared `exec` path and is source-agnostic, so it applies equally).
+
+## Comments
+
+- Implemented by a subagent on branch `t/08` (`a7c5ddd`, 8 commits). `sudo rcli agent accept password|password+accept`
+  (root-only, `AcceptMode` in `settings.rs`); `password+accept` refuses new connections until accepted, with the
+  ticket 07 scripted-prompt pattern (`Platform::ask_accept`, 30 s auto-reject, no-session rejection). `rcli agent info`
+  lists connected Controllers as `dev-laptop (IP)` / `alice (Dashboard)`. `rcli agent disconnect [<who>]` works for any
+  local user (NOT root-gated): ends sessions, releases the Control Lock, allows reconnect. Every disconnect and prompt
+  answer is audited with `connect_decision`.
+- Verified on the merged tree: `cargo test --workspace` 185 passed / 0 failed, clippy and `tsc --noEmit` clean.
+  `accept_and_disconnect.rs` has 8 tests.
+- `shortcut:` in `lib.rs` disconnect handler: teardown closes all of this Device's remote sessions (shells, Live View,
+  media) rather than only the named Controller's; refine when sessions are tagged per Controller. This is safe with
+  one Controller but not with several.
+- Not verified: shell/Live View streams actually stop on disconnect (the harness cannot observe stream termination;
+  test asserts Control Lock release, info removal, and reconnect). A Dashboard User hitting the accept gate is not
+  tested separately (the gate is in the shared `exec` path).
+- Invented: `ExecRequest.controller` (display name, e.g. `alice (Dashboard)`) kept separate from `requester` (plain
+  name for the root prompt); `connect_decision` on `ExecResult` (same pattern as `root_decision`); `disconnect` matches
+  a Controller by display-name prefix.
