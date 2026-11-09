@@ -21,6 +21,13 @@ export function NavLinks({ admin }: { admin: boolean }) {
       <Link href="/" aria-current={onFleet ? "page" : undefined} className={tone(onFleet)}>
         Device
       </Link>
+      <Link
+        href="/connect-guide"
+        aria-current={path.startsWith("/connect-guide") ? "page" : undefined}
+        className={tone(path.startsWith("/connect-guide"))}
+      >
+        Hướng dẫn kết nối
+      </Link>
       {admin && (
         <>
           <Link href="/admin" aria-current={onAdmin ? "page" : undefined} className={tone(onAdmin)}>
