@@ -48,17 +48,11 @@ pub enum ControllerError {
     Locked(chrono::DateTime<chrono::Utc>),
 }
 
-/// The pair a wrong password is counted against. A Device that exists is keyed by its UUID, so every way of naming
-/// it (Device ID, UUID, name) shares one bucket; an unknown Device ID is keyed as presented, so it is counted too and
-/// a wrong Device ID is not a way around the limiter.
-async fn password_bucket(state: &AppState, device: &str) -> anyhow::Result<String> {
-    let known: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM devices WHERE device_number = $1 OR id::text = $1 OR name = $1 LIMIT 2",
-    )
-    .bind(device)
-    .fetch_optional(&state.db)
-    .await?;
-    Ok(known.map_or_else(|| device.to_owned(), |id| id.to_string()))
+/// A real check's cost for an unknown Device, so response time does not reveal whether the Device ID exists.
+fn dummy_password_check(password: &str) {
+    static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let hash = DUMMY.get_or_init(|| rcli_protocol::password::hash("no such Device Password"));
+    let _ = rcli_protocol::password::verify(password, hash);
 }
 
 /// The principal a password connection authenticates as: `<controller hostname> (<IP>)`, with a stable id per
@@ -90,7 +84,13 @@ pub async fn authenticate_controller(
     if !crate::server_key::secret_matches(expected, presented) {
         return Ok(Err(ControllerError::Unauthorized));
     }
-    let bucket = password_bucket(state, device).await?;
+    // A Device that exists is keyed by its UUID, so every way of naming it (Device ID, UUID, name) shares one
+    // bucket; an unknown Device ID is keyed as presented, so it is counted too and cannot dodge the limiter.
+    let resolved = match crate::registry::resolve(state, device).await? {
+        Ok(id) => id,
+        Err(_) => None,
+    };
+    let bucket = resolved.map_or_else(|| device.to_owned(), |id| id.to_string());
     let now = state.clock.now();
     let locked_until: Option<chrono::DateTime<chrono::Utc>> =
         sqlx::query_scalar("SELECT locked_until FROM device_password_failures WHERE device = $1 AND ip = $2")
@@ -102,11 +102,8 @@ pub async fn authenticate_controller(
     if let Some(until) = locked_until.filter(|u| *u > now) {
         return Ok(Err(ControllerError::Locked(until)));
     }
-    let resolved = match crate::registry::resolve(state, device).await? {
-        Ok(id) => id,
-        Err(_) => None,
-    };
     let Some(id) = resolved else {
+        dummy_password_check(password);
         return password_failed(state, &bucket, ip, controller, None, now).await;
     };
     let stored: Option<String> =
@@ -115,6 +112,7 @@ pub async fn authenticate_controller(
             .fetch_optional(&state.db)
             .await?;
     let Some(stored) = stored.filter(|h| !h.is_empty()) else {
+        dummy_password_check(password);
         return password_failed(state, &bucket, ip, controller, Some(id), now).await;
     };
     if !rcli_protocol::password::verify(password, &stored) {

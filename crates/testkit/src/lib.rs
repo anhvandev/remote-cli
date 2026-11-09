@@ -58,6 +58,16 @@ impl TestSystem {
         Self::start_inner(http_addr, None, Some(Self::master_key())).await
     }
 
+    /// Like `start`, but the Controller API listens on IPv4 and IPv6 loopback, so a test can make one request from
+    /// `127.0.0.1` and another from `::1` (the rate limiter keys on the peer IP).
+    pub async fn start_dual_stack() -> Self {
+        let mut sys = Self::start_inner("[::]:0".parse().unwrap(), None, Some(Self::master_key())).await;
+        let port = sys.server.http_addr.port();
+        sys.server.http_addr = format!("127.0.0.1:{port}").parse().unwrap();
+        sys.api = ApiClient::new(format!("http://{}", sys.server.http_addr), Some(&sys.admin_token));
+        sys
+    }
+
     /// Like `start`, without `RCLI_MASTER_KEY`: the vault is off and secrets are stored in plaintext.
     pub async fn start_without_master_key() -> Self {
         Self::start_inner("127.0.0.1:0".parse().unwrap(), None, None).await
@@ -412,6 +422,12 @@ impl DeviceClient {
 
     pub fn with_controller(mut self, hostname: &str) -> Self {
         self.controller = Some(hostname.to_owned());
+        self
+    }
+
+    /// The same Server reached at another address (e.g. its `[::1]` side), so the request comes from another IP.
+    pub fn with_base(mut self, base: &str) -> Self {
+        self.api.base = base.to_owned();
         self
     }
 
