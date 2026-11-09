@@ -37,15 +37,17 @@ fn first_address(address: &str) -> &str {
 async fn install_sh(State(state): State<super::State>, headers: HeaderMap) -> Response {
     let script = INSTALL_SH
         .replace("{{ORIGIN}}", &origin(&headers))
-        .replace("{{SERVER}}", first_address(&state.settings.address().await));
-    ([("content-type", "text/x-shellscript; charset=utf-8")], script).into_response()
+        .replace("{{SERVER}}", &first_address(&state.settings.address().await));
+    // no-store: the script is rendered per request from the requesting origin; a shared cache must not serve
+    // one client's rendering to the next (that would redirect their download).
+    ([("content-type", "text/x-shellscript; charset=utf-8"), ("cache-control", "no-store")], script).into_response()
 }
 
 async fn install_ps1(State(state): State<super::State>, headers: HeaderMap) -> Response {
     let script = INSTALL_PS1
         .replace("{{ORIGIN}}", &origin(&headers))
-        .replace("{{SERVER}}", first_address(&state.settings.address().await));
-    ([("content-type", "text/plain; charset=utf-8")], script).into_response()
+        .replace("{{SERVER}}", &first_address(&state.settings.address().await));
+    ([("content-type", "text/plain; charset=utf-8"), ("cache-control", "no-store")], script).into_response()
 }
 
 /// The build bytes of the currently published (rolled-out) build for `os-arch`, signed by the update key.
@@ -82,14 +84,22 @@ if [ -z "$key" ]; then
     echo "install.sh: give --key <Server Key> (the Connect page shows it)" >&2
     exit 2
 fi
-os=$(uname -s | tr '[:upper:]' '[:lower:]')
+os=$(uname -s)
+case "$os" in
+    Linux) os=linux ;;
+    Darwin) os=macos ;; # uname says darwin; the build targets are named macos
+    *) echo "install.sh: unsupported OS: $os" >&2; exit 1 ;;
+esac
 arch=$(uname -m)
 case "$arch" in
     x86_64 | amd64) arch=x86_64 ;;
     aarch64 | arm64) arch=aarch64 ;;
 esac
 echo "downloading {{ORIGIN}}/download/$os/$arch"
-curl -fsSL "{{ORIGIN}}/download/$os/$arch" -o /tmp/rcli
+if ! curl -fsSL "{{ORIGIN}}/download/$os/$arch" -o /tmp/rcli; then
+    echo "install.sh: no rcli build for $os-$arch is rolled out" >&2
+    exit 1
+fi
 chmod +x /tmp/rcli
 /tmp/rcli agent install --server {{SERVER}} --key "$key"
 "#;
