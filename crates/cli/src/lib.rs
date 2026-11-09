@@ -24,7 +24,7 @@ struct Cli {
     /// Controller API base URL; default: the one `rcli setup` saved.
     #[arg(long, global = true)]
     server: Option<String>,
-    /// API token (tests and admin scripting); default: the saved Controller configuration.
+    /// User session token (tests and scripting); default: the one `rcli login` saved.
     #[arg(long, global = true, hide_env_values = true)]
     token: Option<String>,
     /// Controller config directory; default: the platform's per-user location.
@@ -48,6 +48,19 @@ enum Command {
         #[arg(long, hide_env_values = true)]
         key: String,
     },
+    /// Sign in with a Dashboard account and save the session (Admin commands need it).
+    Login {
+        /// Dashboard user name.
+        name: String,
+        /// The Dashboard password; asked for when omitted.
+        #[arg(long, hide_env_values = true)]
+        password: Option<String>,
+        /// The 6-digit TOTP code; asked for when omitted.
+        #[arg(long)]
+        totp: Option<String>,
+    },
+    /// Revoke and forget the saved session.
+    Logout,
     /// Remember a Device's Device Password, so later commands take just its Device ID.
     Connect {
         device: String,
@@ -74,12 +87,19 @@ enum Command {
     /// Manage users (admin).
     #[command(subcommand)]
     User(UserCommand),
-    /// Manage per-user API tokens (admin).
-    #[command(subcommand)]
-    Token(TokenCommand),
-    /// Signed Agent builds and rollouts (admin).
-    #[command(subcommand)]
-    Update(UpdateCommand),
+    /// Signed Agent builds and rollouts (admin): `rollout keygen`, `rollout publish`, `rollout <version>`.
+    Rollout {
+        #[command(subcommand)]
+        command: Option<RolloutCommand>,
+        /// Version to roll out (to all Devices, or the ones under --device).
+        version: Option<String>,
+        /// Target every Device.
+        #[arg(long)]
+        all: bool,
+        /// Device id; repeat for several.
+        #[arg(long)]
+        device: Vec<String>,
+    },
     /// Control Lock: needed to send input Actions to a Device.
     #[command(subcommand)]
     Lock(LockCommand),
@@ -263,6 +283,21 @@ enum ActCommand {
     Key { keys: String },
 }
 
+/// Server administration, which a password connection can never do (ADR 0004): these need a User session.
+fn admin_only(command: &Command) -> bool {
+    match command {
+        Command::ServerKey(_)
+        | Command::ServerAddress(_)
+        | Command::User(_)
+        | Command::Rollout { .. }
+        | Command::Audit { .. }
+        | Command::UnlockPassword(_) => true,
+        Command::Device(DeviceCommand::Rename { .. } | DeviceCommand::Delete { .. } | DeviceCommand::Revoke { .. } | DeviceCommand::Merge { .. }) => true,
+        Command::Lock(LockCommand::ForceRelease { .. }) => true,
+        _ => false,
+    }
+}
+
 /// Where to point: image coordinates X Y, `--mark N --observation ID`, or `--text T`.
 #[derive(clap::Args)]
 struct At {
@@ -367,7 +402,7 @@ fn lock_text(lock: &Value) -> String {
 }
 
 #[derive(Subcommand)]
-enum UpdateCommand {
+enum RolloutCommand {
     /// Create an update signing key (offline, no server needed). Give the public key to the Server as RCLI_UPDATE_PUBLIC_KEY.
     Keygen {
         /// Where to write the private key (PKCS#8). Keep it off the Server.
@@ -381,18 +416,9 @@ enum UpdateCommand {
         /// `<os>-<arch>` the build runs on, e.g. linux-x86_64, windows-x86_64, macos-aarch64.
         #[arg(long)]
         target: String,
-        /// Private key file from `rcli update keygen`.
+        /// Private key file from `rcli rollout keygen`.
         #[arg(long)]
         key: String,
-    },
-    /// Target a published version at all Devices or selected ones.
-    Rollout {
-        version: String,
-        #[arg(long, conflicts_with = "device", required_unless_present = "device")]
-        all: bool,
-        /// Device id; repeat for several.
-        #[arg(long)]
-        device: Vec<String>,
     },
 }
 
@@ -415,14 +441,6 @@ enum UserCommand {
         #[arg(long, env = "RCLI_NEW_PASSWORD", hide_env_values = true)]
         password: String,
     },
-}
-
-#[derive(Subcommand)]
-enum TokenCommand {
-    /// Issue a new API token for a user. The token is shown only once.
-    Create { user: String },
-    /// Revoke an API token by its id.
-    Revoke { id: String },
 }
 
 #[derive(Subcommand)]
@@ -497,7 +515,7 @@ where
         Err(e) if !e.use_stderr() => return Ok(write!(out, "{e}")?), // --help / --version
         Err(e) => anyhow::bail!("{e}"),
     };
-    if let Command::Update(UpdateCommand::Keygen { key_file }) = &cli.command {
+    if let Command::Rollout { command: Some(RolloutCommand::Keygen { key_file }), .. } = &cli.command {
         let (private, public) = rcli_protocol::update::generate_key()?;
         write_private(key_file, &private)?;
         let public = hex::encode(public);
@@ -522,6 +540,55 @@ where
         return match cli.json {
             true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),
             false => Ok(write!(out, "{text}")?),
+        };
+    }
+    if let Command::Login { name, password, totp } = &cli.command {
+        let base = match (cli.server.clone(), config::load_at(&dir)?) {
+            (Some(server), _) => server,
+            (None, Some(config)) if !config.server.is_empty() => config.server,
+            _ => anyhow::bail!("run `rcli setup` first (no saved Server Address)"),
+        };
+        let password = match password {
+            Some(p) => p.clone(),
+            None => prompt_password("Dashboard password: ")?,
+        };
+        let totp = match totp {
+            Some(code) => code.clone(),
+            None => prompt_line("TOTP code: ")?,
+        };
+        let resp = reqwest::Client::new()
+            .post(format!("{}/api/v1/sessions", base.trim_end_matches('/')))
+            .json(&json!({ "name": name, "password": password, "totp": totp.trim() }))
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or(Value::Null);
+        if !status.is_success() {
+            let e = &body["error"];
+            anyhow::bail!("{} ({}): {}", str_of(&e["code"]), status, str_of(&e["message"]));
+        }
+        config::set_token(&dir, Some(str_of(&body["token"]).to_owned()))?;
+        let user = &body["user"];
+        let text = format!("signed in as {} ({})\n", str_of(&user["name"]), str_of(&user["role"]));
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", json!({ "user": user, "expires_at": body["expires_at"] }))?),
+            false => Ok(write!(out, "{text}")?),
+        };
+    }
+    if let Command::Logout = &cli.command {
+        let saved = config::load_at(&dir)?;
+        if let (Some(token), Some(server)) = (saved.as_ref().and_then(|c| c.token.clone()), saved.as_ref().map(|c| c.server.clone())) {
+            // Best effort: an already expired session needs no revoking.
+            let _ = reqwest::Client::new()
+                .delete(format!("{}/api/v1/session", server.trim_end_matches('/')))
+                .bearer_auth(token)
+                .send()
+                .await;
+            config::set_token(&dir, None)?;
+        }
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", json!({ "signed_out": true }))?),
+            false => Ok(writeln!(out, "signed out")?),
         };
     }
     if let Command::Connect { device, password } = &cli.command {
@@ -552,8 +619,13 @@ where
     }
     let (base, connection) = api_target(&dir, cli.server, cli.token)?;
     let api = Api { base, dir, connection, http: reqwest::Client::new() };
+    if admin_only(&cli.command) && api.connection.token.is_none() {
+        anyhow::bail!("this command needs an Admin account: run `rcli login <name>` (or `rcli connect <Device ID>` for Device commands)");
+    }
     let (body, human) = match cli.command {
-        Command::Setup { .. } | Command::Connect { .. } | Command::Forget { .. } => unreachable!("handled before connecting"),
+        Command::Setup { .. } | Command::Login { .. } | Command::Logout | Command::Connect { .. } | Command::Forget { .. } => {
+            unreachable!("handled before connecting")
+        }
         Command::Devices => {
             let devices = api.call(reqwest::Method::GET, "/api/v1/devices", None).await?;
             let mut text = format!(
@@ -698,15 +770,6 @@ where
             let text = format!("totp_secret {}\notpauth_url {}\n", str_of(&set["totp_secret"]), str_of(&set["otpauth_url"]));
             (set, text)
         }
-        Command::Token(TokenCommand::Create { user }) => {
-            let issued = api.call(reqwest::Method::POST, &format!("/api/v1/users/{user}/tokens"), None).await?;
-            let text = format!("id {}\ntoken {}\n", str_of(&issued["id"]), str_of(&issued["token"]));
-            (issued, text)
-        }
-        Command::Token(TokenCommand::Revoke { id }) => {
-            let body = api.call(reqwest::Method::POST, &format!("/api/v1/tokens/{id}/revoke"), None).await?;
-            (body, format!("revoked {id}\n"))
-        }
         Command::Lock(cmd) => {
             let (method, device, suffix) = match cmd {
                 LockCommand::Acquire { device } => (reqwest::Method::POST, device, ""),
@@ -840,8 +903,7 @@ where
         }
         Command::Mcp => return mcp::serve(api, tokio::io::stdin(), tokio::io::stdout()).await,
         Command::Agent(_) => unreachable!("handled before connecting"),
-        Command::Update(UpdateCommand::Keygen { .. }) => unreachable!("handled before connecting"),
-        Command::Update(UpdateCommand::Publish { file, version, target, key }) => {
+        Command::Rollout { command: Some(RolloutCommand::Publish { file, version, target, key }), .. } => {
             let build = std::fs::read(&file)?;
             let signature = rcli_protocol::update::sign(&std::fs::read(&key)?, &version, &target, &build)?;
             let url = format!("{}/api/v1/agent-builds/{version}/{target}", api.base.trim_end_matches('/'));
@@ -849,13 +911,15 @@ where
             let published = api.send(req, None).await?;
             (published, format!("published {version} for {target}\n"))
         }
-        Command::Update(UpdateCommand::Rollout { version, all, device }) => {
-            let body = if all { serde_json::json!({ "all": true }) } else { serde_json::json!({ "devices": device }) };
+        Command::Rollout { command: None, version: Some(version), all, device } => {
+            let body = if all || device.is_empty() { serde_json::json!({ "all": true }) } else { serde_json::json!({ "devices": device }) };
             let path = format!("/api/v1/agent-builds/{version}/rollout");
             let r = api.call(reqwest::Method::POST, &path, Some(&body)).await?;
             let text = format!("rolling out {version} to {} device(s)\n", r["devices"]);
             (r, text)
         }
+        Command::Rollout { command: Some(RolloutCommand::Keygen { .. }), .. } => unreachable!("handled before connecting"),
+        Command::Rollout { command: None, version: None, .. } => anyhow::bail!("give a version to roll out, or `rcli rollout keygen|publish`"),
     };
     if cli.json {
         writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?;
@@ -1047,6 +1111,14 @@ fn prompt_password(prompt: &str) -> anyhow::Result<String> {
     Ok(password)
 }
 
+/// Asks for a line (the TOTP code).
+fn prompt_line(prompt: &str) -> anyhow::Result<String> {
+    eprint!("{prompt}");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_owned())
+}
+
 /// Controller API client (base URL + how to authenticate).
 #[derive(Clone)]
 pub struct Api {
@@ -1065,6 +1137,13 @@ impl Api {
             connection: Connection { token: Some(token), ..Default::default() },
             http: reqwest::Client::new(),
         }
+    }
+
+    /// The Controller from the saved `rcli setup`/`rcli login` config and remembered Device Passwords
+    /// (what `rcli mcp` uses): no env vars and no flags.
+    pub fn from_config(dir: &std::path::Path) -> anyhow::Result<Self> {
+        let (base, connection) = api_target(dir, None, None)?;
+        Ok(Self { base, dir: dir.to_path_buf(), connection, http: reqwest::Client::new() })
     }
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> anyhow::Result<Value> {
@@ -1096,7 +1175,7 @@ impl Api {
         let device = path_device
             .filter(|d| config::remembered(&self.dir, d).ok().flatten().is_some())
             .or_else(|| config::some_remembered(&self.dir))
-            .ok_or_else(|| anyhow::anyhow!("no User session saved; run `rcli connect <Device ID>` or `rcli login`"))?;
+            .ok_or_else(|| anyhow::anyhow!("no User session saved; run `rcli login <name>` for Admin commands, or `rcli connect <Device ID>`"))?;
         let Some(remembered) = config::remembered(&self.dir, &device)? else {
             anyhow::bail!("no Device Password saved for {device}; run `rcli connect {device}`");
         };

@@ -1,6 +1,6 @@
-//! Auth: users with a role (admin, operator) and per-user API tokens.
-//! The bootstrap token from config acts as an admin only until an enabled admin has a live API token (first run).
-//! Dashboard sign-in: password + TOTP gives a session, which is an API token with an expiry.
+//! Auth: users with a role (admin, operator) and their sessions.
+//! The bootstrap token from config acts as an admin only until an enabled admin has a live session (first run).
+//! A session is an API token with an expiry, from Dashboard sign-in or `rcli login`.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -99,13 +99,14 @@ pub async fn authenticate(state: &AppState, token: &str) -> anyhow::Result<Optio
     if user.is_some() || token != state.config.bootstrap_admin_token {
         return Ok(user);
     }
-    let admin_exists: bool =
-        sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM api_tokens t JOIN users u ON u.id = t.user_id
-             WHERE u.role = 'admin' AND u.disabled_at IS NULL AND t.revoked_at IS NULL)",
-        )
-        .fetch_one(&state.db)
-        .await?;
+    let admin_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM api_tokens t JOIN users u ON u.id = t.user_id
+         WHERE u.role = 'admin' AND u.disabled_at IS NULL AND t.revoked_at IS NULL
+           AND (t.expires_at IS NULL OR t.expires_at > $1))",
+    )
+    .bind(state.clock.now())
+    .fetch_one(&state.db)
+    .await?;
     Ok((!admin_exists).then(|| User { id: Uuid::nil(), name: "bootstrap".into(), role: "admin".into(), disabled_at: None, device_scope: None }))
 }
 
@@ -146,55 +147,7 @@ pub async fn disable_user(state: &AppState, name: &str) -> Result<User, Error> {
     .ok_or(Error::NotFound)
 }
 
-/// Issues a new API token for `user_name`; returns `(token id, token)`. Only the hash is stored.
-pub async fn issue_token(state: &AppState, user_name: &str) -> Result<(Uuid, String), Error> {
-    let (id, token) = (Uuid::new_v4(), format!("rcli_{}", Uuid::new_v4().simple()));
-    let inserted = sqlx::query(
-        "INSERT INTO api_tokens (id, user_id, token_hash, created_at)
-         SELECT $1, id, $3, $4 FROM users WHERE name = $2 AND disabled_at IS NULL",
-    )
-    .bind(id)
-    .bind(user_name)
-    .bind(hash(&token))
-    .bind(state.clock.now())
-    .execute(&state.db)
-    .await?;
-    if inserted.rows_affected() == 0 {
-        return Err(Error::NotFound);
-    }
-    Ok((id, token))
-}
-
-#[derive(Serialize, Debug, sqlx::FromRow)]
-pub struct TokenInfo {
-    pub id: Uuid,
-    pub user: String,
-    pub created_at: DateTime<Utc>,
-}
-
-/// Live API tokens (not Dashboard sessions); never the token itself, only its id.
-pub async fn list_tokens(state: &AppState) -> anyhow::Result<Vec<TokenInfo>> {
-    Ok(sqlx::query_as(
-        "SELECT t.id, u.name AS user, t.created_at FROM api_tokens t JOIN users u ON u.id = t.user_id
-         WHERE t.revoked_at IS NULL AND t.expires_at IS NULL ORDER BY u.name, t.created_at",
-    )
-    .fetch_all(&state.db)
-    .await?)
-}
-
-pub async fn revoke_token(state: &AppState, id: Uuid) -> Result<(), Error> {
-    let updated = sqlx::query("UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, $2) WHERE id = $1")
-        .bind(id)
-        .bind(state.clock.now())
-        .execute(&state.db)
-        .await?;
-    if updated.rows_affected() == 0 {
-        return Err(Error::NotFound);
-    }
-    Ok(())
-}
-
-/// Revokes the token itself (Dashboard sign-out).
+/// Revokes the token itself (sign-out from `rcli logout` or the Dashboard).
 pub async fn revoke_by_token(state: &AppState, token: &str) -> anyhow::Result<()> {
     sqlx::query("UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, $2) WHERE token_hash = $1")
         .bind(hash(token))

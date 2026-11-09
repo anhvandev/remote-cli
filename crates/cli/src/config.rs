@@ -54,6 +54,14 @@ fn save(dir: &Path, config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Stores (or with `None` clears) the User session from `rcli login` / `rcli logout`.
+pub fn set_token(dir: &Path, token: Option<String>) -> anyhow::Result<Config> {
+    let mut config = load_at(dir)?.ok_or_else(|| anyhow::anyhow!("run `rcli setup` first (no saved Server Address)"))?;
+    config.token = token;
+    save(dir, &config)?;
+    Ok(config)
+}
+
 /// This Controller machine's name, as audit entries and the Control Lock holder show it.
 pub fn hostname() -> String {
     let var = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME"));
