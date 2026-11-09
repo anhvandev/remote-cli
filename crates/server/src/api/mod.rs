@@ -6,6 +6,7 @@ mod control_lock;
 mod devices;
 mod exec;
 mod history;
+mod install;
 mod power;
 mod live;
 mod sessions;
@@ -39,6 +40,7 @@ pub fn router(state: State) -> Router {
         .merge(settings::routes())
         .merge(devices::routes())
         .merge(history::routes())
+        .merge(install::routes())
         .merge(updates::routes())
         .merge(users::routes())
         .merge(control_lock::routes())

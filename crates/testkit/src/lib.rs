@@ -602,6 +602,17 @@ impl ApiClient {
         self.send(self.http.put(format!("{}{path}", self.base)).body(body)).await
     }
 
+    /// A GET whose body is raw bytes (scripts, builds), not JSON.
+    pub async fn get_bytes(&self, path: &str) -> (StatusCode, Vec<u8>) {
+        let mut req = self.http.get(format!("{}{path}", self.base));
+        if let Some(t) = &self.token {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send().await.expect("controller API request");
+        let status = resp.status();
+        (status, resp.bytes().await.unwrap_or_default().to_vec())
+    }
+
     /// Opens a streaming GET (e.g. the Control Lock `watch`) and waits for its first chunk. Drop it to disconnect.
     pub async fn watch(&self, path: &str) -> reqwest::Response {
         let mut req = self.http.get(format!("{}{path}", self.base));
