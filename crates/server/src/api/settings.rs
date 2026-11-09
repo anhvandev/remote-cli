@@ -8,7 +8,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{bad_request, Admin, ApiError};
+use super::{bad_request, Admin, ApiError, Caller};
 use crate::settings;
 
 pub fn routes() -> Router<super::State> {
@@ -18,7 +18,10 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/server-settings/server-address", put(set_address))
 }
 
-async fn show(Admin(_): Admin, State(state): State<super::State>) -> Json<Value> {
+/// Readable by every signed-in User: the Connect guide shows the Server Key and Server Address to all of them
+/// (ticket 18). A password connection may read it too, but it already holds the Server Key. Rotate and
+/// set-address stay Admin.
+async fn show(Caller(_): Caller, State(state): State<super::State>) -> Json<Value> {
     Json(json!({
         "server_key": state.settings.key().await,
         "ca_fingerprint": state.ca.fingerprint,
