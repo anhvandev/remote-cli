@@ -10,6 +10,7 @@ use std::{
 pub mod agent;
 pub mod config;
 pub mod media;
+pub mod upgrade;
 
 use base64::Engine;
 use clap::{Parser, Subcommand};
@@ -61,6 +62,13 @@ enum Command {
     },
     /// Revoke and forget the saved session.
     Logout,
+    /// Replace this `rcli` binary with the newest build published for this OS/arch, after checking its signature.
+    /// As root on an installed Device it also restarts the Agent service.
+    Upgrade {
+        /// Binary to replace; default: the one running now. Hidden: a seam for tests.
+        #[arg(long, hide = true)]
+        target: Option<PathBuf>,
+    },
     /// Remember a Device's Device Password, so later commands take just its Device ID.
     Connect {
         device: String,
@@ -637,6 +645,23 @@ where
             false => Ok(write!(out, "{text}")?),
         };
     }
+    if let Command::Upgrade { target } = &cli.command {
+        let config = config::load_at(&dir)?.ok_or_else(|| anyhow::anyhow!("run `rcli setup` first (no pinned update key)"))?;
+        let path = target.clone().unwrap_or_else(|| std::env::current_exe().unwrap_or_default());
+        let done = upgrade::run(&config, &path).await?;
+        let text = format!(
+            "upgraded {} to {} for {}{}\n",
+            done.path.display(),
+            done.version,
+            done.target,
+            if done.restarted { "; restarted the rcli-agent service" } else { "" }
+        );
+        let body = json!({ "version": done.version, "target": done.target, "path": done.path, "restarted": done.restarted });
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),
+            false => Ok(write!(out, "{text}")?),
+        };
+    }
     if let Command::Forget { device } = &cli.command {
         config::forget(&dir, device)?;
         return match cli.json {
@@ -650,7 +675,7 @@ where
         anyhow::bail!("this command needs an Admin account: run `rcli login <name>` (or `rcli connect <Device ID>` for Device commands)");
     }
     let (body, human) = match cli.command {
-        Command::Setup { .. } | Command::Login { .. } | Command::Logout | Command::Connect { .. } | Command::Forget { .. } => {
+        Command::Setup { .. } | Command::Login { .. } | Command::Logout | Command::Upgrade { .. } | Command::Connect { .. } | Command::Forget { .. } => {
             unreachable!("handled before connecting")
         }
         Command::Devices => {
