@@ -659,30 +659,37 @@ fn run_as(
 
 /// Gate for a Controller using the Device. In `password+accept` mode a person at the Device accepts each new
 /// Controller once (re-asked after a `disconnect`); refused when no session can show the prompt. `controller` is the
-/// display name `rcli agent info` lists and `disconnect` matches.
+/// display name `rcli agent info` lists and `disconnect` matches. Returns how the connection was decided (for the
+/// audit): "" when no prompt was shown, "accepted" when it was; the error carries "rejected" / "no_session".
 fn accept_connection(
     platform: &dyn Platform,
     settings: &settings::DeviceSettings,
     controller: &str,
     controllers: &Controllers,
-) -> Result<(), Error> {
+) -> Result<&'static str, (Error, &'static str)> {
     controllers.touch(controller);
     if settings.accept == settings::AcceptMode::Password || controllers.accepted(controller) {
-        return Ok(());
+        return Ok("");
     }
     if platform.session_state().is_ok_and(|s| s != platform::SessionState::LoggedIn) {
-        return Err(Error {
-            code: "connect_denied".into(),
-            message: "a person at the Device must accept this connection, and nobody can be asked right now".into(),
-        });
+        return Err((
+            Error {
+                code: "connect_denied".into(),
+                message: "a person at the Device must accept this connection, and nobody can be asked right now".into(),
+            },
+            "no_session",
+        ));
     }
     match platform.ask_accept(controller, ACCEPT_PROMPT_TIMEOUT) {
         Ok(true) => {
             controllers.accept(controller);
-            Ok(())
+            Ok("accepted")
         }
-        Ok(false) => Err(Error { code: "connect_denied".into(), message: "the person at the Device did not accept this connection".into() }),
-        Err(e) => Err(Error { code: "platform".into(), message: format!("cannot ask at the Device: {e:#}") }),
+        Ok(false) => Err((
+            Error { code: "connect_denied".into(), message: "the person at the Device did not accept this connection".into() },
+            "rejected",
+        )),
+        Err(e) => Err((Error { code: "platform".into(), message: format!("cannot ask at the Device: {e:#}") }, "")),
     }
 }
 
@@ -711,13 +718,17 @@ fn server_identity_change(u: &IdentityUpdate, status: Option<&ipc::Status>, cred
 
 /// Runs a one-shot command (see `run_as`).
 fn exec(platform: &dyn Platform, req: &ExecRequest, settings: &settings::DeviceSettings, grant: &Grant, controllers: &Controllers) -> ExecResult {
-    if let Err(e) = accept_connection(platform, settings, &req.controller, controllers) {
-        return ExecResult { request_id: req.request_id, error: Some(e), ..Default::default() };
-    }
+    let connect_decision = match accept_connection(platform, settings, &req.controller, controllers) {
+        Ok(d) => d,
+        Err((e, d)) => {
+            return ExecResult { request_id: req.request_id, error: Some(e), connect_decision: d.into(), ..Default::default() };
+        }
+    };
     let failed = |(error, decision): (Error, &'static str)| ExecResult {
         request_id: req.request_id,
         error: Some(error),
         root_decision: decision.into(),
+        connect_decision: connect_decision.into(),
         ..Default::default()
     };
     let (run_as, as_root, decision) = match run_as(
@@ -740,6 +751,7 @@ fn exec(platform: &dyn Platform, req: &ExecRequest, settings: &settings::DeviceS
             as_root,
             error: None,
             root_decision: decision.into(),
+            connect_decision: connect_decision.into(),
         },
         Err(e) => ExecResult { root_decision: decision.into(), ..failed((Error { code: "platform".into(), message: format!("{e:#}") }, decision)) },
     }

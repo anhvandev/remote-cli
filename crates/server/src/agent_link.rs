@@ -238,6 +238,24 @@ where
                         control_lock::release_if_holder(&state, device, &d.controller)
                             .await
                             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                        // Audited naming the Controller that was ended (the person at the Device has no Server User).
+                        let actor = crate::auth::User {
+                            id: uuid::Uuid::nil(),
+                            name: d.controller.clone(),
+                            role: "controller".into(),
+                            disabled_at: None,
+                            device_scope: None,
+                        };
+                        crate::audit::record(
+                            &state,
+                            &actor,
+                            device,
+                            "disconnect",
+                            serde_json::json!({ "controller": d.controller }),
+                            serde_json::json!({ "error": null }),
+                        )
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e:#}"))?;
                     }
                     // Later tickets dispatch more replies here.
                     _ => {}

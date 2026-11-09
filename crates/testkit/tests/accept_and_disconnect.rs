@@ -181,3 +181,40 @@ async fn disconnect_is_allowed_for_any_local_user_and_releases_the_lock() {
     let (status, out) = device.post_json(&format!("/api/v1/devices/{dev}/exec"), &json!({ "command": "whoami" })).await;
     assert_eq!(status, StatusCode::OK, "{out}");
 }
+
+async fn audit_entries(sys: &TestSystem) -> Vec<serde_json::Value> {
+    let (status, body) = sys.api.get("/api/v1/audit").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body.as_array().unwrap().clone()
+}
+
+#[tokio::test]
+async fn every_disconnect_and_prompt_answer_is_audited() {
+    let sys = TestSystem::start().await;
+    let (agent, dir) = online(&sys, "audit", FakePlatform::new("lab-pc")).await;
+    let dev = agent.device_id().to_owned();
+    let password = agent.device_password().unwrap();
+    sys.agent_rcli(&dir.join("agent.sock"), &["agent", "accept", "password+accept"]).await.unwrap();
+
+    // An accepted connection prompt.
+    agent.platform.answer_accept_prompts([true]);
+    let (status, _) = password_exec(&sys, &dev, &password).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A disconnect (also clears the accept, so the next connection asks again).
+    sys.agent_rcli(&dir.join("agent.sock"), &["agent", "disconnect"]).await.unwrap();
+
+    // A rejected connection prompt.
+    agent.platform.answer_accept_prompts([false]);
+    let (status, out) = password_exec(&sys, &dev, &password).await;
+    assert_eq!((status, &out["error"]["code"]), (StatusCode::FORBIDDEN, &json!("connect_denied")), "{out}");
+
+    eventually(|| async {
+        let entries = audit_entries(&sys).await;
+        let accepted = entries.iter().any(|e| e["action"] == "terminal" && e["result"]["connect_decision"] == "accepted");
+        let rejected = entries.iter().any(|e| e["action"] == "terminal" && e["result"]["connect_decision"] == "rejected");
+        let disconnected = entries.iter().any(|e| e["action"] == "disconnect" && e["user"] == "test-controller (127.0.0.1)");
+        (accepted && rejected && disconnected).then_some(())
+    })
+    .await;
+}

@@ -368,6 +368,9 @@ message ExecResult {
   // How root was decided, so the Server can audit the prompt answer: "always", "session", "accepted",
   // "rejected", "no_session", "never"; empty when root was not asked for.
   string root_decision = 8;
+  // How the connection was decided in `password+accept` mode, for the audit: "accepted", "rejected",
+  // "no_session"; empty when no accept prompt was shown.
+  string connect_decision = 9;
 }
 
 // --- Interactive shell (ticket 12) ---

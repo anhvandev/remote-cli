@@ -74,11 +74,13 @@ async fn exec(
         })
     };
     let wait = Duration::from_secs(timeout.into()) + REPLY_SLACK + ROOT_PROMPT_BUDGET;
-    // How root was decided matters for the audit even when the Device refused.
+    // How root and the connection were decided matters for the audit even when the Device refused.
     let mut decision = String::new();
+    let mut connect = String::new();
     let result = match state.agents.request_within(device, wait, req).await {
         Ok(agent_message::Msg::ExecResult(r)) => {
             decision = r.root_decision.clone();
+            connect = r.connect_decision.clone();
             match r.error {
                 Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
                 // The Device's root setting refused, or asked and nobody answered: a plain refusal to the caller.
@@ -93,6 +95,7 @@ async fn exec(
                     "timed_out": r.timed_out,
                     "as": if r.as_root { "root" } else { "user" },
                     "root_decision": r.root_decision,
+                    "connect_decision": r.connect_decision,
                 })),
             }
         }
@@ -105,9 +108,10 @@ async fn exec(
             "timed_out": r["timed_out"],
             "as": r["as"],
             "root_decision": r["root_decision"],
+            "connect_decision": r["connect_decision"],
             "error": null,
         }),
-        Err(e) => json!({ "error": e.code, "root_decision": decision }),
+        Err(e) => json!({ "error": e.code, "root_decision": decision, "connect_decision": connect }),
     };
     audit::record(&state, &user, device, "terminal", params, outcome).await?;
     result.map(Json)
