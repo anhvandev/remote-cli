@@ -139,6 +139,12 @@ enum Command {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+    /// Make `--as root` the default for exec and shell on one Device: `rcli root on <Device ID>` (or `off`).
+    Root {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+        device: String,
+    },
     /// Make the Agent type the Device's stored unlock password + Enter (needs the Control Lock).
     Unlock {
         device: String,
@@ -854,6 +860,7 @@ where
             (obs, text)
         }
         Command::Exec { device, run_as, timeout, command } => {
+            let run_as = run_as.or_else(|| saved_root(&api.dir, &device));
             let body = json!({ "command": command.join(" "), "as": run_as, "timeout_secs": timeout });
             let r = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{}/exec", path_segment(&device)), Some(&body)).await?;
             if !cli.json {
@@ -887,7 +894,14 @@ where
             };
             (r, text)
         }
+        Command::Root { state, device } => {
+            let root = state == "on";
+            config::set_root(&api.dir, &device, root)?;
+            let text = format!("root {state} for {device}\n");
+            (json!({ "device": device, "root": state }), text)
+        }
         Command::Shell { device, run_as } => {
+            let run_as = run_as.or_else(|| saved_root(&api.dir, &device));
             let code = shell(&api, &device, run_as, input.unwrap_or_else(stdin_input), out).await?;
             if code != 0 {
                 return Err(RemoteExit { code, timed_out: false }.into());
@@ -993,6 +1007,11 @@ impl Drop for RawMode {
 }
 
 /// Runs an interactive shell session until the remote shell exits; returns its exit code.
+/// `rcli root on <Device ID>` saved this Controller asking for root by default on that Device (`None` = off).
+fn saved_root(dir: &Path, device: &str) -> Option<String> {
+    config::root_default(dir, device).then(|| "root".to_owned())
+}
+
 async fn shell(
     api: &Api,
     device: &str,

@@ -14,7 +14,7 @@ use rmcp::{
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{path_segment, Api};
+use crate::{config, path_segment, Api};
 
 /// Serves MCP on `read`/`write` (stdin/stdout for `rcli mcp`) until the client disconnects.
 pub async fn serve<R, W>(api: Api, read: R, write: W) -> anyhow::Result<()>
@@ -166,7 +166,12 @@ impl Mcp {
             "act" => observation(self.api.observe(name, &act(json!([args["action"]]))).await?),
             "batch" => observation(self.api.observe(name, &act(args["actions"].clone())).await?),
             "exec" => {
-                let body = Value::Object(pick(args, &["command", "as", "timeout_secs"]));
+                let mut body = pick(args, &["command", "as", "timeout_secs"]);
+                // `rcli root on <Device ID>` sets exec's default too.
+                if body.get("as").is_none() && config::root_default(&self.api.dir, name) {
+                    body.insert("as".into(), Value::String("root".into()));
+                }
+                let body = Value::Object(body);
                 structured(self.api.call(Method::POST, &format!("{dev}/exec"), Some(&body)).await?)
             }
             "wake" => structured(self.api.call(Method::POST, &format!("{dev}/wake"), None).await?),

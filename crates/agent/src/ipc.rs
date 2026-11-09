@@ -50,6 +50,8 @@ pub struct Status {
     next_request: AtomicU64,
     /// The Device Settings the Agent enforces; kept here so `rcli agent …` can change them live.
     settings: Arc<settings::Handle>,
+    /// Root granted to the current session, by the person at the Device. Cleared when the Agent reconnects.
+    grant: Arc<crate::Grant>,
 }
 
 impl Status {
@@ -65,6 +67,7 @@ impl Status {
             changes_rx: Mutex::new(Some(changes_rx)),
             next_request: AtomicU64::new(0),
             settings: Arc::new(settings::Handle::new()),
+            grant: Arc::new(crate::Grant::default()),
         }
     }
 
@@ -75,6 +78,11 @@ impl Status {
 
     pub fn settings(&self) -> Arc<settings::Handle> {
         self.settings.clone()
+    }
+
+    /// The session root grant: shared with `run`, cleared whenever the connection is re-established.
+    pub fn grant(&self) -> Arc<crate::Grant> {
+        self.grant.clone()
     }
 
     pub fn set_connected(&self, connected: bool) {
@@ -281,6 +289,15 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
                 Ok(s) => json!({ "root": s.root.name(), "message": format!("root access is now {}", s.root.name()) }),
                 Err(e) => json!({ "error": format!("cannot save the Device Settings: {e:#}") }),
             }
+        }
+        Some("root.grant") => {
+            // The person at the Device: allow root for the Controller named here, for this session only.
+            let who = request["who"].as_str().unwrap_or_default().trim();
+            if who.is_empty() {
+                return json!({ "error": "say who the root grant is for" });
+            }
+            status.grant().grant(who);
+            json!({ "message": format!("{who} may use root for this session") })
         }
         Some("server.set") => {
             let addr = request["server"].as_str().unwrap_or_default().trim();

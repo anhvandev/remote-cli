@@ -132,6 +132,21 @@ pub fn remember(dir: &Path, device: &str, password: &str, controller: &str) -> a
     write_private(&path, &serde_json::to_vec(&Remembered { password: password.into(), controller: controller.into() })?)
 }
 
+fn root_path(dir: &Path, device: &str) -> PathBuf {
+    dir.join("root").join(format!("{device}.json"))
+}
+
+/// Whether `rcli root on <Device ID>` made `--as root` the default for this Device's exec and shell.
+pub fn root_default(dir: &Path, device: &str) -> bool {
+    std::fs::read(root_path(dir, device)).is_ok_and(|b| serde_json::from_slice::<bool>(&b).unwrap_or(false))
+}
+
+pub fn set_root(dir: &Path, device: &str, on: bool) -> anyhow::Result<()> {
+    let path = root_path(dir, device);
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    write_private(&path, &serde_json::to_vec(&on)?)
+}
+
 pub fn remembered(dir: &Path, device: &str) -> anyhow::Result<Option<Remembered>> {
     match std::fs::read(password_path(dir, device)) {
         Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),

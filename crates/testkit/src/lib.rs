@@ -265,11 +265,24 @@ impl TestSystem {
     /// Like `start_agent_with_socket`, but the socket treats every caller as root (the unprivileged test process
     /// cannot be root). Only for tests of what root may do; the gate itself needs the real `serve`.
     pub async fn start_agent_trusting_socket(&self, hostname: &str, dir: &std::path::Path) -> TestAgent {
-        let creds = self.register(&FakePlatform::new(hostname)).await.expect("register");
-        let mut agent = TestAgent::with_secrets_dir(self.endpoint(), FakePlatform::new(hostname), creds, dir.to_path_buf());
+        self.start_agent_trusting_socket_on(FakePlatform::new(hostname), dir).await
+    }
+
+    /// Like `start_agent_trusting_socket`, on `platform` so the test can script it.
+    pub async fn start_agent_trusting_socket_on(&self, platform: FakePlatform, dir: &std::path::Path) -> TestAgent {
+        let creds = self.register(&platform).await.expect("register");
+        let mut agent = TestAgent::with_secrets_dir(self.endpoint(), platform, creds, dir.to_path_buf());
         agent.start();
         tokio::spawn(rcli_agent::ipc::serve_trusting_all(dir.join("agent.sock"), agent.status.clone()));
         agent
+    }
+
+    /// Starts a stopped `agent` again with its credentials and socket directory (the same Device, a new session).
+    pub async fn resume_agent_on(&self, agent: TestAgent, platform: FakePlatform, dir: &std::path::Path) -> TestAgent {
+        let mut resumed =
+            TestAgent::with_secrets_dir(agent.endpoint.clone(), platform, agent.creds.clone(), dir.to_path_buf());
+        resumed.start();
+        resumed
     }
 
     /// A Controller API client for a password connection: Server Key + Device ID + Device Password.

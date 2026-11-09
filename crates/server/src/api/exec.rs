@@ -58,13 +58,15 @@ async fn exec(
     }
     // Server roles no longer gate what runs on a Device: the Device's own settings do (ticket 07).
     let as_root = body.run_as == Some(RunAs::Root);
+    // The Device names who asks in a root prompt; a password connection already reads `<host> (<IP>)`.
+    let requester = user.name.clone();
     let req = |request_id| {
         server_message::Msg::Exec(proto::ExecRequest {
             request_id,
             command: body.command,
             as_root,
-            root_if_nobody_logged_in: true,
             timeout_ms: timeout * 1000,
+            requester: requester.clone(),
         })
     };
     let wait = Duration::from_secs(timeout.into()) + REPLY_SLACK;
@@ -80,13 +82,20 @@ async fn exec(
                 "stderr": r.stderr,
                 "timed_out": r.timed_out,
                 "as": if r.as_root { "root" } else { "user" },
+                "root_decision": r.root_decision,
             })),
         },
         Ok(_) => Err(anyhow::anyhow!("unexpected reply to ExecRequest").into()),
         Err(e) => Err(e.into()),
     };
     let outcome = match &result {
-        Ok(r) => json!({ "exit_code": r["exit_code"], "timed_out": r["timed_out"], "as": r["as"], "error": null }),
+        Ok(r) => json!({
+            "exit_code": r["exit_code"],
+            "timed_out": r["timed_out"],
+            "as": r["as"],
+            "root_decision": r["root_decision"],
+            "error": null,
+        }),
         Err(e) => json!({ "error": e.code }),
     };
     audit::record(&state, &user, device, "terminal", params, outcome).await?;

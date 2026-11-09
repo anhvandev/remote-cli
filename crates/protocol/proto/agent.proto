@@ -337,12 +337,14 @@ message DisplayInfo {
 message ExecRequest {
   uint64 request_id = 1;
   string command = 2;
-  // Run as root/SYSTEM instead of the logged-in user.
+  // Run as root/SYSTEM instead of the Terminal User (the Device's root setting decides).
   bool as_root = 3;
-  // With nobody logged in: run as root (admins) instead of failing with "no_logged_in_user" (operators).
-  bool root_if_nobody_logged_in = 4;
+  reserved 4; // was root_if_nobody_logged_in
   // The Agent kills the command after this long.
   uint32 timeout_ms = 5;
+  // The Controller as the person at the Device sees it, e.g. "dev-laptop (10.0.0.5)" or "alice (Dashboard)".
+  // Named in a root prompt (ticket 07).
+  string requester = 6;
 }
 
 // `error` set = nothing ran (code "no_logged_in_user", or a Platform failure).
@@ -354,6 +356,9 @@ message ExecResult {
   bool timed_out = 5;
   bool as_root = 6; // who it actually ran as
   Error error = 7;
+  // How root was decided, so the Server can audit the prompt answer: "always", "session", "accepted",
+  // "rejected", "no_session", "never"; empty when root was not asked for.
+  string root_decision = 8;
 }
 
 // --- Interactive shell (ticket 12) ---
@@ -364,16 +369,20 @@ message ShellOpen {
   uint64 request_id = 1;
   string session = 2;
   bool as_root = 3;
-  bool root_if_nobody_logged_in = 4;
+  reserved 4; // was root_if_nobody_logged_in
   uint32 cols = 5;
   uint32 rows = 6;
+  // As in ExecRequest: who asks, named in a root prompt.
+  string requester = 7;
 }
 
-// `error` set = no session was started (code "no_logged_in_user", or a Platform failure).
+// `error` set = no session was started (code "no_logged_in_user", "root_denied", or a Platform failure).
 message ShellOpened {
   uint64 request_id = 1;
   bool as_root = 2; // who it actually runs as
   Error error = 3;
+  // As in ExecResult.
+  string root_decision = 4;
 }
 
 // Keystrokes for the PTY (Ctrl-C is byte 0x03).

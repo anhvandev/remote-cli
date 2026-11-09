@@ -46,6 +46,9 @@ pub trait Platform: Send + Sync + 'static {
     /// Shows (true) or hides the visible on-Device indicator that someone is controlling it
     /// (Control Lock held or live stream active). Must work at the lock and login screens too.
     fn set_control_indicator(&self, on: bool) -> anyhow::Result<()>;
+    /// Asks a person at the Device whether `requester` may run as root, with Accept/Reject, for at most `timeout`.
+    /// `true` = Accept; `false` = Reject or no answer in time. Only called while someone is logged in.
+    fn ask_root(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,6 +169,11 @@ pub struct FakeState {
     pub screen_text: Vec<UiElement>,
     /// Every capture differs from the previous one by a little (below what counts as a change), like a blinking caret.
     pub flicker: bool,
+    /// Root prompts shown, in order: who asked, and the timeout the Agent allowed.
+    pub root_prompts: Vec<(String, Duration)>,
+    /// The scripted person's answers: true = Accept, false = Reject. An empty queue = nobody answers, which
+    /// auto-rejects; the FakePlatform answers at once instead of waiting out `timeout`.
+    pub root_answers: std::collections::VecDeque<bool>,
 }
 
 impl FakePlatform {
@@ -190,6 +198,8 @@ impl FakePlatform {
             accessibility: None,
             screen_text: vec![],
             flicker: false,
+            root_prompts: vec![],
+            root_answers: Default::default(),
         };
         Self { hostname, state: Arc::new(Mutex::new(state)) }
     }
@@ -233,6 +243,17 @@ impl FakePlatform {
     /// Versions installed through `install_update`, in order.
     pub fn installed_updates(&self) -> Vec<String> {
         self.state.lock().unwrap().installed.clone()
+    }
+
+    /// Every root prompt shown, in order: who asked, and the timeout it was given.
+    pub fn root_prompts(&self) -> Vec<(String, Duration)> {
+        self.state.lock().unwrap().root_prompts.clone()
+    }
+
+    /// Scripts the person's answers, in order; anything left scripted answers later prompts. With none left,
+    /// the person does not answer and the prompt auto-rejects.
+    pub fn answer_root_prompts(&self, answers: impl IntoIterator<Item = bool>) {
+        self.state.lock().unwrap().root_answers = answers.into_iter().collect();
     }
 }
 
@@ -329,6 +350,14 @@ impl Platform for FakePlatform {
     fn set_control_indicator(&self, on: bool) -> anyhow::Result<()> {
         self.state.lock().unwrap().control_indicator = on;
         Ok(())
+    }
+
+    /// Scripted: records the prompt (who asked, the timeout the Agent allowed) and answers at once from
+    /// `root_answers`; an empty queue is the person not answering before the timeout, which rejects.
+    fn ask_root(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
+        let mut s = self.state.lock().unwrap();
+        s.root_prompts.push((requester.to_owned(), timeout));
+        Ok(s.root_answers.pop_front().unwrap_or(false))
     }
 }
 

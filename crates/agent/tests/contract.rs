@@ -126,6 +126,9 @@ impl Platform for Broken {
     fn set_control_indicator(&self, on: bool) -> anyhow::Result<()> {
         self.fake.set_control_indicator(on)
     }
+    fn ask_root(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
+        self.fake.ask_root(requester, timeout)
+    }
 }
 
 #[test]

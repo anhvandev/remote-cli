@@ -234,6 +234,8 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
     let media = Arc::new(media::Media::default());
     // Device Settings survive reconnects; with no Status (no IPC) the defaults apply.
     let settings = status.as_ref().map_or_else(|| Arc::new(settings::Handle::new()), |s| s.settings());
+    // A root grant lasts one session (one connection to the Server) and only for the Controller it was given to.
+    let grant = status.as_ref().map_or_else(|| Arc::new(Grant::default()), |s| s.grant());
     let mut backoff = Duration::from_secs(1);
     loop {
         // Another Server Address is one switch away; pick up whichever is current.
@@ -244,6 +246,8 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
         match connect(&endpoint, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
+                // A session grant belongs to the session that ended with the last connection.
+                grant.clear();
                 if let Some(s) = &status {
                     s.set_connected(true);
                 }
@@ -257,6 +261,7 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
                     &backlog,
                     status.as_deref(),
                     &settings,
+                    &grant,
                     &mut endpoints,
                     &mut changes,
                 )
@@ -329,6 +334,7 @@ async fn session(
     backlog: &Backlog,
     status: Option<&ipc::Status>,
     settings: &settings::Handle,
+    grant: &Arc<Grant>,
     endpoints: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>,
     changes: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>,
 ) -> anyhow::Result<bool> {
@@ -417,12 +423,13 @@ async fn session(
                     Some(server_message::Msg::Exec(req)) => {
                         // Off the loop: a command may run for minutes; commands run concurrently.
                         let (platform, replies, settings) = (platform_arc.clone(), replies.clone(), settings.get());
+                        let grant = grant.clone();
                         tokio::task::spawn_blocking(move || {
-                            let _ = replies.send(agent_message::Msg::ExecResult(exec(platform.as_ref(), &req, &settings)));
+                            let _ = replies.send(agent_message::Msg::ExecResult(exec(platform.as_ref(), &req, &settings, &grant)));
                         });
                     }
                     Some(server_message::Msg::ShellOpen(req)) => {
-                        let reply = open_shell(platform, &req, &settings.get(), &replies, &mut shells);
+                        let reply = open_shell(platform, &req, &settings.get(), grant, &replies, &mut shells);
                         conn.send(&send(agent_message::Msg::ShellOpened(reply))).await?;
                     }
                     Some(server_message::Msg::ShellInput(i)) => {
@@ -517,31 +524,81 @@ async fn session(
     }
 }
 
-/// Who a terminal command or session runs as: the Device's Terminal User, or root when asked and allowed.
-fn run_as(as_root: bool, root_access: settings::RootAccess, terminal_user: &str) -> Result<(platform::RunAs, bool), Error> {
-    if as_root {
-        return match root_access {
-            settings::RootAccess::Always => Ok((platform::RunAs::Root, true)),
-            settings::RootAccess::Never => Err(Error {
-                code: "root_denied".into(),
-                message: "root access is turned off on this Device".into(),
-            }),
-            // Ticket 07's prompt replaces this refusal in the next slice.
-            settings::RootAccess::Ask => Err(Error {
-                code: "root_denied".into(),
-                message: "root access on this Device must be granted by a person at it".into(),
-            }),
-        };
+/// How long the person at the Device has to answer a root prompt.
+const ROOT_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Root granted to the current session: one Controller, for as long as the Agent's connection to the Server lasts.
+/// The person at the Device (or its GUI) gives it; it does not outlive the session.
+#[derive(Default)]
+pub struct Grant(Mutex<Option<String>>);
+
+impl Grant {
+    /// Grants root to `requester` for this session only.
+    pub fn grant(&self, requester: &str) {
+        *self.0.lock().unwrap() = Some(requester.to_owned());
     }
-    Ok((platform::RunAs::User(terminal_user.to_owned()), false))
+
+    fn holds(&self, requester: &str) -> bool {
+        self.0.lock().unwrap().as_deref() == Some(requester)
+    }
+
+    /// Ends the grant, at the end of the session it was given for.
+    pub fn clear(&self) {
+        *self.0.lock().unwrap() = None;
+    }
+}
+
+/// Who a terminal command or session runs as: the Device's Terminal User, or root when asked and allowed.
+/// `grant` is the current session's root grant, which the person at the Device can give and which does not outlive
+/// the session. Returns the run-as, whether it is root, and how root was decided (for the audit entry).
+fn run_as(
+    platform: &dyn Platform,
+    settings: &settings::DeviceSettings,
+    as_root: bool,
+    requester: &str,
+    grant: &Grant,
+) -> Result<(platform::RunAs, bool, &'static str), (Error, &'static str)> {
+    let denied = |message: &str, decision: &'static str| (Error { code: "root_denied".into(), message: message.into() }, decision);
+    if !as_root {
+        return Ok((platform::RunAs::User(settings.terminal_user.clone()), false, ""));
+    }
+    match settings.root {
+        settings::RootAccess::Always => return Ok((platform::RunAs::Root, true, "always")),
+        settings::RootAccess::Never => return Err(denied("root access is turned off on this Device", "never")),
+        settings::RootAccess::Ask => {}
+    }
+    if grant.holds(requester) {
+        return Ok((platform::RunAs::Root, true, "session"));
+    }
+    // Prompts appear in the logged-in session; with nobody logged in there is no session to show one in, so the
+    // request is rejected, as the spec says.
+    if platform.session_state().is_ok_and(|s| s != platform::SessionState::LoggedIn) {
+        return Err(denied("root access needs a person at the Device to accept, and nobody can be asked right now", "no_session"));
+    }
+    match platform.ask_root(requester, ROOT_PROMPT_TIMEOUT) {
+        Ok(true) => Ok((platform::RunAs::Root, true, "accepted")),
+        Ok(false) => Err(denied("the person at the Device did not accept root access", "rejected")),
+        Err(e) => Err((Error { code: "platform".into(), message: format!("cannot ask at the Device: {e:#}") }, "")),
+    }
 }
 
 /// Runs a one-shot command (see `run_as`).
-fn exec(platform: &dyn Platform, req: &ExecRequest, settings: &settings::DeviceSettings) -> ExecResult {
-    let reply = |error: Error| ExecResult { request_id: req.request_id, error: Some(error), ..Default::default() };
-    let (run_as, as_root) = match run_as(req.as_root, settings.root, &settings.terminal_user) {
+fn exec(platform: &dyn Platform, req: &ExecRequest, settings: &settings::DeviceSettings, grant: &Grant) -> ExecResult {
+    let failed = |(error, decision): (Error, &'static str)| ExecResult {
+        request_id: req.request_id,
+        error: Some(error),
+        root_decision: decision.into(),
+        ..Default::default()
+    };
+    let (run_as, as_root, decision) = match run_as(
+        platform,
+        settings,
+        req.as_root,
+        &req.requester,
+        grant,
+    ) {
         Ok(r) => r,
-        Err(e) => return reply(e),
+        Err(e) => return failed(e),
     };
     match platform.shell(&req.command, run_as, Duration::from_millis(req.timeout_ms.into())) {
         Ok(out) => ExecResult {
@@ -552,8 +609,9 @@ fn exec(platform: &dyn Platform, req: &ExecRequest, settings: &settings::DeviceS
             timed_out: out.timed_out,
             as_root,
             error: None,
+            root_decision: decision.into(),
         },
-        Err(e) => reply(Error { code: "platform".into(), message: format!("{e:#}") }),
+        Err(e) => ExecResult { root_decision: decision.into(), ..failed((Error { code: "platform".into(), message: format!("{e:#}") }, decision)) },
     }
 }
 
@@ -576,17 +634,29 @@ fn open_shell(
     platform: &dyn Platform,
     req: &ShellOpen,
     settings: &settings::DeviceSettings,
+    grant: &Grant,
     replies: &tokio::sync::mpsc::UnboundedSender<agent_message::Msg>,
     shells: &mut Shells,
 ) -> ShellOpened {
-    let reply = |error: Error| ShellOpened { request_id: req.request_id, error: Some(error), ..Default::default() };
-    let (run_as, as_root) = match run_as(req.as_root, settings.root, &settings.terminal_user) {
+    let failed = |(error, decision): (Error, &'static str)| ShellOpened {
+        request_id: req.request_id,
+        error: Some(error),
+        root_decision: decision.into(),
+        ..Default::default()
+    };
+    let (run_as, as_root, decision) = match run_as(
+        platform,
+        settings,
+        req.as_root,
+        &req.requester,
+        grant,
+    ) {
         Ok(r) => r,
-        Err(e) => return reply(e),
+        Err(e) => return failed(e),
     };
     let pty = match platform.pty(run_as, clamp_u16(req.cols), clamp_u16(req.rows)) {
         Ok(p) => p,
-        Err(e) => return reply(Error { code: "platform".into(), message: format!("{e:#}") }),
+        Err(e) => return failed((Error { code: "platform".into(), message: format!("{e:#}") }, decision)),
     };
     let control = Arc::new(Mutex::new(pty.control));
     shells.0.insert(req.session.clone(), (pty.input, control.clone()));
@@ -602,7 +672,7 @@ fn open_shell(
         let exit_code = control.lock().unwrap().wait().unwrap_or(-1);
         let _ = replies.send(agent_message::Msg::ShellExit(ShellExit { session, exit_code }));
     });
-    ShellOpened { request_id: req.request_id, as_root, error: None }
+    ShellOpened { request_id: req.request_id, as_root, error: None, root_decision: decision.into() }
 }
 
 fn clamp_u16(n: u32) -> u16 {

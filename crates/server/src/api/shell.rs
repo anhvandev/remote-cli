@@ -91,14 +91,15 @@ async fn open(
     let session = Uuid::new_v4();
     // Registered before the Agent starts the shell so no output is lost.
     let mut output = state.shells.open(session, device, user.id);
+    let requester = user.name.clone();
     let req = |request_id| {
         server_message::Msg::ShellOpen(proto::ShellOpen {
             request_id,
             session: session.to_string(),
             as_root,
-            root_if_nobody_logged_in: true,
             cols,
             rows,
+            requester: requester.clone(),
         })
     };
     let opened = match state.agents.request(device, req).await {
@@ -106,14 +107,14 @@ async fn open(
             Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
             Some(e) if e.code == "root_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "root_denied", e.message)),
             Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
-            None => Ok(if r.as_root { "root" } else { "user" }),
+            None => Ok((if r.as_root { "root" } else { "user" }, r.root_decision)),
         },
         Ok(_) => Err(anyhow::anyhow!("unexpected reply to ShellOpen").into()),
         Err(e) => Err(e.into()),
     };
     let params = json!({ "as": if as_root { Some("root") } else { None } });
     let result = match &opened {
-        Ok(who) => json!({ "session": session, "as": who, "error": null }),
+        Ok((who, decision)) => json!({ "session": session, "as": who, "root_decision": decision, "error": null }),
         Err(e) => json!({ "error": e.code }),
     };
     if let Err(e) = audit::record(&state, &user, device, "shell.start", params, result).await {
@@ -121,8 +122,8 @@ async fn open(
         state.agents.send(device, server_message::Msg::ShellClose(proto::ShellClose { session: session.to_string() }));
         return Err(e.into());
     }
-    let who = match opened {
-        Ok(who) => who,
+    let (who, _decision) = match opened {
+        Ok(r) => r,
         Err(e) => {
             state.shells.close(session);
             return Err(e);

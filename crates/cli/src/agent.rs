@@ -238,21 +238,49 @@ pub async fn run_terminal_user(command: TerminalUserCommand, socket: Option<Path
     Ok(())
 }
 
-/// `rcli agent root never|ask|always`: whether `--as root` is allowed (root only).
+/// `rcli agent root never|ask|always`: whether `--as root` is allowed (root only); `root grant` is for the person
+/// at the Device (the GUI), allowing root to one Controller for the current session.
 #[derive(Args)]
 pub struct Root {
-    /// `never`, `ask` (a person at the Device decides) or `always`.
-    #[arg(value_parser = ["never", "ask", "always"])]
-    access: String,
+    #[command(subcommand)]
+    command: RootCommand,
     /// Local IPC socket of the running Agent.
-    #[arg(long, env = "RCLI_AGENT_SOCKET")]
+    #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
     socket: Option<PathBuf>,
+}
+
+#[derive(clap::Subcommand)]
+pub enum RootCommand {
+    /// Root is never allowed, whoever asks.
+    Never,
+    /// A person at the Device decides each time (the default).
+    Ask,
+    /// Root is always allowed for `--as root`.
+    Always,
+    /// Allow root to `who` for the current session only, without changing the setting.
+    Grant {
+        /// The Controller as shown at the Device, e.g. `alice` or `dev-laptop (10.0.0.5)`.
+        who: String,
+    },
 }
 
 impl Root {
     pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         let socket = self.socket.unwrap_or_else(ipc::default_socket);
-        let reply = ipc::send(&socket, serde_json::json!({ "command": "root.set", "root": self.access })).await?;
+        let reply = match self.command {
+            RootCommand::Grant { who } => {
+                ipc::send(&socket, serde_json::json!({ "command": "root.grant", "who": who })).await?
+            }
+            RootCommand::Never | RootCommand::Ask | RootCommand::Always => {
+                let root = match self.command {
+                    RootCommand::Never => "never",
+                    RootCommand::Ask => "ask",
+                    RootCommand::Always => "always",
+                    RootCommand::Grant { .. } => unreachable!(),
+                };
+                ipc::send(&socket, serde_json::json!({ "command": "root.set", "root": root })).await?
+            }
+        };
         writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
         Ok(())
     }
