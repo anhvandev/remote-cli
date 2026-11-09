@@ -143,3 +143,41 @@ async fn info_lists_connected_controllers() {
     assert!(out.contains("dev-laptop (127.0.0.1)"), "{out}");
     assert!(out.contains("alice (Dashboard)"), "{out}");
 }
+
+#[tokio::test]
+async fn disconnect_is_allowed_for_any_local_user_and_releases_the_lock() {
+    let sys = TestSystem::start().await;
+    // A non-trusting socket: proves `disconnect` needs no root, unlike every other mutating command.
+    let dir = temp_dir("disconnect");
+    let agent = sys.start_agent_with_socket("lab-pc", &dir).await;
+    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
+    let dev = agent.device_id().to_owned();
+    let password = agent.device_password().unwrap();
+    let socket = dir.join("agent.sock");
+    eventually(|| async { socket.exists().then_some(()) }).await;
+
+    // A password connection from `dev-laptop` does some work, then takes the Control Lock.
+    let device = sys.device_client(&dev, &password).with_controller("dev-laptop");
+    let (status, out) = device.post_json(&format!("/api/v1/devices/{dev}/exec"), &json!({ "command": "whoami" })).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let (status, out) = device.post(&format!("/api/v1/devices/{dev}/lock")).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["holder"], "dev-laptop (127.0.0.1)");
+
+    // Disconnect as an ordinary local user (no root): it works.
+    let out = sys.agent_rcli(&socket, &["agent", "disconnect", "dev-laptop"]).await.unwrap();
+    assert!(out.contains("dev-laptop"), "{out}");
+
+    // The Server released the Control Lock for that Controller.
+    eventually(|| async {
+        let (_, lock) = sys.api.get(&format!("/api/v1/devices/{dev}/lock")).await;
+        lock["holder"].is_null().then_some(())
+    })
+    .await;
+
+    // The Controller is gone from `info`, and can reconnect with the password.
+    let info = sys.agent_rcli(&socket, &["agent", "info"]).await.unwrap();
+    assert!(!info.contains("dev-laptop"), "{info}");
+    let (status, out) = device.post_json(&format!("/api/v1/devices/{dev}/exec"), &json!({ "command": "whoami" })).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+}

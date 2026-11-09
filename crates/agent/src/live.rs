@@ -78,6 +78,16 @@ impl Live {
         self.update_indicator();
     }
 
+    /// Closes every live stream (e.g. when the person at the Device disconnects a Controller).
+    pub async fn close_all(&self) {
+        let streams: Vec<Stream> = self.streams.lock().unwrap().drain().map(|(_, s)| s).collect();
+        for s in streams {
+            s.stop.store(true, Ordering::SeqCst);
+            let _ = s.pc.close().await;
+        }
+        self.update_indicator();
+    }
+
     /// The Server's view of the Control Lock (`ControlIndicator`).
     pub fn set_lock_indicator(&self, on: bool) {
         self.lock_held.store(on, Ordering::SeqCst);

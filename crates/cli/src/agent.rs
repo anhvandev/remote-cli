@@ -115,6 +115,30 @@ impl Info {
     }
 }
 
+/// `rcli agent disconnect [<who>]`: end a Controller's Live View and shells and release its Control Lock.
+/// Allowed for any local user: the person at the Device can always stop a session on their machine.
+#[derive(Args)]
+pub struct Disconnect {
+    /// The Controller as shown at the Device, e.g. `alice` or `dev-laptop (10.0.0.5)`. Omit to disconnect all.
+    who: Option<String>,
+    /// Local IPC socket of the running Agent.
+    #[arg(long, env = "RCLI_AGENT_SOCKET")]
+    socket: Option<PathBuf>,
+}
+
+impl Disconnect {
+    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        let socket = self.socket.unwrap_or_else(ipc::default_socket);
+        let mut body = serde_json::json!({ "command": "disconnect" });
+        if let Some(who) = &self.who {
+            body["who"] = who.as_str().into();
+        }
+        let reply = ipc::send(&socket, body).await?;
+        writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
+        Ok(())
+    }
+}
+
 /// `rcli agent password ...`: show or change the Device Password (root only).
 #[derive(Args)]
 pub struct Password {

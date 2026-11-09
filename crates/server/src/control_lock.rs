@@ -120,6 +120,17 @@ pub async fn force_release(state: &AppState, device: Uuid) -> Result<Option<Lock
     Ok(lock)
 }
 
+/// The person at the Device disconnected `controller` (a display name): ends its lock if it held one. Returns the
+/// lock that was ended, if any. `controller` may be the bare name (`alice`) or the full display (`alice
+/// (Dashboard)`), so a prefix of the holder's name matches.
+pub async fn release_if_holder(state: &AppState, device: Uuid, controller: &str) -> Result<Option<Lock>, Error> {
+    let lock = status(state, device).await?;
+    if lock.as_ref().is_some_and(|l| controller == l.holder || controller.starts_with(&l.holder)) {
+        return force_release(state, device).await;
+    }
+    Ok(None)
+}
+
 /// An Action (any request, observe-only included) by `user`: restarts the idle timer if they hold the lock.
 /// The request also proves the holder is there, so it clears a pending disconnect.
 pub async fn touch(state: &AppState, device: Uuid, user: &User) -> Result<(), Error> {

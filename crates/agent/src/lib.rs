@@ -26,10 +26,10 @@ use backlog::Backlog;
 use platform::Platform;
 use rcli_protocol::{
     agent::{
-        agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, DisplayList, Error, ExecRequest,
-        ExecResult, Heartbeat, IdentityUpdate, IdentityUpdated, PowerResult, ProcessList, RegisterRequest,
-        ResourceSample, Resources, ServerMessage, ShellExit, ShellOpen, ShellOpened, ShellOutput, UpdateFailed,
-        WakeResult,
+        agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, DisconnectController, DisplayList,
+        Error, ExecRequest, ExecResult, Heartbeat, IdentityUpdate, IdentityUpdated, PowerResult, ProcessList,
+        RegisterRequest, ResourceSample, Resources, ServerMessage, ShellExit, ShellOpen, ShellOpened, ShellOutput,
+        UpdateFailed, WakeResult,
     },
     Conn,
 };
@@ -218,6 +218,7 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
     let mut endpoint = status.as_ref().map_or(server, |s| s.endpoint());
     let mut endpoints = status.as_ref().map(|s| s.subscribe());
     let mut changes = status.as_ref().and_then(|s| s.take_changes());
+    let mut disconnects = status.as_ref().and_then(|s| s.take_disconnects());
     let backlog = Arc::new(Backlog::default());
     let sampler = tokio::spawn(sample_forever(platform.clone(), backlog.clone()));
     // Stop the sampler when `run` is dropped (e.g. aborted).
@@ -268,6 +269,7 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
                     &controllers,
                     &mut endpoints,
                     &mut changes,
+                    &mut disconnects,
                 )
                 .await
                 {
@@ -316,6 +318,14 @@ async fn next_change(rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ipc::C
     }
 }
 
+/// The next Controller the person at the Device disconnected; never, without a Status.
+async fn next_disconnect(rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<String>>) -> Option<String> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn sample_forever(platform: Arc<dyn Platform>, backlog: Arc<Backlog>) {
     let mut sample = tokio::time::interval(SAMPLE_EVERY);
     loop {
@@ -342,6 +352,7 @@ async fn session(
     controllers: &Arc<Controllers>,
     endpoints: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>,
     changes: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>,
+    disconnects: &mut Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
 ) -> anyhow::Result<bool> {
     let platform = platform_arc.as_ref();
     let hello = AgentHello { version: platform.agent_version(), target: target() };
@@ -391,6 +402,16 @@ async fn session(
             Some(change) = next_change(changes) => {
                 pending.insert(change.update.request_id, change.reply);
                 conn.send(&send(agent_message::Msg::IdentityUpdate(change.update))).await?;
+            }
+            Some(controller) = next_disconnect(disconnects) => {
+                // shortcut: ends this Device's remote sessions (shells, Live View, media), not only this
+                // Controller's; refine when sessions are tagged per Controller. The Server releases the Control Lock.
+                for (_, (_, control)) in shells.0.drain() {
+                    let _ = control.lock().unwrap().kill();
+                }
+                live.close_all().await;
+                media.close_all().await;
+                conn.send(&send(agent_message::Msg::DisconnectController(DisconnectController { controller }))).await?;
             }
             // A new Server Address or Key: drop this connection so `run` connects with the new values.
             _ = endpoints_changed(endpoints) => return Ok(true),
@@ -586,12 +607,14 @@ impl Controllers {
     }
 
     /// Removes Controllers whose display name is `who` or starts with it (so `alice` ends `alice (Dashboard)`),
-    /// returning how many were ended.
-    pub fn remove(&self, who: &str) -> usize {
+    /// returning the display names that were ended.
+    pub fn remove(&self, who: &str) -> Vec<String> {
         let mut map = self.0.lock().unwrap();
-        let before = map.len();
-        map.retain(|name, _| !(name == who || name.starts_with(who)));
-        before - map.len()
+        let removed: Vec<String> = map.keys().filter(|n| *n == who || n.starts_with(who)).cloned().collect();
+        for name in &removed {
+            map.remove(name);
+        }
+        removed
     }
 
     /// Removes every Controller, returning their display names.

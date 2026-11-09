@@ -232,6 +232,13 @@ where
                     Some(agent_message::Msg::IdentityUpdated(r)) => {
                         state.agents.reply(device, r.request_id, agent_message::Msg::IdentityUpdated(r));
                     }
+                    Some(agent_message::Msg::DisconnectController(d)) => {
+                        // The person at the Device ended a Controller: release its Control Lock here (its remote
+                        // sessions end at the Agent, which handled the same request).
+                        control_lock::release_if_holder(&state, device, &d.controller)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                    }
                     // Later tickets dispatch more replies here.
                     _ => {}
                 }

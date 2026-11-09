@@ -25,6 +25,8 @@ message AgentMessage {
     IdentityUpdate identity_update = 20;
     // The Agent's answer to a Server-initiated `identity_change`.
     IdentityUpdated identity_updated = 22;
+    // The person at the Device disconnected a Controller (`rcli agent disconnect`).
+    DisconnectController disconnect_controller = 23;
   }
   reserved 30; // was a bare Resources delta; now ResourceSample
 }
@@ -442,6 +444,13 @@ message IdentityUpdated {
 // Sent whenever it changes and at the start of every Device session.
 message ControlIndicator {
   bool on = 1;
+}
+
+// The person at the Device disconnected a Controller (`rcli agent disconnect`). `controller` is the display name
+// `rcli agent info` lists (e.g. "dev-laptop (10.0.0.5)" or "alice (Dashboard)"). The Server releases that
+// Controller's Control Lock and ends its Live View and shells; the Controller may reconnect with the password.
+message DisconnectController {
+  string controller = 1;
 }
 
 // --- Wake (ticket 14) ---

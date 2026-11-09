@@ -47,6 +47,9 @@ pub struct Status {
     credentials: Mutex<Option<PathBuf>>,
     changes: mpsc::UnboundedSender<Change>,
     changes_rx: Mutex<Option<mpsc::UnboundedReceiver<Change>>>,
+    /// Controllers the person at the Device disconnected, forwarded to the Server over the live connection.
+    disconnects: mpsc::UnboundedSender<String>,
+    disconnects_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
     next_request: AtomicU64,
     /// The Device Settings the Agent enforces; kept here so `rcli agent …` can change them live.
     settings: Arc<settings::Handle>,
@@ -59,6 +62,7 @@ pub struct Status {
 impl Status {
     pub fn new(device_id: &str, endpoint: ServerEndpoint, secrets: Arc<dyn SecretStore>) -> Self {
         let (changes, changes_rx) = mpsc::unbounded_channel();
+        let (disconnects, disconnects_rx) = mpsc::unbounded_channel();
         Self {
             device_id: RwLock::new(device_id.into()),
             endpoint: watch::channel(endpoint).0,
@@ -67,6 +71,8 @@ impl Status {
             credentials: Mutex::new(None),
             changes,
             changes_rx: Mutex::new(Some(changes_rx)),
+            disconnects,
+            disconnects_rx: Mutex::new(Some(disconnects_rx)),
             next_request: AtomicU64::new(0),
             settings: Arc::new(settings::Handle::new()),
             grant: Arc::new(crate::Grant::default()),
@@ -122,6 +128,16 @@ impl Status {
     /// The change receiver, taken once by `run`.
     pub fn take_changes(&self) -> Option<mpsc::UnboundedReceiver<Change>> {
         self.changes_rx.lock().unwrap().take()
+    }
+
+    /// The disconnect receiver, taken once by `run`.
+    pub fn take_disconnects(&self) -> Option<mpsc::UnboundedReceiver<String>> {
+        self.disconnects_rx.lock().unwrap().take()
+    }
+
+    /// Asks the Server (over the live connection) to end `controller`'s Control Lock and sessions.
+    pub fn request_disconnect(&self, controller: &str) {
+        let _ = self.disconnects.send(controller.to_owned());
     }
 
     /// Stores a Device Password the Server set from the Dashboard.
@@ -240,6 +256,17 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
     let command = request["command"].as_str();
     if command == Some("info") {
         return status.info();
+    }
+    if command == Some("disconnect") {
+        // Any local user may end a Controller: the person at the Device has the last word, no root needed.
+        let who = request["who"].as_str().unwrap_or_default().trim();
+        let removed = if who.is_empty() { status.controllers().clear() } else { status.controllers().remove(who) };
+        for c in &removed {
+            status.request_disconnect(c);
+        }
+        let message =
+            if removed.is_empty() { "no matching Controller was connected".to_owned() } else { format!("disconnected {}", removed.join(", ")) };
+        return json!({ "disconnected": removed, "message": message });
     }
     if !is_root {
         let command = command.unwrap_or_default().replace('.', " ");
