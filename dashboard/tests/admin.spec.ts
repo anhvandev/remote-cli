@@ -99,8 +99,8 @@ test("admin creates a user, sets their password, issues and revokes a token, dis
 test("the fleet shows each Device's 9-digit Device ID", async ({ page }) => {
   const devices = await adminApi("/api/v1/devices");
   const alpha = devices.find((d: { name: string }) => d.name === "alpha");
-  await page.goto("/");
-  const row = rowIn(page, "Device", /^alpha /);
+  await signIn(page, await newUser("admin"));
+  const row = page.getByRole("row").filter({ hasText: "alpha" });
   await expect(row).toContainText(alpha.device_id);
   expect(alpha.device_id).toMatch(/^\d{9}$/);
 });

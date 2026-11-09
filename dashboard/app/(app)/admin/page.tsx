@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { api, type ApiToken, type Device, type DeviceStatus, type User } from "@/lib/api";
-import { Button } from "@/components/ui/button";
 import { card, cardHead, title } from "../styles";
 import { groupRollouts, unlockPasswords } from "./data";
 
