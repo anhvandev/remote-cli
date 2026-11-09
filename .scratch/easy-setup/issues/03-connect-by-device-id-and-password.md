@@ -44,8 +44,10 @@
   - **Roles**: `exec`/`shell --as root` and the `no_logged_in_user` fallback no longer check `is_admin()`, and
     restart/shutdown/sleep no longer let an admin bypass the Control Lock (ADR 0004). Server administration keeps
     `Admin`. The three tests that asserted the old rules were rewritten to the new ones.
-- Verification: `cargo test --workspace` 128 passed / 0 failed; `cargo clippy --workspace --all-targets` and
-  `cd dashboard && npx tsc --noEmit` clean. The dashboard is untouched, so Playwright was not run.
+- Verification: on the merge of `easy-setup`, `cargo test --workspace` 139 passed / 0 failed;
+  `cargo clippy --workspace --all-targets` and `cd dashboard && npx tsc --noEmit` clean. The dashboard is untouched
+  by this ticket, so Playwright was not run here (ticket 10's Server Settings page merged in cleanly and its
+  Playwright spec is ticket 10's to run).
 - Not verified: the OS keychain (only the `0600` file fallback exists, as the ticket allows) and a real named pipe
   (Windows) — both are `shortcut:` comments. `rcli connect` without `--password` reads a prompt with `rpassword`;
   tests pass `--password`.
