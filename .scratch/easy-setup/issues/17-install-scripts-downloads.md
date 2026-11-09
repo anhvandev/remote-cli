@@ -4,7 +4,7 @@
 
 **Blocked by:** 16
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The one-line install works end to end on a real Linux machine
 - [x] Clear error when no build is rolled out for that OS/arch
@@ -48,3 +48,16 @@
   including the served script contents and the download endpoint returning the build.
 - Invented: the `{{ORIGIN}}`/`{{SERVER}}` placeholders; the "newest published build" reading of "currently
   rolled out" (above); the script's missing-build message wording.
+
+## Comments
+
+- Implemented across two overlapping agent runs on `t/17` (6 commits). Server routes `/install.sh`, `/install.ps1`,
+  and `/download/<os>/<arch>` (public, no credentials — the Agent's signature check is the real gate), proxied through
+  the Dashboard origin. `install.sh` maps `uname` to build targets (fixing `Darwin`→`macos`), prints a clear error when
+  no build is rolled out, and sets `cache-control: no-store`. `install.ps1` for Windows.
+- Semantics of "currently rolled out": the newest published build for the target (`updates::latest`), matching
+  `rcli upgrade` — rollout is per-Device and a new install has no Device row.
+- Verified: `cargo test --workspace` 191 passed / 0 failed (incl. `install_scripts` 4), clippy and `tsc` clean,
+  Playwright 2/2 passed through the Dashboard origin (ports 18087/3107).
+- **Not verified:** "The one-line install works end to end on a real Linux machine" — needs a real Linux machine and
+  ticket 16's `rcli agent install`. The script passes `--key` but not `--allow-root`/`--name`.

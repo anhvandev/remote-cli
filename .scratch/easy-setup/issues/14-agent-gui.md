@@ -4,7 +4,7 @@
 
 **Blocked by:** 07, 08, 09
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Manual checklist on a Linux desktop: every item above works and applies live
 - [ ] Password reveal needs elevation; Disconnect does not
@@ -89,3 +89,22 @@
 - shortcut: with a desktop build but no window answering (spawn failed, no display), a prompt waits its full
   timeout and then rejects instead of falling back to the platform's own dialog; upgrade when an OS adapter
   (tickets 28-35) supplies one.
+
+## Comments
+
+- Implemented across two overlapping agent runs on `t/14` (8 commits). egui window behind the `gui` feature gate:
+  Device ID, password reveal/copy/change (elevation via `pkexec`/`osascript`, secrets passed by stdin or 0600 file,
+  never the command line), Device Settings editors (Terminal User, root, accept), Server Address/Key, unlock password,
+  "being controlled by" with Disconnect and "grant root to this session", prompts from tickets 07/08 (Accept/Reject
+  with root-required for Accept), macOS permission guide, and `WindowPlatform` for the service to open the window when
+  controlled or prompting. Bare `rcli` opens the GUI on a desktop; without the `gui` feature the CLI and
+  `rcli agent run` stay headless (0 display deps).
+- Verified: `cargo test --workspace` 187 passed / 0 failed (incl. 2 new prompt tests), clippy clean in both
+  configurations, `tsc --noEmit` clean, `cargo tree` confirms no display deps in the default build.
+- **Not verified:** the entire manual checklist — window rendering, polkit/macOS auth, clipboard, prompts on a real
+  desktop. Compile-check only. "Password reveal needs elevation; Disconnect does not" also needs a real desktop.
+- `shortcut:` Windows UAC deferred to ticket 22 (root actions report "requires root"); prompts on a desktop without
+  a window fall back to timeout-reject instead of a platform dialog; `rcli agent install` in scripts waits for
+  tickets 16/22/24.
+- Invented: `prompts`/`prompt.answer` IPC with root-required for Accept but anyone for Reject (anti-escalation);
+  `server_key`/`unlock_password` shown in `info` only to root; `WindowPlatform` decorator + `RCLI_AGENT_SOCKET` spawn.
