@@ -5,12 +5,13 @@
 //! `charlie` Online (logged in, a second 1024x768 display; its Control Lock belongs to the direct-control test),
 //! and never-connected `delta`, `echo`, `foxtrot` for the admin screen tests to rename/revoke/delete/merge.
 //! `golf` Online (power test), `hotel` Offline in alpha's LAN whose last Wake failed (wake test),
-//! `india` Online (its Control Lock belongs to the control-reminder test).
+//! `india` Online (its Control Lock belongs to the control-reminder test), `juliet` Online with no displays
+//! (headless: the Dashboard hides its Screen tab).
 //! `update` in info.json is a build signed with the key the Agents trust, for the update screen tests.
 //! The clock starts at real time (the Dashboard picks history ranges by its own clock) and is frozen after seeding.
 
 use rcli_testkit::{platform::SessionState, Clock, DisplayInfo, FakePlatform, TestAgent, TestSystem};
-use rcli_agent::platform::{Disk, Display, Inventory, NetworkInterface};
+use rcli_agent::platform::{Disk, Display, Inventory, NetworkInterface, Platform};
 use serde_json::json;
 
 #[tokio::main]
@@ -56,8 +57,23 @@ async fn main() -> anyhow::Result<()> {
         DisplayInfo { index: 0, x: 0, y: 0, width: 1920, height: 1080, scale: 1.0, primary: true },
         DisplayInfo { index: 1, x: 1920, y: 0, width: 1024, height: 768, scale: 1.0, primary: false },
     ]);
-    let fleet = [alpha, FakePlatform::new("bravo"), charlie, FakePlatform::new("golf"), hotel, FakePlatform::new("india")];
+    // juliet is a headless server: no displays, so the Dashboard hides its Screen tab.
+    let juliet = FakePlatform::new("juliet");
+    juliet.set_displays(vec![]);
+    let fleet = [
+        alpha,
+        FakePlatform::new("bravo"),
+        charlie,
+        FakePlatform::new("golf"),
+        hotel,
+        FakePlatform::new("india"),
+        juliet,
+    ];
     for platform in fleet {
+        // The Dashboard reads displays from the inventory; keep it in step with what the platform reports.
+        let displays: Vec<Display> =
+            platform.displays()?.iter().map(|d| Display { name: format!("Display {}", d.index + 1), width: d.width, height: d.height }).collect();
+        platform.update(|s| s.inventory.displays = displays);
         let creds = sys.register(&platform).await?;
         let mut agent = TestAgent::new(sys.endpoint(), platform, creds);
         agent.start();

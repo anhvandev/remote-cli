@@ -101,6 +101,7 @@ async fn signal(state: &super::State, key: &str, offer: Offer, media: bool) -> R
         agent_message::Msg::LiveAnswer(a) => match a.error {
             None => Ok((StatusCode::CREATED, Json(json!({ "session": session, "sdp": a.sdp })))),
             Some(e) if e.code == "invalid_offer" => Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_offer", e.message)),
+            Some(e) if e.code == "no_display" => Err(ApiError::new(StatusCode::CONFLICT, "no_display", e.message)),
             Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
         },
         _ => Err(anyhow::anyhow!("unexpected reply to LiveOffer").into()),

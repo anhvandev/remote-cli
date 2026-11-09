@@ -52,7 +52,7 @@ export default async function DeviceLayout({
             <ControlReminder />
           </div>
         </div>
-        <Tabs device={d.id} />
+        <Tabs device={d.id} headless={!!inv && inv.displays.length === 0} />
         <div className="mt-5">{children}</div>
       </ControlProvider>
     </>

@@ -39,6 +39,9 @@ impl Executor {
 
     fn run(&mut self, p: &dyn Platform, req: &ActRequest, failed_step: &mut Option<u32>) -> Result<ActResult, Error> {
         let displays = p.displays().map_err(|e| error("platform", e))?;
+        if displays.is_empty() {
+            return Err(error("no_display", "Device has no display"));
+        }
         if req.observe() == ObserveMode::Clip {
             let clip = self.record(p, &displays, req, failed_step)?;
             return Ok(ActResult { clip: Some(clip), ..Default::default() });
