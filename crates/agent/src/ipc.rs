@@ -52,6 +52,7 @@ pub fn default_socket() -> PathBuf {
     PathBuf::from("/run/rcli/agent.sock")
 }
 
+// shortcut: Unix socket only; a Windows named-pipe `serve`/`request` (same `handle`) lands with the Windows ticket.
 #[cfg(unix)]
 pub async fn serve(path: PathBuf, status: Arc<Status>) -> anyhow::Result<()> {
     if let Some(dir) = path.parent() {
