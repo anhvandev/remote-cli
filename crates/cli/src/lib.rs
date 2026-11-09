@@ -534,7 +534,7 @@ where
         config::forget(&dir, device)?;
         return match cli.json {
             true => Ok(writeln!(out, "{}", json!({ "forgotten": device }))?),
-            false => Ok(write!(out, "forgot {device}\n")?),
+            false => Ok(writeln!(out, "forgot {device}")?),
         };
     }
     let (base, connection) = api_target(&dir, cli.server, cli.token)?;
