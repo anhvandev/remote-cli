@@ -2,17 +2,8 @@
 //! (`PATCH /api/v1/devices/{device}`). A new password is pushed to the Device's Secret Store live; Admins never
 //! read a password back. Operators cannot reach these actions.
 
-use rcli_testkit::{StatusCode, TestSystem};
+use rcli_testkit::{StatusCode, temp_dir, TestSystem};
 use serde_json::json;
-
-/// A short temp directory: the IPC socket path must fit in `SUN_LEN` (104 bytes on macOS).
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::path::PathBuf::from(format!("/tmp/rcli11-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 /// An Online Device whose Agent has an IPC socket trusted as root (the harness is never root), so the test can read
 /// the Device's Secret Store with `rcli agent password show`.

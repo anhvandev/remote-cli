@@ -20,10 +20,17 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/agent-builds/{target}", get(current))
 }
 
-/// Public like the update key: `rcli upgrade` fetches the newest build for its OS/arch and verifies the signature
-/// against the key it pinned at setup, so serving it needs no credentials.
-async fn current(State(state): State<super::State>, Path(target): Path<String>) -> Result<Response, ApiError> {
-    let (version, signature, build) = updates::latest(&state, &target)
+#[derive(Deserialize)]
+struct Current {
+    /// The Device asking (its 9-digit Device ID): it gets the build rolled out to it, not the newest publish.
+    device: Option<String>,
+}
+
+/// Public like the update key: `rcli upgrade` fetches the build rolled out to its Device (or, on a Controller-only
+/// machine, the newest build) and verifies the signature against the key it pinned at setup, so serving it needs no
+/// credentials.
+async fn current(State(state): State<super::State>, Path(target): Path<String>, Query(q): Query<Current>) -> Result<Response, ApiError> {
+    let (version, signature, build) = updates::upgrade_build(&state, q.device.as_deref(), &target)
         .await?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no_build", format!("no build for {target}")))?;
     Ok((

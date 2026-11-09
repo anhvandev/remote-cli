@@ -286,11 +286,11 @@ impl Status {
             "server": self.endpoint.borrow().addr,
             "connected": self.connected.load(Ordering::Relaxed),
             "controllers": self.controllers.list(),
-            // The GUI reads the Device Settings from here; any local user may see (not change) them.
-            "settings": self.settings.get(),
         });
-        // Secrets: only root sees the Server Key and the unlock password (the GUI reveals them elevated).
+        // Everything outside the ID, status and controllers is root-only: the Device Settings and the secrets (the
+        // GUI reveals them elevated).
         if is_root {
+            info["settings"] = json!(self.settings.get());
             info["server_key"] = self.endpoint.borrow().server_key.clone().into();
             info["unlock_password"] = match self.unlock_password() {
                 Ok(Some(password)) => password.into(),
@@ -632,10 +632,14 @@ mod tests {
         assert!(accept["message"].as_str().is_some(), "{accept}");
         assert!(asker.join().unwrap());
 
-        // The Server Key and the unlock password appear in `info` only for root.
+        // The Device Settings, the Server Key and the unlock password appear in `info` only for root.
         let as_user = block.block_on(dispatch(&status, &json!({ "command": "info" }), false));
-        assert!(as_user.get("server_key").is_none() && as_user.get("unlock_password").is_none(), "{as_user}");
+        assert!(
+            as_user.get("settings").is_none() && as_user.get("server_key").is_none() && as_user.get("unlock_password").is_none(),
+            "{as_user}"
+        );
         let as_root = block.block_on(dispatch(&status, &json!({ "command": "info" }), true));
+        assert!(as_root.get("settings").is_some(), "{as_root}");
         assert_eq!(as_root["server_key"], "rk_deadbeef_secret");
         assert_eq!(as_root["unlock_password"], "at-the-lock-screen");
         let _ = std::fs::remove_dir_all(&dir);

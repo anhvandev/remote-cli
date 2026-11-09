@@ -2,26 +2,8 @@
 
 use std::time::Duration;
 
-use rcli_testkit::{eventually, FakePlatform, SessionState, StatusCode, TestSystem};
+use rcli_testkit::{eventually, FakePlatform, online, SessionState, StatusCode, temp_dir, TestSystem};
 use serde_json::json;
-
-/// A short temp directory: the IPC socket path must fit in `SUN_LEN` (104 bytes on macOS).
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::path::PathBuf::from(format!("/tmp/rcli08-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// Starts a Device on `platform`, with a trusting IPC socket so the test can change its settings.
-async fn online(sys: &TestSystem, name: &str, platform: FakePlatform) -> (rcli_testkit::TestAgent, std::path::PathBuf) {
-    let dir = temp_dir(name);
-    let agent = sys.start_agent_trusting_socket_on(platform, &dir).await;
-    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
-    eventually(|| async { dir.join("agent.sock").exists().then_some(()) }).await;
-    (agent, dir)
-}
 
 /// Runs `whoami` over a password connection and returns the response.
 async fn password_exec(sys: &TestSystem, dev: &str, password: &str) -> (StatusCode, serde_json::Value) {

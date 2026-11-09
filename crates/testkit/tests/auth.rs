@@ -1,4 +1,4 @@
-use rcli_testkit::{StatusCode, TestSystem};
+use rcli_testkit::{StatusCode, temp_dir, TestSystem};
 use serde_json::json;
 
 #[tokio::test]
@@ -91,7 +91,7 @@ async fn rcli_login_saves_a_session_that_admin_commands_and_logout_use() {
     assert!(out.contains("bob") && out.contains("admin"), "{out}");
 
     let config: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
-    let token = config["token"].as_str().filter(|t| t.starts_with("rcli_")).unwrap_or_else(|| panic!("{config}")).to_owned();
+    let token = config["session"].as_str().filter(|t| t.starts_with("rcli_")).unwrap_or_else(|| panic!("{config}")).to_owned();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -113,7 +113,7 @@ async fn rcli_login_saves_a_session_that_admin_commands_and_logout_use() {
     let out = sys.rcli_in(&dir, &["logout"]).await.unwrap();
     assert!(out.contains("signed out"), "{out}");
     let config: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
-    assert!(config["token"].is_null(), "{config}");
+    assert!(config["session"].is_null(), "{config}");
     // `logout` revokes it at the Server too, not just locally.
     let (status, _) = sys.api.with_token(Some(&token)).get("/api/v1/devices").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -133,10 +133,3 @@ async fn user_created_api_token_endpoints_are_gone() {
     }
 }
 
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::path::PathBuf::from(format!("/tmp/rcli05a-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}

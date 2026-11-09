@@ -1,7 +1,7 @@
 //! Wrong Device Passwords are rate-limited per (Device ID, IP): 5 failures lock the pair out for a minute, each
 //! later lockout doubles up to an hour, every failure and lockout is audited, and the CLI says how long to wait.
 
-use rcli_testkit::{Clock, StatusCode, TestSystem};
+use rcli_testkit::{Clock, StatusCode, temp_dir, TestSystem};
 
 #[tokio::test]
 async fn five_wrong_passwords_lock_the_device_and_ip_out_for_a_minute() {
@@ -107,14 +107,6 @@ async fn every_failure_and_lockout_is_audited() {
     assert_eq!(locked.len(), 1, "{rows:?}");
     let until: chrono::DateTime<chrono::Utc> = locked[0]["result"]["locked_until"].as_str().unwrap().parse().unwrap();
     assert_eq!(until, sys.clock.now() + chrono::Duration::minutes(1));
-}
-
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::path::PathBuf::from(format!("/tmp/rcli04-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
 }
 
 #[tokio::test]

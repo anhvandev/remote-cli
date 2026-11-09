@@ -67,3 +67,5 @@
   compile-checked only.
 - `shortcut:` (1) `service_to_restart` assumes a unit named `rcli-agent` — ticket 16 must confirm the real name and
   path; (2) `replace` over a running `.exe` fails on Windows — ticket 22 must move the file aside first.
+
+- code-review fix: `rcli upgrade` no longer ignores the rollout. It asks the running Agent over its local IPC for the Device ID (`--socket`/`RCLI_AGENT_SOCKET`, default socket) and requests `GET /api/v1/agent-builds/{target}?device=<id>`; the Server serves the build rolled out to that Device (`devices.update_version`), falling back to the newest published build only when there is no Device row (Controller-only machine) or no rollout yet (`updates::upgrade_build`, test `an_installed_device_upgrades_to_the_build_rolled_out_to_it`). Also "normal user" → "a non-root account" in `service_to_restart`'s comment (glossary: Operator).

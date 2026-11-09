@@ -1,14 +1,6 @@
 //! Controller setup: `rcli setup`, `connect <Device ID>` and `forget`; then Device commands need only the ID.
 
-use rcli_testkit::{StatusCode, TestSystem};
-
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::path::PathBuf::from(format!("/tmp/rcli03c-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+use rcli_testkit::{StatusCode, temp_dir, TestSystem};
 
 fn http_addr(sys: &TestSystem) -> String {
     format!("http://{}", sys.server.http_addr)

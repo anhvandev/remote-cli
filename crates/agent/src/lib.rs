@@ -659,7 +659,7 @@ impl Controllers {
 
 /// Who a terminal command or session runs as: the Device's Terminal User, or root when asked and allowed.
 /// `grant` is the current session's root grant, which the person at the Device can give and which does not outlive
-/// the session. Returns the run-as, whether it is root, and how root was decided (for the audit entry).
+/// the session. Returns the account, whether it is root, and how root was decided (for the audit entry).
 fn run_as(
     platform: &dyn Platform,
     settings: &settings::DeviceSettings,

@@ -64,12 +64,15 @@ enum Command {
     },
     /// Revoke and forget the saved session.
     Logout,
-    /// Replace this `rcli` binary with the newest build published for this OS/arch, after checking its signature.
-    /// As root on an installed Device it also restarts the Agent service.
+    /// Replace this `rcli` binary with the build the Server is rolling out for this OS/arch, after checking its
+    /// signature. As root on an installed Device it also restarts the Agent service.
     Upgrade {
         /// Binary to replace; default: the one running now. Hidden: a seam for tests.
         #[arg(long, hide = true)]
         target: Option<PathBuf>,
+        /// Local IPC socket of the running Agent; identifies this Device, so the build rolled out to it is fetched.
+        #[arg(long, env = "RCLI_AGENT_SOCKET")]
+        socket: Option<PathBuf>,
     },
     /// Remember a Device's Device Password, so later commands take just its Device ID.
     Connect {
@@ -632,7 +635,7 @@ where
             let e = &body["error"];
             anyhow::bail!("{} ({}): {}", str_of(&e["code"]), status, str_of(&e["message"]));
         }
-        config::set_token(&dir, Some(str_of(&body["token"]).to_owned()))?;
+        config::set_session(&dir, Some(str_of(&body["token"]).to_owned()))?;
         let user = &body["user"];
         let text = format!("signed in as {} ({})\n", str_of(&user["name"]), str_of(&user["role"]));
         return match cli.json {
@@ -642,14 +645,14 @@ where
     }
     if let Command::Logout = &cli.command {
         let saved = config::load_at(&dir)?;
-        if let (Some(token), Some(server)) = (saved.as_ref().and_then(|c| c.token.clone()), saved.as_ref().map(|c| c.server.clone())) {
+        if let (Some(session), Some(server)) = (saved.as_ref().and_then(|c| c.session.clone()), saved.as_ref().map(|c| c.server.clone())) {
             // Best effort: an already expired session needs no revoking.
             let _ = reqwest::Client::new()
                 .delete(format!("{}/api/v1/session", server.trim_end_matches('/')))
-                .bearer_auth(token)
+                .bearer_auth(session)
                 .send()
                 .await;
-            config::set_token(&dir, None)?;
+            config::set_session(&dir, None)?;
         }
         return match cli.json {
             true => Ok(writeln!(out, "{}", json!({ "signed_out": true }))?),
@@ -675,10 +678,10 @@ where
             false => Ok(write!(out, "{text}")?),
         };
     }
-    if let Command::Upgrade { target } = &cli.command {
+    if let Command::Upgrade { target, socket } = &cli.command {
         let config = config::load_at(&dir)?.ok_or_else(|| anyhow::anyhow!("run `rcli setup` first (no pinned update key)"))?;
         let path = target.clone().unwrap_or_else(|| std::env::current_exe().unwrap_or_default());
-        let done = upgrade::run(&config, &path).await?;
+        let done = upgrade::run(&config, &path, socket.clone()).await?;
         let text = format!(
             "upgraded {} to {} for {}{}\n",
             done.path.display(),
@@ -1170,14 +1173,14 @@ fn api_target(dir: &std::path::Path, server: Option<String>, token: Option<Strin
     let (base, token, server_key) = match (server, token) {
         (Some(base), Some(token)) => (base, Some(token), None),
         (Some(base), None) => {
-            (base, saved.as_ref().and_then(|c| c.token.clone()), saved.map(|c| c.server_key))
+            (base, saved.as_ref().and_then(|c| c.session.clone()), saved.map(|c| c.server_key))
         }
         (None, Some(token)) => {
             let base = saved.map(|c| c.server).ok_or_else(|| anyhow::anyhow!("run `rcli setup` or pass --server"))?;
             (base, Some(token), None)
         }
         (None, None) => match saved.filter(|c| !c.server.is_empty()) {
-            Some(c) => (c.server, c.token, Some(c.server_key)),
+            Some(c) => (c.server, c.session, Some(c.server_key)),
             None => anyhow::bail!("run `rcli setup` first (no saved Server Address or Server Key)"),
         },
     };

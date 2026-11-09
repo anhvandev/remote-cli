@@ -74,3 +74,5 @@
 - Invented: `ExecRequest.controller` (display name, e.g. `alice (Dashboard)`) kept separate from `requester` (plain
   name for the root prompt); `connect_decision` on `ExecResult` (same pattern as `root_decision`); `disconnect` matches
   a Controller by display-name prefix.
+
+- code-review fix: glossary wording in `rcli agent disconnect`'s doc comment ("on their machine" → "on their Device"; avoid "machine").

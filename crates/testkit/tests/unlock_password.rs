@@ -1,18 +1,9 @@
 //! Ticket 09: the unlock password lives on the Device, and `unlock` types it there.
 
-use rcli_testkit::{eventually, FakePlatform, Input, SessionState, StatusCode, TestSystem};
+use rcli_testkit::{eventually, FakePlatform, Input, online, SessionState, StatusCode, temp_dir, TestSystem};
 use serde_json::json;
 
 const PASSWORD: &str = "hunter2-very-secret";
-
-/// A short temp directory: the IPC socket path must fit in `SUN_LEN` (104 bytes on macOS).
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::path::PathBuf::from(format!("/tmp/rcli09-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 #[tokio::test]
 async fn unlock_types_the_password_stored_on_the_device_without_ever_revealing_it() {
@@ -91,15 +82,6 @@ async fn each_device_types_its_own_password() {
     sys.rcli(&["lock", "acquire", "a"]).await.unwrap();
     sys.rcli(&["unlock", "a", "--json"]).await.unwrap();
     assert_eq!(a.platform.inputs()[0], Input::Text("pw-a2".into()));
-}
-
-/// Starts a Device with a root-trusting IPC socket so the test can set its unlock password.
-async fn online(sys: &TestSystem, name: &str, platform: FakePlatform) -> (rcli_testkit::TestAgent, std::path::PathBuf) {
-    let dir = temp_dir(name);
-    let agent = sys.start_agent_trusting_socket_on(platform, &dir).await;
-    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
-    eventually(|| async { dir.join("agent.sock").exists().then_some(()) }).await;
-    (agent, dir)
 }
 
 #[tokio::test]

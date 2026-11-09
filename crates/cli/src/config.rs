@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use rcli_agent::secret_store::SecretStore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -16,7 +17,7 @@ pub struct Config {
     pub update_key: String,
     /// User session from `rcli login` (ticket 05).
     #[serde(default)]
-    pub token: Option<String>,
+    pub session: Option<String>,
 }
 
 /// The platform's per-user config directory; `RCLI_CONFIG_DIR` overrides it (tests).
@@ -59,9 +60,9 @@ fn save(dir: &Path, config: &Config) -> anyhow::Result<()> {
 }
 
 /// Stores (or with `None` clears) the User session from `rcli login` / `rcli logout`.
-pub fn set_token(dir: &Path, token: Option<String>) -> anyhow::Result<Config> {
+pub fn set_session(dir: &Path, session: Option<String>) -> anyhow::Result<Config> {
     let mut config = load_at(dir)?.ok_or_else(|| anyhow::anyhow!("run `rcli setup` first (no saved Server Address)"))?;
-    config.token = token;
+    config.session = session;
     save(dir, &config)?;
     Ok(config)
 }
@@ -104,7 +105,7 @@ pub async fn setup(dir: &Path, server: &str, key: &str) -> anyhow::Result<String
         server: base.to_owned(),
         server_key: key.trim().to_owned(),
         update_key,
-        token: None,
+        session: None,
     };
     save(dir, &config)?;
     Ok(format!("saved the Server {} and its key\n", config.server))
@@ -132,15 +133,21 @@ pub struct Remembered {
     pub controller: String,
 }
 
-fn password_path(dir: &Path, device: &str) -> PathBuf {
+/// The encrypted-file fallback of the Secret Store, under `<config dir>/passwords`.
+fn password_store(dir: &Path) -> rcli_agent::secret_store::FileSecretStore {
+    rcli_agent::secret_store::FileSecretStore::new(dir.join("passwords"))
+}
+
+/// A plaintext password file from before the passwords were encrypted; `remember`/`forget` delete it.
+fn legacy_password_path(dir: &Path, device: &str) -> PathBuf {
     dir.join("passwords").join(format!("{device}.json"))
 }
 
-/// shortcut: the `0600` file fallback only; a later ticket can put this in the OS keychain without changing callers.
+/// shortcut: the encrypted-file fallback only; a later ticket can put this in the OS keychain without changing callers.
 pub fn remember(dir: &Path, device: &str, password: &str, controller: &str) -> anyhow::Result<()> {
-    let path = password_path(dir, device);
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    write_private(&path, &serde_json::to_vec(&Remembered { password: password.into(), controller: controller.into() })?)
+    let _ = std::fs::remove_file(legacy_password_path(dir, device));
+    let remembered = Remembered { password: password.into(), controller: controller.into() };
+    password_store(dir).set(device, &serde_json::to_string(&remembered)?)
 }
 
 fn root_path(dir: &Path, device: &str) -> PathBuf {
@@ -159,25 +166,24 @@ pub fn set_root(dir: &Path, device: &str, on: bool) -> anyhow::Result<()> {
 }
 
 pub fn remembered(dir: &Path, device: &str) -> anyhow::Result<Option<Remembered>> {
-    match std::fs::read(password_path(dir, device)) {
-        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
+    match password_store(dir).get(device)? {
+        Some(stored) => Ok(Some(serde_json::from_str(&stored)?)),
+        None => Ok(None),
     }
 }
 
 /// Any Device ID with a remembered password (cheapest is fine: the Server scopes the answer anyway).
 pub fn some_remembered(dir: &Path) -> Option<String> {
     let entries = std::fs::read_dir(dir.join("passwords")).ok()?;
-    entries.flatten().find_map(|e| e.file_name().to_str()?.strip_suffix(".json").map(str::to_owned))
+    entries.flatten().find_map(|e| {
+        let name = e.file_name();
+        name.to_str()?.strip_prefix('.').filter(|n| *n != "secrets.key").map(str::to_owned)
+    })
 }
 
 pub fn forget(dir: &Path, device: &str) -> anyhow::Result<()> {
-    match std::fs::remove_file(password_path(dir, device)) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.into()),
-    }
+    let _ = std::fs::remove_file(legacy_password_path(dir, device));
+    password_store(dir).remove(device)
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -216,4 +222,27 @@ pub async fn verify(server: &str, key: &str, device: &str, password: &str, contr
 /// The JSON `rcli setup --json` prints.
 pub fn json(config: &Config) -> serde_json::Value {
     json!({ "server": config.server, "server_key": config.server_key, "update_key": config.update_key })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_remembered_password_is_encrypted_at_rest_and_round_trips() {
+        let dir = std::env::temp_dir().join(format!("rcli-remembered-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        super::remember(&dir, "123456789", "hunter2xyz", "dev-laptop (10.0.0.5)").unwrap();
+        let raw: Vec<Vec<u8>> = std::fs::read_dir(dir.join("passwords"))
+            .unwrap()
+            .flatten()
+            .map(|e| std::fs::read(e.path()).unwrap())
+            .collect();
+        assert!(raw.iter().all(|b| !b.windows(10).any(|w| w == b"hunter2xyz")), "the password is not stored in plaintext");
+        let remembered = super::remembered(&dir, "123456789").unwrap().unwrap();
+        assert_eq!(remembered.password, "hunter2xyz");
+        assert_eq!(remembered.controller, "dev-laptop (10.0.0.5)");
+        assert_eq!(super::some_remembered(&dir).as_deref(), Some("123456789"));
+        super::forget(&dir, "123456789").unwrap();
+        assert!(super::remembered(&dir, "123456789").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

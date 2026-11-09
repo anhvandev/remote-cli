@@ -5,16 +5,7 @@
 //! real socket and is covered by `every_change_is_refused_to_a_non_root_caller` plus ticket 03's
 //! `password_show_is_refused_to_non_root`.
 
-use rcli_testkit::{eventually, StatusCode, TestSystem};
-
-/// A short temp directory: the IPC socket path must fit in `SUN_LEN` (104 bytes on macOS).
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::path::PathBuf::from(format!("/tmp/rcli06-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+use rcli_testkit::{eventually, StatusCode, temp_dir, TestSystem};
 
 /// A Device with a running Agent and an IPC socket; its directory also holds the Secret Store.
 async fn device(sys: &TestSystem, name: &str) -> (rcli_testkit::TestAgent, std::path::PathBuf) {

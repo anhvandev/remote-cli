@@ -50,7 +50,7 @@ export default async function ConnectGuidePage() {
           <div className="grid gap-3 p-5 text-sm">
             <CopyRow value={key} />
             <p className="text-muted-foreground">
-              Bí mật mọi Agent và Controller cần để kết nối Server. Máy mới chỉ cần Server Address và Server Key này.
+              Bí mật mọi Agent và Controller cần để kết nối Server. Device mới chỉ cần Server Address và Server Key này.
             </p>
           </div>
         </section>
@@ -134,7 +134,7 @@ export default async function ConnectGuidePage() {
             </p>
             <CopyRow value={`rcli setup --server <Controller API URL> --key ${key}`} />
             <p className="text-muted-foreground">
-              Rồi kết nối Device bằng Device ID và Device Password (hiện ở máy đó qua{" "}
+              Rồi kết nối Device bằng Device ID và Device Password (hiện ở Device đó qua{" "}
               <code className="font-mono text-xs">rcli agent info</code>):
             </p>
             <CopyRow value="rcli connect <Device ID>" />

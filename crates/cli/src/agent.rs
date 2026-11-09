@@ -119,7 +119,7 @@ impl Info {
 }
 
 /// `rcli agent disconnect [<who>]`: end a Controller's Live View and shells and release its Control Lock.
-/// Allowed for any local user: the person at the Device can always stop a session on their machine.
+/// Allowed for any local user: the person at the Device can always stop a session on their Device.
 #[derive(Args)]
 pub struct Disconnect {
     /// The Controller as shown at the Device, e.g. `alice` or `dev-laptop (10.0.0.5)`. Omit to disconnect all.

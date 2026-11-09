@@ -463,9 +463,18 @@ impl NetworkLink {
 pub fn temp_dir(name: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!("rcli-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let dir = std::path::PathBuf::from(format!("/tmp/rcli-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// Starts a Device on `platform`, with a trusting IPC socket in `temp_dir(name)` so the test can change its settings.
+pub async fn online(sys: &TestSystem, name: &str, platform: FakePlatform) -> (TestAgent, std::path::PathBuf) {
+    let dir = temp_dir(name);
+    let agent = sys.start_agent_trusting_socket_on(platform, &dir).await;
+    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
+    eventually(|| async { dir.join("agent.sock").exists().then_some(()) }).await;
+    (agent, dir)
 }
 
 /// Whether the tests run as root (then the IPC password gate lets them through).

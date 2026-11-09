@@ -71,3 +71,5 @@
 - Not verified: end-to-end install on a real machine; https warning path only simulated via header. `rcli setup
   --server` uses a `<Controller API URL>` placeholder the user must fill in (the page cannot derive it from the
   Server Address alone).
+
+- code-review fix: `GET /api/v1/server-settings` is refused to password connections (`403 user_session_required`) — the spec says a password connection has no Server-admin rights, which beats this ticket's "a password connection may read it too"; every signed-in User (Admin and Operator) still reads it. The guide's copy drops the retired "máy" wording ("Máy mới" → "Device mới", "máy đó" → "Device đó").

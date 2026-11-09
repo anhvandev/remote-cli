@@ -1,12 +1,4 @@
-use rcli_testkit::{eventually, TestSystem};
-
-/// A fresh temp directory.
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let dir = std::env::temp_dir().join(format!("rcli-{name}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+use rcli_testkit::{eventually, temp_dir, TestSystem};
 
 #[tokio::test]
 async fn rcli_agent_run_registers_and_connects_a_device() {

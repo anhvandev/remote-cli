@@ -1,16 +1,7 @@
 use std::time::{Duration, Instant};
 
-use rcli_testkit::{FakePlatform, SessionState, StatusCode, TestSystem};
+use rcli_testkit::{FakePlatform, SessionState, StatusCode, temp_dir, TestSystem};
 use serde_json::{json, Value};
-
-/// A short temp directory: the IPC socket path must fit in `SUN_LEN` (104 bytes on macOS).
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::path::PathBuf::from(format!("/tmp/rcli07e-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 async fn audit(sys: &TestSystem) -> Vec<Value> {
     let (status, body) = sys.api.get("/api/v1/audit").await;

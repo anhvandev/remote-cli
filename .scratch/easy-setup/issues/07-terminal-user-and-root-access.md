@@ -75,3 +75,5 @@
   Affected suites re-run green: `terminal_user` 10, `exec` 4, `shell` 6, `device_identity` 5.
 - Not verified: a real OS adapter running `RunAs::User` as a different account (FakePlatform only; tickets 15+ need
   `su`/`runas`), the GUI prompt (ticket 14), and the Windows named pipe (ticket 03's existing shortcut).
+
+- code-review fix: glossary wording in `run_as`'s doc comment ("the run-as" → "the account"; Terminal User, avoid "run-as user").

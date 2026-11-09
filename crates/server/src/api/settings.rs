@@ -19,14 +19,21 @@ pub fn routes() -> Router<super::State> {
 }
 
 /// Readable by every signed-in User: the Connect guide shows the Server Key and Server Address to all of them
-/// (ticket 18). A password connection may read it too, but it already holds the Server Key. Rotate and
-/// set-address stay Admin.
-async fn show(Caller(_): Caller, State(state): State<super::State>) -> Json<Value> {
-    Json(json!({
+/// (ticket 18). A password connection has no Server-admin rights and is refused (spec). Rotate and set-address
+/// stay Admin.
+async fn show(Caller(user): Caller, State(state): State<super::State>) -> Result<Json<Value>, ApiError> {
+    if user.role == "controller" {
+        return Err(ApiError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "user_session_required",
+            "a password connection may not read the Server Settings",
+        ));
+    }
+    Ok(Json(json!({
         "server_key": state.settings.key().await,
         "ca_fingerprint": state.ca.fingerprint,
         "server_address": state.settings.address().await,
-    }))
+    })))
 }
 
 /// Changes only the secret: registered Devices keep their certificates and stay Online.

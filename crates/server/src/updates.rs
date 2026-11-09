@@ -110,6 +110,30 @@ pub async fn latest(state: &AppState, target: &str) -> anyhow::Result<Option<(St
     Ok(row)
 }
 
+/// The build `rcli upgrade` fetches when it names its Device: the one rolled out to it (`update_version`), so an
+/// unpublished or not-yet-rolled-out build never reaches a Device. No Device row (a Controller-only machine) or no
+/// rollout yet falls back to the newest published build.
+pub async fn upgrade_build(state: &AppState, device: Option<&str>, target: &str) -> anyhow::Result<Option<(String, Vec<u8>, Vec<u8>)>> {
+    let mut rolled_out = None;
+    if let Some(key) = device {
+        if let Ok(Some(id)) = crate::registry::resolve(state, key).await? {
+            rolled_out = sqlx::query_as::<_, (String, Vec<u8>, Vec<u8>)>(
+                "SELECT b.version, b.signature, b.build
+                 FROM devices d JOIN agent_builds b ON b.version = d.update_version AND b.target = $2
+                 WHERE d.id = $1",
+            )
+            .bind(id)
+            .bind(target)
+            .fetch_optional(&state.db)
+            .await?;
+        }
+    }
+    match rolled_out {
+        Some(row) => Ok(Some(row)),
+        None => latest(state, target).await,
+    }
+}
+
 /// The build this Device should install now, if any. A missing build for the Device's
 /// target is recorded as a failure instead.
 pub async fn pending(state: &AppState, device: Uuid) -> anyhow::Result<Option<AgentUpdate>> {

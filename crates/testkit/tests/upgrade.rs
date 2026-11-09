@@ -1,16 +1,7 @@
 //! `rcli upgrade`: fetch the build rolled out for this OS/arch, verify it with the pinned update key, replace the
 //! binary. The replacement path is a temp file here (the seam), never the running test binary.
 
-use std::sync::atomic::{AtomicU32, Ordering};
-
-use rcli_testkit::TestSystem;
-
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::path::PathBuf::from(format!("/tmp/rcli13-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+use rcli_testkit::{temp_dir, TestSystem};
 
 fn temp_file(name: &str, bytes: &[u8]) -> String {
     let path = temp_dir("builds").join(name);
@@ -46,6 +37,31 @@ async fn a_controller_only_machine_upgrades_itself() {
 
     assert!(out.contains("9.9.9"), "{out}");
     assert_eq!(std::fs::read(&target).unwrap(), b"new rcli binary");
+}
+
+/// An installed Device upgrades to the build rolled out to it, not the newest publish (the rollout is what the
+/// Server hands out).
+#[tokio::test]
+async fn an_installed_device_upgrades_to_the_build_rolled_out_to_it() {
+    let sys = TestSystem::start().await;
+    let dir = temp_dir("device");
+    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    let key = temp_file("update.key", &sys.update_signing_key);
+    publish(&sys, &temp_file("rolled", b"rolled-out build"), "1.0.0", &key).await;
+    sys.advance(60);
+    publish(&sys, &temp_file("newest", b"newest build"), "2.0.0", &key).await;
+
+    let agent_dir = temp_dir("device-agent");
+    let agent = sys.start_agent_with_socket("lab-pc", &agent_dir).await;
+    sys.rcli(&["rollout", "1.0.0", "--device", agent.device_id()]).await.unwrap();
+
+    let target = temp_dir("device-target").join("rcli");
+    std::fs::write(&target, b"installed build").unwrap();
+    let socket = agent_dir.join("agent.sock").to_str().unwrap().to_owned();
+    let out = sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap(), "--socket", &socket]).await.unwrap();
+
+    assert!(out.contains("1.0.0"), "{out}");
+    assert_eq!(std::fs::read(&target).unwrap(), b"rolled-out build");
 }
 
 #[tokio::test]

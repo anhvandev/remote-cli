@@ -1,15 +1,6 @@
 //! The Agent's local IPC: `rcli agent ...` talks to the running service's socket, not the Server.
 
-use rcli_testkit::{eventually, TestSystem};
-
-/// A short temp directory: the IPC socket path must fit in `SUN_LEN` (104 bytes on macOS).
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static N: AtomicU32 = AtomicU32::new(0);
-    let dir = std::path::PathBuf::from(format!("/tmp/rcli03-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+use rcli_testkit::{eventually, temp_dir, TestSystem};
 
 #[tokio::test]
 async fn the_device_password_is_ten_characters_without_look_alikes() {

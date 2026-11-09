@@ -1,7 +1,7 @@
-//! `rcli upgrade`: fetch the newest build published for this OS/arch, verify it with the update key pinned at
-//! `rcli setup`, and replace the running binary. As root on an installed Linux Device the service is restarted too.
+//! `rcli upgrade`: fetch the build the Server is rolling out for this OS/arch, verify it with the update key pinned
+//! at `rcli setup`, and replace the running binary. As root on an installed Linux Device the service is restarted too.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 
@@ -12,15 +12,20 @@ pub struct Upgraded {
     pub restarted: bool,
 }
 
-pub async fn run(config: &Config, path: &Path) -> anyhow::Result<Upgraded> {
+pub async fn run(config: &Config, path: &Path, socket: Option<PathBuf>) -> anyhow::Result<Upgraded> {
     let key = hex::decode(config.update_key.trim()).unwrap_or_default();
     anyhow::ensure!(!key.is_empty(), "no update key is pinned; run `rcli setup` again");
 
     let target = rcli_agent::target();
-    let resp = reqwest::Client::new()
-        .get(format!("{}/api/v1/agent-builds/{target}", config.server.trim_end_matches('/')))
-        .send()
-        .await?;
+    // A running Agent names this Device, so the Server serves the build rolled out to it; a Controller-only machine
+    // has no Device row and gets the newest published build.
+    let device = local_device(&socket.unwrap_or_else(rcli_agent::ipc::default_socket)).await;
+    let url = format!("{}/api/v1/agent-builds/{target}", config.server.trim_end_matches('/'));
+    let url = match &device {
+        Some(device) => format!("{url}?device={device}"),
+        None => url,
+    };
+    let resp = reqwest::Client::new().get(url).send().await?;
     let status = resp.status();
     let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
     let version = header("x-rcli-version").unwrap_or_default();
@@ -64,8 +69,21 @@ fn is_root() -> bool {
     std::process::Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
 }
 
+/// This machine's Device ID when its Agent is running: `rcli upgrade` then fetches the build rolled out to it.
+#[cfg(unix)]
+async fn local_device(socket: &Path) -> Option<String> {
+    let info = rcli_agent::ipc::request(socket, "info").await.ok()?;
+    Some(info["device_id"].as_str()?.to_owned())
+}
+
+// shortcut: no Agent runs behind a named pipe yet (the Windows ticket); Windows upgrades as a Controller-only machine.
+#[cfg(not(unix))]
+async fn local_device(_socket: &Path) -> Option<String> {
+    None
+}
+
 /// Run as root on Linux, the binary being replaced is the installed Agent's: the unit to restart onto it. As a
-/// normal user (a Controller-only machine), or off Linux, there is none.
+/// non-root account (a Controller-only machine), or off Linux, there is none.
 // shortcut: assumes the unit is named rcli-agent and runs the binary being replaced; ticket 16's
 // `rcli agent install` records the real name and path, then this can read them instead. Not exercised here (no
 // Linux systemd device); the ordering it relies on is: check the unit, then swap, then restart, so a refused

@@ -16,6 +16,11 @@ async fn every_signed_in_user_reads_the_server_settings() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["server_key"], sys.server_key());
     assert_eq!(body["server_address"], "localhost");
+
+    // A password connection has no Server-admin rights and is refused (spec).
+    let creds = sys.register(&FakePlatform::new("lab-pc")).await.unwrap();
+    let (status, _) = sys.device_client(&creds.device_id, &creds.device_password).get("/api/v1/server-settings").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

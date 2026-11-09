@@ -78,3 +78,5 @@
     tokens stop working", "a live API token") were corrected to "sessions".
   - **Scope:** nothing from 06 (no Device identity/GUI changes) or 13 (no `rcli upgrade`); `agent.proto` untouched.
 
+
+- code-review fix: `Config.token` / `config::set_token` are renamed to `Config.session` / `set_session` (the "token" vocabulary the glossary retires); the saved config key becomes `"session"`, so a saved session from an older build needs one `rcli login` again (no migration policy).

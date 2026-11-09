@@ -85,3 +85,5 @@
 - Not verified by the merger: the OS keychain (only the `0600` file fallback exists, as the ticket allows) and a
   real Windows named pipe, both `shortcut:` comments; the interactive prompt path (`rcli connect` without
   `--password`), since tests pass `--password`; the static Device Password UI in the Dashboard (tickets 09/11).
+
+- code-review fix: a remembered Device Password is no longer plaintext in the Controller config file — `config::remember` now seals the `Remembered` JSON with the Agent's `FileSecretStore` (AES-256-GCM, key file under `passwords/`), `remember`/`forget` delete the old plaintext `<device>.json`, and a unit test asserts no plaintext on disk. Also `rcli agent info` no longer shows the Device Settings to non-root callers (spec: only the ID, status and controllers); they moved behind the root gate with the Server Key and unlock password, covered in `crates/agent/src/ipc.rs` tests.
