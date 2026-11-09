@@ -151,6 +151,7 @@ async fn root_shells_are_not_gated_by_server_roles() {
     assert_eq!(first["as"], "root");
     sh.input("whoami\r").await;
     sh.expect("root\r\n").await;
+    sh.input("exit\r").await;
     assert_eq!(sh.finish().await, json!({ "exit_code": 0 }));
 
     let platform = FakePlatform::new("kiosk");
@@ -160,6 +161,7 @@ async fn root_shells_are_not_gated_by_server_roles() {
     assert_eq!(first["as"], "root", "with nobody logged in, commands run as root");
     sh.input("whoami\r").await;
     sh.expect("root\r\n").await;
+    sh.input("exit\r").await;
     assert_eq!(sh.finish().await, json!({ "exit_code": 0 }));
 
     let starts: Vec<Value> = audit(&sys).await.into_iter().filter(|e| e["action"] == "shell.start").collect();
