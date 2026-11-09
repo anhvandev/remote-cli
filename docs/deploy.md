@@ -66,8 +66,7 @@ rcli setup --server https://vps.example.com:8080 --key rk_xxxxxxxx_yyyyyyyy   # 
 rcli --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user create me --role admin
 rcli --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" token create me
 #   → in ra: token rcli_xxxxxxxx   (chỉ hiện một lần, lưu lại)
-export RCLI_TOKEN=rcli_xxxxxxxx   # token tạm cho các lệnh quản trị ở bước này
-rcli user set-password me --password '<mật khẩu Dashboard>'
+rcli --token rcli_xxxxxxxx user set-password me --password '<mật khẩu Dashboard>'
 #   → in ra totp_secret và otpauth_url: quét otpauth_url bằng app Authenticator
 ```
 
@@ -78,7 +77,7 @@ Mở `http://vps.example.com:3080`, đăng nhập bằng `me` + mật khẩu + m
 ## 5. Thêm Device (Agent tự đăng ký)
 
 ```bash
-rcli server-key show
+rcli --token rcli_xxxxxxxx server-key show
 #   rk_f90a7c21b8..._3f9c...                                ← Server Key: fingerprint CA + secret
 ```
 

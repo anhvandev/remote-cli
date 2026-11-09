@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Fresh Controller: `rcli setup`, `rcli connect <ID>`, then `rcli shot <ID>` works with no env vars
 - [x] A wrong password at `connect` is reported and not saved
@@ -55,3 +55,33 @@
   (first 16 bytes of SHA-256 of the display name, so it survives reconnects); the public `GET /api/v1/update-key`
   endpoint used to pin the key at setup; and `forbidden_device` (403) for another Device's endpoints versus
   `admin_required` (403) for Server administration.
+- Merged into `easy-setup` (fast-forward to `e6affcf`). Merger review found no code defect; one doc bug was fixed
+  on `easy-setup` after the merge: `docs/deploy.md` still told admins to `export RCLI_TOKEN`, which no longer does
+  anything, so the following `rcli user set-password` and `rcli server-key show` would fail. It now passes
+  `--token` explicitly.
+- Security review (merger):
+  - Device scoping: every Device-work handler resolves through `resolve_for`, which refuses another Device with
+    `forbidden_device`; `GET /devices` filters the list. Checked all routes: actions/exec/shell/live/history/power/
+    wake/control-lock/processes/show use `resolve_for`; the remaining `resolve` callers (`vault.rs`, `audit.rs`,
+    `updates.rs`, Device rename/delete/merge/revoke/force-release) are `Admin`-gated, so a password connection gets
+    403 from the extractor before reaching them. Shell input/resize are limited to the caller's own session by
+    `shell::Shells::device_of` (owner id), so a password connection cannot reach another Device's session.
+  - Plaintext storage: Server keeps only `devices.device_password_hash` (argon2id; migration `03002`); there is no
+    read-back endpoint. The Agent stores the password only via `FileSecretStore` (AES-256-GCM, 0600 key file);
+    `Credentials.device_password` is `skip_serializing`, so `credentials.json` never holds it. The Controller writes
+    the remembered password to a `0600` `passwords/<device>.json`; `config.json` holds only server/key/update key/token.
+  - Admin gating: the dropped `is_admin` checks are exactly the Device-run ones — `exec --as root`,
+    `shell --as root`, the `root_if_nobody_logged_in` fallback, and the admin Control Lock bypass for
+    restart/shutdown/sleep. Every Server-admin endpoint keeps `Admin` (users, tokens, server-key, server-settings,
+    rollouts/builds, Device rename/delete/merge/revoke, audit, unlock password, force-release). `is_admin` also
+    now refuses a password connection even if its role string were spoofed (`device_scope.is_none()`).
+  - Env vars: `RCLI_SERVER`/`RCLI_TOKEN` args are gone from `Cli`; `rcli mcp` builds its `Api` from the saved config
+    (`api_target`) and auths per request, falling back from a User session to the saved Device Password.
+- Verified on the merged tree (`e6affcf`): `cargo test --workspace` 139 passed / 0 failed (the reported flaky
+  `rcli_agent_run_registers_and_connects_a_device` did not fail this run), `cargo clippy --workspace --all-targets`
+  clean, `cd dashboard && npx tsc --noEmit` clean. Playwright run here (`DOCKER_HOST` = Colima, ports 18086/3106):
+  `server-settings.spec.ts` + `admin.spec.ts`, 13 passed / 0 failed — confirms admin endpoints that this ticket
+  re-gated still work for an Admin.
+- Not verified by the merger: the OS keychain (only the `0600` file fallback exists, as the ticket allows) and a
+  real Windows named pipe, both `shortcut:` comments; the interactive prompt path (`rcli connect` without
+  `--password`), since tests pass `--password`; the static Device Password UI in the Dashboard (tickets 09/11).
