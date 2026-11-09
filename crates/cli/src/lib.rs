@@ -285,17 +285,17 @@ enum ActCommand {
 
 /// Server administration, which a password connection can never do (ADR 0004): these need a User session.
 fn admin_only(command: &Command) -> bool {
-    match command {
+    matches!(
+        command,
         Command::ServerKey(_)
-        | Command::ServerAddress(_)
-        | Command::User(_)
-        | Command::Rollout { .. }
-        | Command::Audit { .. }
-        | Command::UnlockPassword(_) => true,
-        Command::Device(DeviceCommand::Rename { .. } | DeviceCommand::Delete { .. } | DeviceCommand::Revoke { .. } | DeviceCommand::Merge { .. }) => true,
-        Command::Lock(LockCommand::ForceRelease { .. }) => true,
-        _ => false,
-    }
+            | Command::ServerAddress(_)
+            | Command::User(_)
+            | Command::Rollout { .. }
+            | Command::Audit { .. }
+            | Command::UnlockPassword(_)
+            | Command::Device(DeviceCommand::Rename { .. } | DeviceCommand::Delete { .. } | DeviceCommand::Revoke { .. } | DeviceCommand::Merge { .. })
+            | Command::Lock(LockCommand::ForceRelease { .. })
+    )
 }
 
 /// Where to point: image coordinates X Y, `--mark N --observation ID`, or `--text T`.

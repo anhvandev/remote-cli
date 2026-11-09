@@ -36,7 +36,7 @@ EOF
 
 | Biến | Bắt buộc | Ý nghĩa |
 |---|---|---|
-| `RCLI_BOOTSTRAP_ADMIN_TOKEN` | có | Token admin tạm để tạo admin đầu tiên. Chỉ có hiệu lực khi chưa có admin nào còn token hợp lệ. |
+| `RCLI_BOOTSTRAP_ADMIN_TOKEN` | có | Token admin tạm để tạo admin đầu tiên. Chỉ có hiệu lực khi chưa có admin nào còn phiên đăng nhập hợp lệ. |
 | `RCLI_TURN_SECRET` | có | Secret chung giữa Server và coturn để cấp credential TURN. |
 | `RCLI_TURN_HOST` | nên đặt | Tên/IP public của VPS mà trình duyệt và Agent dùng để tới coturn. Mặc định `localhost`. |
 | `RCLI_AGENT_HOSTNAMES` | chỉ lần đầu | Server Address ban đầu (đưa vào chứng chỉ TLS cổng 8443). Sau lần khởi động đầu, đổi bằng `rcli server-address set` hoặc trang Server Settings. Mặc định `localhost`. |
@@ -64,20 +64,19 @@ Cần binary `rcli` trên máy của bạn (xem `docs/usage.md`, mục Cài CLI)
 ```bash
 rcli setup --server https://vps.example.com:8080 --key rk_xxxxxxxx_yyyyyyyy   # Server Key (bước 5)
 rcli --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user create me --role admin
-rcli --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" token create me
-#   → in ra: token rcli_xxxxxxxx   (chỉ hiện một lần, lưu lại)
-rcli --token rcli_xxxxxxxx user set-password me --password '<mật khẩu Dashboard>'
+rcli --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user set-password me --password '<mật khẩu Dashboard>'
 #   → in ra totp_secret và otpauth_url: quét otpauth_url bằng app Authenticator
+rcli login me                       # mật khẩu Dashboard + mã TOTP; phiên được lưu vào config
 ```
 
-Từ lúc admin `me` đăng nhập, bootstrap token hết tác dụng. Nó chỉ hoạt động lại nếu mọi admin bị vô hiệu hoá hoặc mất hết token (đường cứu hộ).
+Từ lúc admin `me` đăng nhập, bootstrap token hết tác dụng. Nó chỉ hoạt động lại nếu mọi admin bị vô hiệu hoá hoặc phiên đã hết hạn (đường cứu hộ).
 
 Mở `http://vps.example.com:3080`, đăng nhập bằng `me` + mật khẩu + mã TOTP. Sai 5 lần liên tiếp thì tài khoản bị khoá 15 phút.
 
 ## 5. Thêm Device (Agent tự đăng ký)
 
 ```bash
-rcli --token rcli_xxxxxxxx server-key show
+rcli server-key show                          # đã `rcli login me` ở bước 4
 #   rk_f90a7c21b8..._3f9c...                                ← Server Key: fingerprint CA + secret
 ```
 

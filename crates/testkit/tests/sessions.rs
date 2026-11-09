@@ -67,8 +67,11 @@ async fn sessions_expire_and_disabled_users_cannot_sign_in() {
         .await;
     let me = sys.api.with_token(session["token"].as_str());
     assert_eq!(me.get("/api/v1/devices").await.0, StatusCode::OK);
+
+    let mut sys = sys;
     sys.advance(12 * 3600);
     assert_eq!(me.get("/api/v1/devices").await.0, StatusCode::UNAUTHORIZED);
+    sys.sign_in_admin().await; // the harness admin's session expired too
 
     sys.api.post("/api/v1/users/vanna/disable").await;
     let (status, _) = anon
