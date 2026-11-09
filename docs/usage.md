@@ -23,8 +23,8 @@ rcli connect 123456789                                                  # hỏi 
 kiểm tra Device ID + Device Password rồi nhớ mật khẩu (file `0600`), nên các lệnh sau chỉ cần Device ID.
 `rcli forget <Device ID>` xoá mật khẩu đã nhớ. `RCLI_SERVER`/`RCLI_TOKEN` không còn dùng.
 
-Lệnh quản trị Server (`user`, `rollout`, `audit`, `server-key`, `server-address`, đổi tên/xoá Device, `lock force-release`,
-`unlock-password`) cần một phiên User: `rcli login <tên>` (mật khẩu Dashboard + mã TOTP), `rcli logout` để xoá.
+Lệnh quản trị Server (`user`, `rollout`, `audit`, `server-key`, `server-address`, đổi tên/xoá Device, `lock force-release`)
+cần một phiên User: `rcli login <tên>` (mật khẩu Dashboard + mã TOTP), `rcli logout` để xoá.
 Operator đăng nhập được nhưng các lệnh đó trả `admin_required`. Các lệnh trên Device vẫn dùng `rcli connect`.
 
 ## Vai trò
@@ -105,9 +105,11 @@ Bước nào lỗi thì batch dừng và báo `step` (đếm từ 0). Tổng `wa
 ## Màn khoá và `unlock`
 
 ```bash
-rcli unlock-password set demo-pc --password '...'   # admin, lưu mã hoá trên Server, không bao giờ đọc lại được
+# Tại chính Device, bằng root: mật khẩu nằm trong Secret Store của Agent, không bao giờ rời Device.
+sudo rcli agent unlock-password set --password '...'
+sudo rcli agent unlock-password clear                # bỏ mật khẩu đã lưu
 rcli lock acquire demo-pc
-rcli unlock demo-pc --out ./shots                   # Agent gõ mật khẩu + Enter, trả ảnh sau đó
+rcli unlock demo-pc --out ./shots                    # Agent gõ mật khẩu đã lưu + Enter, trả ảnh sau đó
 ```
 
 `rcli device show` cho biết `session`: `Active`, `LockScreen` hoặc `LoginScreen`.

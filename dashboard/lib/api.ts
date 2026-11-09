@@ -90,8 +90,6 @@ export type Device = {
   /** "Wake failed" when the last Wake timed out and the Device is still Offline. */
   wake_error: string | null;
 };
-/** GET /api/v1/devices/{d}/unlock-password: whether one is stored; the password itself is never returned. */
-export type UnlockPassword = { set: boolean; updated_at: string | null };
 export type Inventory = {
   os: string;
   os_version: string;

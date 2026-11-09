@@ -13,6 +13,8 @@ use ring::{
 pub trait SecretStore: Send + Sync {
     fn get(&self, name: &str) -> anyhow::Result<Option<String>>;
     fn set(&self, name: &str, secret: &str) -> anyhow::Result<()>;
+    /// Forgets a secret; forgetting one that is not there is not an error.
+    fn remove(&self, name: &str) -> anyhow::Result<()>;
 }
 
 /// `<dir>/.secrets.key` (32 random bytes, mode 0600) encrypts each secret in its own file with AES-256-GCM.
@@ -70,6 +72,14 @@ impl SecretStore for FileSecretStore {
             .map_err(|_| anyhow::anyhow!("cannot seal a secret"))?;
         write_private(&self.path(name), &[nonce.as_slice(), &data].concat())
     }
+
+    fn remove(&self, name: &str) -> anyhow::Result<()> {
+        match std::fs::remove_file(self.path(name)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -97,6 +107,9 @@ mod tests {
         assert!(store.get("absent").unwrap().is_none());
         let raw = std::fs::read(dir.join(".device_password")).unwrap();
         assert!(!raw.windows(10).any(|w| w == b"hunter2xyz"), "the password is not stored in plaintext");
+        store.remove("device_password").unwrap();
+        assert!(store.get("device_password").unwrap().is_none());
+        store.remove("device_password").unwrap(); // forgetting a missing secret is fine
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

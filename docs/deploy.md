@@ -40,13 +40,13 @@ EOF
 | `RCLI_TURN_SECRET` | có | Secret chung giữa Server và coturn để cấp credential TURN. |
 | `RCLI_TURN_HOST` | nên đặt | Tên/IP public của VPS mà trình duyệt và Agent dùng để tới coturn. Mặc định `localhost`. |
 | `RCLI_AGENT_HOSTNAMES` | chỉ lần đầu | Server Address ban đầu (đưa vào chứng chỉ TLS cổng 8443). Sau lần khởi động đầu, đổi bằng `rcli server-address set` hoặc trang Server Settings. Mặc định `localhost`. |
-| `RCLI_MASTER_KEY` | nên đặt | 64 ký tự hex. Mã hoá mật khẩu unlock, CA private key và TOTP secret. |
+| `RCLI_MASTER_KEY` | nên đặt | 64 ký tự hex. Mã hoá CA private key và TOTP secret. |
 | `POSTGRES_PASSWORD` | nên đặt | Mặc định `rcli`. |
 
 **Về `RCLI_MASTER_KEY` — đọc kỹ:**
-- Không có key: Server vẫn chạy, nhưng không lưu được mật khẩu unlock (lỗi `vault_unavailable`), CA key và TOTP secret nằm dạng plaintext trong Postgres (Server log cảnh báo).
+- Không có key: Server vẫn chạy, nhưng CA key và TOTP secret nằm dạng plaintext trong Postgres (Server log cảnh báo).
 - Có key: lần khởi động đầu, Server tự mã hoá CA key và TOTP secret đang là plaintext.
-- **Sao lưu key.** Sau khi dữ liệu đã mã hoá, chạy Server mà thiếu key thì Server không khởi động được; đổi sang key khác thì mọi mật khẩu unlock phải đặt lại. Chưa có chức năng xoay key.
+- **Sao lưu key.** Sau khi dữ liệu đã mã hoá, chạy Server mà thiếu key thì Server không khởi động được; đổi sang key khác thì dữ liệu đã mã hoá không mở được. Chưa có chức năng xoay key.
 
 ## 3. Khởi động
 

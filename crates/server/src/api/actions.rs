@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{bad_request, devices::resolve_for, ApiError, Caller};
-use crate::{audit, auth::User, control_lock, metrics, vault};
+use crate::{audit, auth::User, control_lock, metrics};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -168,6 +168,8 @@ fn agent_error(e: proto::Error) -> ApiError {
         "ambiguous_text" => bad_request("ambiguous_text"),
         "text_not_found" => bad_request("text_not_found"),
         "no_display" => ApiError::new(StatusCode::CONFLICT, "no_display", e.message),
+        // The password lives only on the Device; this is the Device's own report, not the Server's.
+        "unlock_password_not_set" => ApiError::new(StatusCode::CONFLICT, "unlock_password_not_set", e.message),
         _ => ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message),
     }
 }
@@ -260,25 +262,18 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
         max_frames,
         marks: body.marks,
         media_session: body.media_session,
+        unlock: false,
     };
     send(state, device, req, &step_of).await
 }
 
-/// `unlock`: the Agent types the Device's stored password + Enter, then observes. Needs the Control Lock.
-/// The password goes only to the Agent; the audit entry has no params at all.
+/// `unlock`: the Agent types the unlock password stored on the Device + Enter, then observes. Needs the Control Lock.
+/// The password never leaves the Device; the audit entry has no params at all.
 async fn unlock(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
     let device = resolve_for(&user, &state, &id).await?;
     control_lock::touch(&state, device, &user).await?;
     control_lock::check(&state, device, &user).await?;
-    let password = vault::password(&state, device).await?;
-    let req = proto::ActRequest {
-        actions: vec![Kind::TypeText(password), Kind::Key("enter".into())]
-            .into_iter()
-            .map(|k| proto::Action { kind: Some(k) })
-            .collect(),
-        controller: user.id.to_string(),
-        ..Default::default()
-    };
+    let req = proto::ActRequest { controller: user.id.to_string(), unlock: true, ..Default::default() };
     let result = send(&state, device, req, &[]).await;
     let outcome = json!({ "error": result.as_ref().err().map(|e| e.code) });
     audit::record(&state, &user, device, "unlock", json!({}), outcome).await?;

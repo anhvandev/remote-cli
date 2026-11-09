@@ -19,7 +19,7 @@ pub mod settings;
 pub mod shell;
 pub mod updates;
 pub mod wake;
-pub mod vault;
+pub mod master_key;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -38,8 +38,8 @@ pub struct Config {
     pub agent_hostnames: Vec<String>,
     /// First-run admin token: accepted only until an enabled admin user has a live session.
     pub bootstrap_admin_token: String,
-    /// Secrets Vault key (`RCLI_MASTER_KEY`); None = unlock passwords can't be stored or used.
-    pub master_key: Option<vault::MasterKey>,
+    /// Seals the CA private key and TOTP secrets (`RCLI_MASTER_KEY`); None = they are stored in plaintext.
+    pub master_key: Option<master_key::MasterKey>,
     /// STUN/TURN URLs handed to both WebRTC peers, e.g. `turn:vps.example.com:3478`. Empty = direct paths only.
     pub ice_urls: Vec<String>,
     /// coturn `static-auth-secret`: the Server mints short-lived TURN credentials from it.

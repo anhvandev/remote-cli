@@ -458,7 +458,7 @@ pub async fn sign_in(
 }
 
 /// Seals TOTP secrets still stored in plaintext (from before the master key was configured).
-pub async fn seal_totp_secrets(db: &sqlx::PgPool, key: &crate::vault::MasterKey) -> anyhow::Result<()> {
+pub async fn seal_totp_secrets(db: &sqlx::PgPool, key: &crate::master_key::MasterKey) -> anyhow::Result<()> {
     let plain: Vec<(Uuid, Vec<u8>)> =
         sqlx::query_as("SELECT id, totp_secret FROM users WHERE totp_secret IS NOT NULL AND NOT totp_sealed").fetch_all(db).await?;
     for (id, secret) in plain {

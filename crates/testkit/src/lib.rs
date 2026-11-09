@@ -71,25 +71,25 @@ impl TestSystem {
         sys
     }
 
-    /// Like `start`, without `RCLI_MASTER_KEY`: the vault is off and secrets are stored in plaintext.
+    /// Like `start`, without `RCLI_MASTER_KEY`: secrets are stored in plaintext.
     pub async fn start_without_master_key() -> Self {
         Self::start_inner("127.0.0.1:0".parse().unwrap(), None, None).await
     }
 
     /// The `RCLI_MASTER_KEY` test Servers use.
-    pub fn master_key() -> rcli_server::vault::MasterKey {
+    pub fn master_key() -> rcli_server::master_key::MasterKey {
         "42".repeat(32).parse().unwrap()
     }
 
     /// Stops the Server and starts it again on the same database with `master_key` (API on a new port).
-    pub async fn restart(&mut self, master_key: Option<rcli_server::vault::MasterKey>) {
+    pub async fn restart(&mut self, master_key: Option<rcli_server::master_key::MasterKey>) {
         self.config.master_key = master_key;
         self.config.http_addr = "127.0.0.1:0".parse().unwrap();
         self.server = rcli_server::start(self.config.clone(), self.clock.clone()).await.expect("restart server");
         self.api = ApiClient::new(format!("http://{}", self.server.http_addr), Some(&self.admin_token));
     }
 
-    async fn start_inner(http_addr: std::net::SocketAddr, turn: Option<TestTurn>, master_key: Option<rcli_server::vault::MasterKey>) -> Self {
+    async fn start_inner(http_addr: std::net::SocketAddr, turn: Option<TestTurn>, master_key: Option<rcli_server::master_key::MasterKey>) -> Self {
         let postgres = Postgres::default().with_tag("16-alpine").start().await.expect("start postgres container");
         let port = postgres.get_host_port_ipv4(5432).await.unwrap();
         let clock = Arc::new(ManualClock::default());

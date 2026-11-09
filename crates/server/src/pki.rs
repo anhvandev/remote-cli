@@ -8,7 +8,7 @@ use rustls::pki_types::pem::PemObject;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
-use crate::vault::MasterKey;
+use crate::master_key::MasterKey;
 
 /// AAD of the sealed CA private key.
 const CA_KEY_AAD: &[u8] = b"server_ca.key";

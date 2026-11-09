@@ -23,7 +23,6 @@ async function run(fn: () => Promise<unknown>): Promise<Result> {
     return { message };
   } catch (e) {
     if (!(e instanceof ApiError)) throw e; // includes Next's redirect to /signin
-    if (e.code === "vault_unavailable") return { error: "Server chưa có RCLI_MASTER_KEY: không lưu được mật khẩu unlock." };
     return { error: `${e.code}: ${e.message}` };
   }
 }
@@ -64,14 +63,6 @@ export async function deleteDevice(_: Result, form: FormData) {
 
 export async function mergeDevice(_: Result, form: FormData) {
   return run(() => api(`${device(form)}/merge`, json("POST", { from: str(form, "from") })));
-}
-
-export async function setUnlockPassword(_: Result, form: FormData) {
-  return run(() => api(`${device(form)}/unlock-password`, json("POST", { password: str(form, "password") })));
-}
-
-export async function clearUnlockPassword(_: Result, form: FormData) {
-  return run(() => api(`${device(form)}/unlock-password/clear`, json("POST")));
 }
 
 export async function uploadBuild(_: Result, form: FormData) {
