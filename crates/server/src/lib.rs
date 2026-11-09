@@ -64,7 +64,7 @@ impl Config {
             master_key: std::env::var("RCLI_MASTER_KEY").ok().filter(|k| !k.is_empty()).map(|k| k.parse()).transpose()?,
             ice_urls: var("RCLI_ICE_URLS", Some(""))?.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
             turn_secret: std::env::var("RCLI_TURN_SECRET").ok().filter(|s| !s.is_empty()),
-            update_public_key: std::env::var("RCLI_UPDATE_PUBLIC_KEY").ok().filter(|s| !s.is_empty()).map(|k| hex::decode(k)).transpose()?,
+            update_public_key: std::env::var("RCLI_UPDATE_PUBLIC_KEY").ok().filter(|s| !s.is_empty()).map(hex::decode).transpose()?,
         })
     }
 }

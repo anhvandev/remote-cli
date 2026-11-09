@@ -26,6 +26,8 @@ services:
       RCLI_AGENT_HOSTNAMES: ${RCLI_AGENT_HOSTNAMES:-localhost}
       # Secrets Vault key for unlock passwords: 64 hex chars (`openssl rand -hex 32`). Keep a backup; losing it loses the passwords.
       RCLI_MASTER_KEY: ${RCLI_MASTER_KEY:-}
+      # Public half of the key that signs Agent builds (`rcli update keygen`); Devices pin it at registration.
+      RCLI_UPDATE_PUBLIC_KEY: ${RCLI_UPDATE_PUBLIC_KEY:-}
       # WebRTC (live view): peers try direct paths first, then relay through coturn with short-lived credentials.
       RCLI_ICE_URLS: stun:${RCLI_TURN_HOST:-localhost}:3478,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=udp,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=tcp
       RCLI_TURN_SECRET: ${RCLI_TURN_SECRET:?set RCLI_TURN_SECRET}

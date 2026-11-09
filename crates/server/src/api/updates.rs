@@ -8,9 +8,8 @@ use axum::{
 use rcli_protocol::update::MAX_BUILD_BYTES;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use uuid::Uuid;
 
-use super::{bad_request, Admin, ApiError};
+use super::{bad_request, devices::resolve, Admin, ApiError};
 use crate::updates::{self, UpdateError};
 
 pub fn routes() -> Router<super::State> {
@@ -66,10 +65,11 @@ async fn publish(
 struct Rollout {
     #[serde(default)]
     all: bool,
-    devices: Option<Vec<Uuid>>,
+    /// Device IDs (9-digit), UUIDs or unique names.
+    devices: Option<Vec<String>>,
 }
 
-/// Body: `{"all": true}` or `{"devices": [id, ...]}`.
+/// Body: `{"all": true}` or `{"devices": [device, ...]}`.
 async fn rollout(
     _: Admin,
     State(state): State<super::State>,
@@ -79,7 +79,13 @@ async fn rollout(
     let Json(r) = body.map_err(|e| bad_request(e.body_text()))?;
     let devices = match (r.all, r.devices) {
         (true, None) => None,
-        (false, Some(ids)) if !ids.is_empty() => Some(ids),
+        (false, Some(keys)) if !keys.is_empty() => {
+            let mut ids = Vec::with_capacity(keys.len());
+            for key in &keys {
+                ids.push(resolve(&state, key).await?);
+            }
+            Some(ids)
+        }
         _ => return Err(bad_request("give either \"all\": true or a non-empty \"devices\" list")),
     };
     let n = updates::rollout(&state, &version, devices.as_deref()).await?;
