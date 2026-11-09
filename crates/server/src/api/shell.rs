@@ -31,6 +31,9 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/shell-sessions/{id}/resize", post(resize))
 }
 
+/// How long the Agent may take to answer a shell open: ICE gathering and a 30 s root prompt.
+const ROOT_PROMPT_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// `{"as": "root" (admin only; default = logged-in user), "cols": 80, "rows": 24}`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -92,6 +95,8 @@ async fn open(
     // Registered before the Agent starts the shell so no output is lost.
     let mut output = state.shells.open(session, device, user.id);
     let requester = user.name.clone();
+    // The Agent may first show a root prompt for up to 30 s (ticket 07).
+    let wait = std::time::Duration::from_secs(10) + ROOT_PROMPT_BUDGET;
     let req = |request_id| {
         server_message::Msg::ShellOpen(proto::ShellOpen {
             request_id,
@@ -102,28 +107,33 @@ async fn open(
             requester: requester.clone(),
         })
     };
-    let opened = match state.agents.request(device, req).await {
-        Ok(agent_message::Msg::ShellOpened(r)) => match r.error {
-            Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
-            Some(e) if e.code == "root_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "root_denied", e.message)),
-            Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
-            None => Ok((if r.as_root { "root" } else { "user" }, r.root_decision)),
-        },
+    let mut decision = String::new();
+    let opened = match state.agents.request_within(device, wait, req).await {
+        Ok(agent_message::Msg::ShellOpened(r)) => {
+            decision = r.root_decision.clone();
+            match r.error {
+                Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
+                Some(e) if e.code == "root_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "root_denied", e.message)),
+                Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
+                None => Ok(if r.as_root { "root" } else { "user" }),
+            }
+        }
         Ok(_) => Err(anyhow::anyhow!("unexpected reply to ShellOpen").into()),
         Err(e) => Err(e.into()),
     };
     let params = json!({ "as": if as_root { Some("root") } else { None } });
     let result = match &opened {
-        Ok((who, decision)) => json!({ "session": session, "as": who, "root_decision": decision, "error": null }),
-        Err(e) => json!({ "error": e.code }),
+        Ok(who) => json!({ "session": session, "as": who, "root_decision": decision, "error": null }),
+        // A refused root request is still a prompt answer worth recording.
+        Err(e) => json!({ "error": e.code, "root_decision": decision }),
     };
     if let Err(e) = audit::record(&state, &user, device, "shell.start", params, result).await {
         state.shells.close(session);
         state.agents.send(device, server_message::Msg::ShellClose(proto::ShellClose { session: session.to_string() }));
         return Err(e.into());
     }
-    let (who, _decision) = match opened {
-        Ok(r) => r,
+    let who = match opened {
+        Ok(who) => who,
         Err(e) => {
             state.shells.close(session);
             return Err(e);

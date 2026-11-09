@@ -22,7 +22,9 @@ pub fn routes() -> Router<super::State> {
 const DEFAULT_TIMEOUT_SECS: u32 = 60;
 const MAX_TIMEOUT_SECS: u32 = 3600;
 /// Extra wait for the Agent's reply beyond the command's own timeout.
+/// The Agent may first show a root prompt for up to 30 s (ticket 07), so allow that on top.
 const REPLY_SLACK: Duration = Duration::from_secs(10);
+const ROOT_PROMPT_BUDGET: Duration = Duration::from_secs(30);
 
 /// `{"command": "...", "as": "root" (admin only; default = logged-in user), "timeout_secs": 60}`.
 #[derive(Deserialize)]
@@ -69,22 +71,27 @@ async fn exec(
             requester: requester.clone(),
         })
     };
-    let wait = Duration::from_secs(timeout.into()) + REPLY_SLACK;
+    let wait = Duration::from_secs(timeout.into()) + REPLY_SLACK + ROOT_PROMPT_BUDGET;
+    // How root was decided matters for the audit even when the Device refused.
+    let mut decision = String::new();
     let result = match state.agents.request_within(device, wait, req).await {
-        Ok(agent_message::Msg::ExecResult(r)) => match r.error {
-            Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
-            // The Device's root setting refused, or asked and nobody answered: a plain refusal to the caller.
-            Some(e) if e.code == "root_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "root_denied", e.message)),
-            Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
-            None => Ok(json!({
-                "exit_code": (!r.timed_out).then_some(r.exit_code),
-                "stdout": r.stdout,
-                "stderr": r.stderr,
-                "timed_out": r.timed_out,
-                "as": if r.as_root { "root" } else { "user" },
-                "root_decision": r.root_decision,
-            })),
-        },
+        Ok(agent_message::Msg::ExecResult(r)) => {
+            decision = r.root_decision.clone();
+            match r.error {
+                Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
+                // The Device's root setting refused, or asked and nobody answered: a plain refusal to the caller.
+                Some(e) if e.code == "root_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "root_denied", e.message)),
+                Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
+                None => Ok(json!({
+                    "exit_code": (!r.timed_out).then_some(r.exit_code),
+                    "stdout": r.stdout,
+                    "stderr": r.stderr,
+                    "timed_out": r.timed_out,
+                    "as": if r.as_root { "root" } else { "user" },
+                    "root_decision": r.root_decision,
+                })),
+            }
+        }
         Ok(_) => Err(anyhow::anyhow!("unexpected reply to ExecRequest").into()),
         Err(e) => Err(e.into()),
     };
@@ -96,7 +103,7 @@ async fn exec(
             "root_decision": r["root_decision"],
             "error": null,
         }),
-        Err(e) => json!({ "error": e.code }),
+        Err(e) => json!({ "error": e.code, "root_decision": decision }),
     };
     audit::record(&state, &user, device, "terminal", params, outcome).await?;
     result.map(Json)
