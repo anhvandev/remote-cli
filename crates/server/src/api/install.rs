@@ -20,10 +20,12 @@ pub fn routes() -> Router<super::State> {
 }
 
 /// The origin the script was fetched from, so its download URL works through the Dashboard origin too.
-/// A proxy in front should set `X-Forwarded-Proto`.
+/// A proxy in front should set `X-Forwarded-Host` and `X-Forwarded-Proto` (a wrong value only misleads the
+/// client that sent it, since the script is rendered per request).
 fn origin(headers: &HeaderMap) -> String {
-    let host = headers.get("host").and_then(|v| v.to_str().ok()).unwrap_or("localhost");
-    let scheme = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or("http");
+    let get = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let host = get("x-forwarded-host").or_else(|| get("host")).unwrap_or("localhost");
+    let scheme = get("x-forwarded-proto").unwrap_or("http");
     format!("{scheme}://{host}")
 }
 
