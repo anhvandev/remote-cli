@@ -179,6 +179,23 @@ impl TestSystem {
         self.start_agent_on(FakePlatform::new(hostname)).await
     }
 
+    /// Registers a new Device named `hostname` and starts its Agent with its local IPC socket in `dir`.
+    pub async fn start_agent_with_socket(&self, hostname: &str, dir: &std::path::Path) -> TestAgent {
+        let agent = self.start_agent(hostname).await;
+        tokio::spawn(rcli_agent::ipc::serve(dir.join("agent.sock"), agent.status.clone()));
+        agent
+    }
+
+    /// Runs `rcli <args>` in-process against the Agent IPC socket at `socket`; returns stdout.
+    pub async fn agent_rcli(&self, socket: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {
+        let mut argv: Vec<String> = std::iter::once("rcli".to_owned()).chain(args.iter().map(|s| s.to_string())).collect();
+        argv.push("--socket".into());
+        argv.push(socket.to_string_lossy().into_owned());
+        let mut out = Vec::new();
+        rcli::run(argv, &mut out).await?;
+        Ok(String::from_utf8(out)?)
+    }
+
     /// Registers a new Device and starts its Agent on `platform` (keep a clone to script it).
     pub async fn start_agent_on(&self, platform: FakePlatform) -> TestAgent {
         let creds = self.register(&platform).await.expect("register");
@@ -227,6 +244,8 @@ pub struct TestAgent {
     pub endpoint: ServerEndpoint,
     pub platform: FakePlatform,
     pub creds: Credentials,
+    /// The Agent's local IPC view (Device ID and connection status).
+    pub status: Arc<rcli_agent::ipc::Status>,
     task: Option<JoinHandle<()>>,
     network: NetworkLink,
 }
@@ -236,7 +255,8 @@ impl TestAgent {
     /// It reaches `endpoint` through a link the test can cut (`cut_network`). Needs a Tokio runtime.
     pub fn new(endpoint: ServerEndpoint, platform: FakePlatform, creds: Credentials) -> Self {
         let network = NetworkLink::new(&endpoint.addr);
-        Self { endpoint, platform, creds, task: None, network }
+        let status = Arc::new(rcli_agent::ipc::Status::new(&creds.device_id, &endpoint.addr));
+        Self { endpoint, platform, creds, status, task: None, network }
     }
 
     /// Drops the Agent's connection and stalls new ones until `restore_network`; the Agent keeps running.
@@ -254,7 +274,7 @@ impl TestAgent {
 
     pub fn start(&mut self) {
         let endpoint = ServerEndpoint { addr: self.network.addr.clone(), ..self.endpoint.clone() };
-        let run = rcli::agent::serve(endpoint, self.creds.clone(), Arc::new(self.platform.clone()));
+        let run = rcli::agent::serve(endpoint, self.creds.clone(), Arc::new(self.platform.clone()), Some(self.status.clone()));
         self.task = Some(tokio::spawn(run));
     }
 

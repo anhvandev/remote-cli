@@ -5,6 +5,7 @@ pub mod contract;
 mod clip;
 mod coords;
 mod executor;
+pub mod ipc;
 mod live;
 mod marks;
 mod media;
@@ -203,7 +204,7 @@ pub async fn register(server: &ServerEndpoint, platform: &dyn Platform) -> anyho
 
 /// Keeps a connection to the Server open forever, reconnecting with backoff.
 /// Resources are sampled every 5 s whether connected or not; samples taken offline are backfilled on reconnect.
-pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn Platform>) {
+pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn Platform>, status: Option<Arc<ipc::Status>>) {
     let backlog = Arc::new(Backlog::default());
     let sampler = tokio::spawn(sample_forever(platform.clone(), backlog.clone()));
     // Stop the sampler when `run` is dropped (e.g. aborted).
@@ -224,11 +225,22 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn P
         match connect(&server, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
+                if let Some(s) = &status {
+                    s.set_connected(true);
+                }
                 if let Err(e) = session(conn, &creds, &platform, &executor, &live, &media, &backlog).await {
                     tracing::warn!("connection to server lost: {e}");
                 }
+                if let Some(s) = &status {
+                    s.set_connected(false);
+                }
             }
-            Err(e) => tracing::warn!("cannot connect to server: {e}"),
+            Err(e) => {
+                if let Some(s) = &status {
+                    s.set_connected(false);
+                }
+                tracing::warn!("cannot connect to server: {e}");
+            }
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(MAX_BACKOFF);

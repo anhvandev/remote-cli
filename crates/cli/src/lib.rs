@@ -174,6 +174,8 @@ enum Command {
 enum AgentCommand {
     /// Register on first start, then keep the Agent connected to the Server.
     Run(agent::Run),
+    /// Show the Device ID and connection status (any local user).
+    Info(agent::Info),
 }
 
 #[derive(Subcommand)]
@@ -463,8 +465,11 @@ where
         }
         return Ok(());
     }
-    if let Command::Agent(AgentCommand::Run(run)) = cli.command {
-        return run.run().await;
+    if let Command::Agent(command) = cli.command {
+        return match command {
+            AgentCommand::Run(run) => run.run().await,
+            AgentCommand::Info(info) => info.run(out).await,
+        };
     }
     let api = Api {
         base: cli.server.ok_or_else(|| anyhow::anyhow!("--server or RCLI_SERVER is required"))?,

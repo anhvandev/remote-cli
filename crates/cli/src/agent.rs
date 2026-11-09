@@ -3,11 +3,16 @@
 use std::{path::PathBuf, sync::Arc};
 
 use clap::Args;
-use rcli_agent::{platform::FakePlatform, Credentials, ServerEndpoint};
+use rcli_agent::{ipc, platform::FakePlatform, Credentials, ServerEndpoint};
 
 /// Keeps a registered Device connected: the Agent entry point `rcli agent run` and the test system share.
-pub async fn serve(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn rcli_agent::platform::Platform>) {
-    rcli_agent::run(server, creds, platform).await;
+pub async fn serve(
+    server: ServerEndpoint,
+    creds: Credentials,
+    platform: Arc<dyn rcli_agent::platform::Platform>,
+    status: Option<Arc<ipc::Status>>,
+) {
+    rcli_agent::run(server, creds, platform, status).await;
 }
 
 #[derive(Args)]
@@ -24,6 +29,9 @@ pub struct Run {
     /// Device name reported at registration.
     #[arg(long)]
     name: String,
+    /// Local IPC socket `rcli agent ...` clients use.
+    #[arg(long, env = "RCLI_AGENT_SOCKET")]
+    socket: Option<PathBuf>,
 }
 
 impl Run {
@@ -45,7 +53,44 @@ impl Run {
             }
         };
         tracing::info!("Device {} connecting to {}", creds.device_id, server.addr);
-        serve(server, creds, platform).await;
+        let status = Arc::new(ipc::Status::new(&creds.device_id, &server.addr));
+        let socket = self.socket.unwrap_or_else(ipc::default_socket);
+        let serve_status = status.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ipc::serve(socket, serve_status).await {
+                tracing::error!("local IPC stopped: {e:#}");
+            }
+        });
+        serve(server, creds, platform, Some(status)).await;
+        Ok(())
+    }
+}
+
+/// `rcli agent info`: the Device ID and connection status, readable by any local user.
+#[derive(Args)]
+pub struct Info {
+    /// Local IPC socket of the running Agent.
+    #[arg(long, env = "RCLI_AGENT_SOCKET")]
+    socket: Option<PathBuf>,
+    /// Machine-readable JSON output.
+    #[arg(long)]
+    json: bool,
+}
+
+impl Info {
+    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        let reply = ipc::request(&self.socket.unwrap_or_else(ipc::default_socket), "info").await?;
+        if self.json {
+            writeln!(out, "{}", serde_json::to_string_pretty(&reply)?)?;
+        } else {
+            writeln!(
+                out,
+                "device id {} ({})\nserver {}",
+                reply["device_id"].as_str().unwrap_or_default(),
+                if reply["connected"] == true { "connected" } else { "disconnected" },
+                reply["server"].as_str().unwrap_or_default(),
+            )?;
+        }
         Ok(())
     }
 }
