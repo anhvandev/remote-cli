@@ -157,3 +157,20 @@ async fn a_wrong_device_id_is_indistinguishable_and_does_not_bypass_the_limiter(
     let (status, body) = real.get(&format!("/api/v1/devices/{}", agent.device_id())).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+#[tokio::test]
+async fn parallel_guesses_still_reach_the_lockout() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
+    let path = format!("/api/v1/devices/{}", agent.device_id());
+    let wrong = sys.device_client(agent.device_id(), "wrongpassword");
+
+    // Ten guesses at once count as ten failures, not one: a parallel guesser still hits the lockout.
+    let all = futures::future::join_all((0..10).map(|_| wrong.get(&path))).await;
+    assert!(all.iter().all(|(status, _)| *status == StatusCode::UNAUTHORIZED));
+
+    let right = sys.device_client(agent.device_id(), &agent.device_password().unwrap());
+    let (status, body) = right.get(&path).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+}

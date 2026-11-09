@@ -138,35 +138,36 @@ async fn password_failed(
     device: Option<Uuid>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> anyhow::Result<Result<User, ControllerError>> {
-    let (failures, lockouts, seen_at): (i32, i32, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
-        "SELECT failures, lockouts, seen_at FROM device_password_failures WHERE device = $1 AND ip = $2",
+    // One atomic upsert: counting with a read-then-write would lose failures under parallel requests, so a
+    // parallel guesser would never reach the lockout. The lockout length is 1, 2, 4 ... minutes, capped at an hour.
+    let locked_until: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "INSERT INTO device_password_failures AS f (device, ip, failures, lockouts, locked_until, seen_at)
+         VALUES ($1, $2, 1, 0, NULL, $3)
+         ON CONFLICT (device, ip) DO UPDATE SET
+            failures = CASE
+                WHEN f.seen_at < $3 - $4::interval THEN 1
+                WHEN f.failures + 1 >= $5 THEN 0
+                ELSE f.failures + 1 END,
+            lockouts = CASE
+                WHEN f.seen_at < $3 - $4::interval THEN 0
+                WHEN f.failures + 1 >= $5 THEN f.lockouts + 1
+                ELSE f.lockouts END,
+            locked_until = CASE
+                WHEN f.seen_at < $3 - $4::interval THEN NULL
+                WHEN f.failures + 1 >= $5 THEN LEAST(
+                    $3 + $6::interval * power(2, LEAST(f.lockouts, 6))::int, $3 + $7::interval)
+                ELSE NULL END,
+            seen_at = $3
+         RETURNING locked_until",
     )
     .bind(bucket)
     .bind(ip)
-    .fetch_optional(&state.db)
-    .await?
-    .unwrap_or((0, 0, now));
-    let stale = now - seen_at > PASSWORD_FAILURE_WINDOW;
-    let (failures, lockouts) = if stale { (0, 0) } else { (failures, lockouts) };
-    let (failures, lockouts, locked_until) = if failures + 1 >= MAX_FAILED_DEVICE_PASSWORDS {
-        let minutes = 1i64 << lockouts.min(6); // 1, 2, 4, ... minutes
-        let until = now + PASSWORD_LOCKOUT * minutes as i32;
-        (0, lockouts + 1, Some(until.min(now + PASSWORD_LOCKOUT_MAX)))
-    } else {
-        (failures + 1, lockouts, None)
-    };
-    sqlx::query(
-        "INSERT INTO device_password_failures (device, ip, failures, lockouts, locked_until, seen_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (device, ip) DO UPDATE SET failures = $3, lockouts = $4, locked_until = $5, seen_at = $6",
-    )
-    .bind(bucket)
-    .bind(ip)
-    .bind(failures)
-    .bind(lockouts)
-    .bind(locked_until)
     .bind(now)
-    .execute(&state.db)
+    .bind(PASSWORD_FAILURE_WINDOW)
+    .bind(MAX_FAILED_DEVICE_PASSWORDS)
+    .bind(PASSWORD_LOCKOUT)
+    .bind(PASSWORD_LOCKOUT_MAX)
+    .fetch_one(&state.db)
     .await?;
     let user = controller_user(controller, ip);
     let device = device.unwrap_or(Uuid::nil());

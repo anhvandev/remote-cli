@@ -2810,6 +2810,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "data-encoding",
+ "futures",
  "hex",
  "mp4",
  "rcli",
