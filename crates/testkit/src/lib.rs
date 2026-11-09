@@ -190,9 +190,18 @@ impl TestSystem {
     }
 
     /// Registers a new Device named `hostname` and starts its Agent with its local IPC socket in `dir`.
-    /// The Agent's Secret Store lives in `dir` too, as on a real Device. The socket trusts every caller as root
-    /// (the unprivileged test process cannot be root); `password_show_is_refused_to_non_root` covers the gate itself.
+    /// The Agent's Secret Store lives in `dir` too, as on a real Device.
     pub async fn start_agent_with_socket(&self, hostname: &str, dir: &std::path::Path) -> TestAgent {
+        let creds = self.register(&FakePlatform::new(hostname)).await.expect("register");
+        let mut agent = TestAgent::with_secrets_dir(self.endpoint(), FakePlatform::new(hostname), creds, dir.to_path_buf());
+        agent.start();
+        tokio::spawn(rcli_agent::ipc::serve(dir.join("agent.sock"), agent.status.clone()));
+        agent
+    }
+
+    /// Like `start_agent_with_socket`, but the socket treats every caller as root (the unprivileged test process
+    /// cannot be root). Only for tests of what root may do; the gate itself needs the real `serve`.
+    pub async fn start_agent_trusting_socket(&self, hostname: &str, dir: &std::path::Path) -> TestAgent {
         let creds = self.register(&FakePlatform::new(hostname)).await.expect("register");
         let mut agent = TestAgent::with_secrets_dir(self.endpoint(), FakePlatform::new(hostname), creds, dir.to_path_buf());
         agent.start();

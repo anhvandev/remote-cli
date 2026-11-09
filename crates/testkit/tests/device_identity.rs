@@ -1,8 +1,9 @@
 //! Changing the Device Password, Device ID, name and Server from the Device (`rcli agent ...` over local IPC).
 //!
-//! The test harness runs unprivileged, so `start_agent_with_socket` serves a socket that trusts every caller as
-//! root. The permission gate itself (peer credentials, every change refused) is covered by
-//! `ipc::tests::only_root_may_show_or_change_the_device` and ticket 03's `password_show_is_refused_to_non_root`.
+//! The test harness runs unprivileged, so the change tests use a socket that trusts every caller as root
+//! (`start_agent_trusting_socket`). The permission gate itself (peer credentials, every change refused) needs the
+//! real socket and is covered by `every_change_is_refused_to_a_non_root_caller` plus ticket 03's
+//! `password_show_is_refused_to_non_root`.
 
 use rcli_testkit::{eventually, StatusCode, TestSystem};
 
@@ -18,7 +19,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 /// A Device with a running Agent and an IPC socket; its directory also holds the Secret Store.
 async fn device(sys: &TestSystem, name: &str) -> (rcli_testkit::TestAgent, std::path::PathBuf) {
     let dir = temp_dir(name);
-    let agent = sys.start_agent_with_socket("lab-pc", &dir).await;
+    let agent = sys.start_agent_trusting_socket("lab-pc", &dir).await;
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
     (agent, dir.join("agent.sock"))
 }
