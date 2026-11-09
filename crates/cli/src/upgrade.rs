@@ -35,9 +35,18 @@ pub async fn run(config: &Config, path: &Path) -> anyhow::Result<Upgraded> {
         rcli_protocol::update::verify(&key, &version, &target, &build, &signature),
         "bad signature: the build is not signed with this machine's pinned update key; the old binary is untouched"
     );
+    // Check the service first: on a root install, refusing after the swap would leave a new binary unstarted.
+    #[cfg(target_os = "linux")]
+    let service = service_to_restart()?;
     replace(path, &build)?;
     #[cfg(target_os = "linux")]
-    let restarted = restart_service_if_device()?;
+    let restarted = match service {
+        Some(unit) => {
+            restart(&unit)?;
+            true
+        }
+        None => false,
+    };
     #[cfg(not(target_os = "linux"))]
     let restarted = false;
     Ok(Upgraded { version, target, path: path.to_owned(), restarted })
@@ -60,20 +69,28 @@ fn is_root() -> bool {
     std::process::Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
 }
 
-/// Run as root, the binary being replaced is the installed Agent's: restart it onto the new build right away.
-/// As a normal user (a Controller-only machine) there is no service to restart.
+/// Run as root, the binary being replaced is the installed Agent's: the unit to restart onto it. As a normal user
+/// (a Controller-only machine) there is none.
 // shortcut: assumes the unit is named rcli-agent and runs the binary being replaced; ticket 16's
-// `rcli agent install` records the real name and path, then this can read them instead.
+// `rcli agent install` records the real name and path, then this can read them instead. Not exercised by the
+// suite (it needs a real Linux systemd device); the ordering it relies on is: check the unit, then swap, then
+// restart, so a refused check never leaves a new binary unstarted.
 #[cfg(target_os = "linux")]
-fn restart_service_if_device() -> anyhow::Result<bool> {
+fn service_to_restart() -> anyhow::Result<Option<String>> {
     if !is_root() {
-        return Ok(false);
+        return Ok(None);
     }
-    let installed = std::process::Command::new("systemctl").args(["cat", "rcli-agent"]).output();
+    let unit = "rcli-agent";
+    let installed = std::process::Command::new("systemctl").args(["cat", unit]).output();
     if !matches!(installed, Ok(ref o) if o.status.success()) {
-        anyhow::bail!("no rcli-agent service is installed, so the new binary was not restarted");
+        anyhow::bail!("no {unit} service is installed, so the new binary was not restarted");
     }
-    let out = std::process::Command::new("systemctl").args(["restart", "rcli-agent"]).output()?;
-    anyhow::ensure!(out.status.success(), "restarting the rcli-agent service failed: {}", String::from_utf8_lossy(&out.stderr).trim());
-    Ok(true)
+    Ok(Some(unit.into()))
+}
+
+#[cfg(target_os = "linux")]
+fn restart(unit: &str) -> anyhow::Result<()> {
+    let out = std::process::Command::new("systemctl").args(["restart", unit]).output()?;
+    anyhow::ensure!(out.status.success(), "restarting the {unit} service failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    Ok(())
 }
