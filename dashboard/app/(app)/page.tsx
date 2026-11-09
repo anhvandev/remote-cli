@@ -54,6 +54,7 @@ export default async function FleetPage({
                   <Link href={`/devices/${d.id}`} className="font-medium after:absolute after:inset-0 after:content-['']">
                     {d.name}
                   </Link>
+                  <span className="ml-2 font-mono text-xs text-muted-foreground">{d.device_id}</span>
                   {d.revoked_at && (
                     <Badge variant="outline" className="ml-2 border-warn/40 text-warn">
                       đã thu hồi

@@ -8,7 +8,6 @@ const tone = (active: boolean) => `${item} ${active ? "bg-accent text-foreground
 const adminPages = [
   { href: "/admin/users", name: "User" },
   { href: "/admin/devices", name: "Device" },
-  { href: "/admin/enrollment", name: "Enrollment Code" },
   { href: "/admin/updates", name: "Cập nhật Agent" },
 ];
 

@@ -75,13 +75,11 @@ Từ lúc admin `me` có token, bootstrap token hết tác dụng. Nó chỉ ho�
 
 Mở `http://vps.example.com:3080`, đăng nhập bằng `me` + mật khẩu + mã TOTP. Sai 5 lần liên tiếp thì tài khoản bị khoá 15 phút.
 
-## 5. Thêm Device (enroll Agent)
+## 5. Thêm Device (Agent tự đăng ký)
 
 ```bash
-rcli enrollment-code create
-#   9464d662a2b243aaac2728fb94713d94                       ← Enrollment Code (dùng một lần)
-#   ca-fingerprint f90a7c21b8...                            ← fingerprint CA của Server
-curl -s https://vps.example.com:8080/api/v1/server-ca -o server-ca.pem
+rcli server-key show
+#   rk_f90a7c21b8..._3f9c...                                ← Server Key: fingerprint CA + secret
 ```
 
 Trên máy cần quản lý:
@@ -89,17 +87,16 @@ Trên máy cần quản lý:
 ```bash
 rcli agent run \
   --server vps.example.com:8443 \
-  --ca server-ca.pem \
-  --ca-fingerprint f90a7c21b8... \
+  --key rk_f90a7c21b8..._3f9c... \
   --state-dir /var/lib/rcli \
-  --name ten-may \
-  --enroll 9464d662a2b243aaac2728fb94713d94
+  --name ten-may
 ```
 
-- Agent từ chối enroll nếu CA tải về không khớp `--ca-fingerprint` (chống giả Server).
-- Sau lần đầu, credential nằm trong `--state-dir`; các lần chạy sau bỏ `--enroll`.
-- Cài lại máy luôn tạo Device mới. Muốn giữ lịch sử: `rcli device merge <cũ> --into <mới>` (dùng id nếu hai Device trùng tên).
-- Thêm `--update-key <public key hex>` nếu muốn Agent nhận bản cập nhật tự động (mục 7). Thiếu tham số này, mọi bản cập nhật bị từ chối.
+- Agent từ chối kết nối nếu CA của Server không khớp fingerprint trong Server Key (chống giả Server).
+- Agent tự đăng ký, nhận chứng chỉ mTLS, **Device ID 9 chữ số** và public key cập nhật (pin lại). Không cần tạo mã enroll.
+- Sau lần đầu, credential nằm trong `--state-dir`; các lần chạy sau chỉ cần `--server` và `--key`.
+- Cài lại máy luôn tạo Device mới. Muốn giữ lịch sử: `rcli device merge <cũ> --into <mới>` (dùng Device ID nếu hai Device trùng tên).
+- Muốn Agent nhận bản cập nhật tự động (mục 7): đặt `RCLI_UPDATE_PUBLIC_KEY=<public key hex>` cho Server
 
 > Hiện `rcli agent run` dùng FakePlatform: Device hiện Online, có inventory/metrics giả, nhận Action nhưng không điều khiển máy thật.
 
@@ -116,7 +113,7 @@ rcli update rollout <version> --all      # hoặc --device <id> ...
 rcli devices                             # cột AGENT / UPDATE cho biết tiến độ
 ```
 
-Server không giữ private key và không tự kiểm chữ ký; chính Agent kiểm bằng `--update-key`. "--all" chỉ gồm các Device đã có lúc rollout.
+Server không giữ private key và không tự kiểm chữ ký; chính Agent kiểm bằng public key đã pin lúc đăng ký (`RCLI_UPDATE_PUBLIC_KEY` của Server). "--all" chỉ gồm các Device đã có lúc rollout.
 
 ## 8. Vận hành
 

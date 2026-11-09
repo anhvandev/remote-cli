@@ -27,7 +27,7 @@ export RCLI_TOKEN=rcli_xxxxxxxx              # token của bạn (admin cấp b�
 | Điều khiển (khi giữ Control Lock), `exec`, `shell` dưới quyền user đang đăng nhập | ✅ | ✅ |
 | `exec`/`shell --as root`, chạy lệnh khi chưa ai đăng nhập | ❌ | ✅ |
 | Restart/Shut down/Sleep khi người khác giữ lock | ❌ | ✅ |
-| Users, tokens, Enrollment Code, Device (đổi tên/xoá/thu hồi/gộp), mật khẩu unlock, cập nhật Agent, audit, force-release lock | ❌ | ✅ |
+| Users, tokens, Server Key, Device (đổi tên/xoá/thu hồi/gộp), mật khẩu unlock, cập nhật Agent, audit, force-release lock | ❌ | ✅ |
 
 ## Xem fleet
 
@@ -130,7 +130,7 @@ rcli user set-password an --password '...'   # in TOTP secret + otpauth URL cho 
 rcli token create an                          # token chỉ hiện một lần
 rcli token revoke <token-id>
 rcli user disable an
-rcli enrollment-code create                   # mã enroll dùng một lần + ca-fingerprint
+rcli server-key show                          # Server Key (rk_<CA fingerprint>_<secret>) để cài Agent
 rcli device rename demo-pc may-ke-toan
 rcli device revoke <id>                       # Agent bị cắt và không kết nối lại được
 rcli device merge <id-cũ> --into <id-mới>     # gộp lịch sử sau khi cài lại máy
@@ -148,7 +148,7 @@ Mở `http://<server>:3080`, đăng nhập bằng tên + mật khẩu + mã TOTP
 - **Trang Device**: inventory, tài nguyên hiện tại, màn khoá/màn đăng nhập, người giữ Control Lock và giờ hết hạn, biểu đồ lịch sử (1h / 24h / 7d / 90d), nút Wake / Lock screen / Sleep / Restart / Shut down.
 - **Live view**: xem màn hình trực tiếp qua WebRTC, chọn màn hình nếu Device có nhiều. Khi bạn giữ Control Lock thì click và gõ trực tiếp lên video. Người khác giữ lock thì vẫn xem được và thấy ai giữ đến lúc nào.
 - **Web terminal**: ngay dưới live view; admin có thêm ô "as root".
-- **Quản trị** (chỉ admin): users và token, Enrollment Code, mật khẩu unlock, cập nhật Agent, đổi tên/gộp/thu hồi/xoá Device.
+- **Quản trị** (chỉ admin): users và token, mật khẩu unlock, cập nhật Agent, đổi tên/gộp/thu hồi/xoá Device.
 
 ## Dùng với Claude Code (MCP)
 
@@ -165,10 +165,9 @@ Chưa có tool `unlock` và `shell` trong MCP; dùng `rcli unlock` hoặc `exec`
 ```bash
 # 1. Dựng stack theo docs/deploy.md với RCLI_TURN_HOST=localhost, rồi tạo admin `me` và token.
 # 2. Enroll một Agent giả:
-rcli enrollment-code create                       # ghi lại code và ca-fingerprint
-curl -s http://localhost:8080/api/v1/server-ca -o /tmp/ca.pem
-rcli agent run --server localhost:8443 --ca /tmp/ca.pem --ca-fingerprint <fp> \
-  --state-dir /tmp/agent-state --name demo-pc --enroll <code>
+rcli server-key show                              # Server Key (rk_<CA fingerprint>_<secret>)
+rcli agent run --server localhost:8443 --key <server-key> \
+  --state-dir /tmp/agent-state --name demo-pc
 # 3. Ở terminal khác:
 rcli devices && rcli shot demo-pc && rcli exec demo-pc -- echo hello
 ```

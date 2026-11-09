@@ -85,21 +85,6 @@ export default async function AdminPage() {
           )}
         </div>
       </section>
-
-      <section className={card} aria-label="Enrollment Code">
-        <div className={cardHead}>
-          <h3 className={title}>
-            <Link href="/admin/enrollment" className="hover:text-foreground">
-              Enrollment Code
-            </Link>
-          </h3>
-        </div>
-        <div className="px-5">
-          <Button asChild size="sm" variant="secondary">
-            <Link href="/admin/enrollment">Tạo Enrollment Code</Link>
-          </Button>
-        </div>
-      </section>
     </div>
   );
 }

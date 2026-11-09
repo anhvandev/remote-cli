@@ -32,7 +32,7 @@ export default async function DevicesPage() {
             {devices.map((d) => (
               <TableRow key={d.id}>
                 <TableCell>
-                  {d.name} <span className="font-mono text-xs text-muted-foreground">{d.id.slice(0, 8)}</span>
+                  {d.name} <span className="font-mono text-xs text-muted-foreground">{d.device_id}</span>
                 </TableCell>
                 <TableCell>
                   <Status status={d.status} />{" "}

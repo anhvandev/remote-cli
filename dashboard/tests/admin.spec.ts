@@ -20,12 +20,12 @@ test("operators don't see the admin screens", async ({ page }) => {
   const nav = page.getByRole("navigation");
   await expect(nav).toContainText("Operator");
   await expect(page.getByRole("link", { name: "Quản trị" })).toHaveCount(0);
-  for (const name of ["User", "Enrollment Code", "Cập nhật Agent"]) {
+  for (const name of ["User", "Cập nhật Agent"]) {
     await expect(nav.getByRole("link", { name, exact: true })).toHaveCount(0);
   }
   await expect(nav.getByRole("link", { name: "Device", exact: true })).toHaveCount(1);
 
-  for (const url of ["/admin", "/admin/users", "/admin/devices", "/admin/enrollment", "/admin/updates"]) {
+  for (const url of ["/admin", "/admin/users", "/admin/devices", "/admin/updates"]) {
     await page.goto(url);
     await expect(page.getByText("Chỉ admin")).toBeVisible();
     await expect(page.getByRole("region")).toHaveCount(0);
@@ -33,13 +33,12 @@ test("operators don't see the admin screens", async ({ page }) => {
   }
 });
 
-test("the sidebar shows the four Quản trị sub-entries and marks the current one", async ({ page }) => {
+test("the sidebar shows the three Quản trị sub-entries and marks the current one", async ({ page }) => {
   await signIn(page, await newUser("admin"));
   const nav = page.getByRole("navigation");
   const subs: [string, string][] = [
     ["User", "/admin/users"],
     ["Device", "/admin/devices"],
-    ["Enrollment Code", "/admin/enrollment"],
     ["Cập nhật Agent", "/admin/updates"],
   ];
   const group = nav.getByRole("group", { name: "Quản trị" });
@@ -60,7 +59,6 @@ test("the Quản trị root links to each sub-page", async ({ page }) => {
   const pages: [string, string][] = [
     ["User", "/admin/users"],
     ["Device", "/admin/devices"],
-    ["Enrollment Code", "/admin/enrollment"],
     ["Cập nhật Agent", "/admin/updates"],
   ];
   for (const [name, path] of pages) {
@@ -98,11 +96,13 @@ test("admin creates a user, sets their password, issues and revokes a token, dis
   await expect(row).toContainText("đã vô hiệu");
 });
 
-test("admin creates a single-use Enrollment Code", async ({ page }) => {
-  await openAdmin(page, "Enrollment Code");
-  const codes = page.getByRole("region", { name: "Enrollment Code" });
-  await codes.getByRole("button", { name: "+ Tạo mã" }).click();
-  await expect(codes.getByRole("status")).toContainText("dùng một lần");
+test("the fleet shows each Device's 9-digit Device ID", async ({ page }) => {
+  const devices = await adminApi("/api/v1/devices");
+  const alpha = devices.find((d: { name: string }) => d.name === "alpha");
+  await page.goto("/");
+  const row = rowIn(page, "Device", /^alpha /);
+  await expect(row).toContainText(alpha.device_id);
+  expect(alpha.device_id).toMatch(/^\d{9}$/);
 });
 
 test("admin renames, revokes, deletes and merges Devices", async ({ page }) => {
@@ -147,7 +147,7 @@ test("unlock passwords can be set and cleared but are never shown", async ({ pag
   await expect(row).toContainText("chưa có");
 });
 
-test("the overview shows four cards with counts from the Server", async ({ page }) => {
+test("the overview shows three cards with counts from the Server", async ({ page }) => {
   await signIn(page, await newUser("admin"));
   await page.getByRole("link", { name: "Quản trị" }).click();
   const main = page.getByRole("main");
@@ -155,7 +155,6 @@ test("the overview shows four cards with counts from the Server", async ({ page 
     ["User", "/admin/users"],
     ["Device", "/admin/devices"],
     ["Cập nhật Agent", "/admin/updates"],
-    ["Enrollment Code", "/admin/enrollment"],
   ];
   for (const [name, path] of cards) {
     await expect(page.getByRole("region", { name })).toBeVisible();
@@ -184,10 +183,6 @@ test("the overview shows four cards with counts from the Server", async ({ page 
     await expect(device).toContainText(`${devices.filter((d: { revoked_at: string | null }) => d.revoked_at).length} Device đã thu hồi`);
     await expect(device).toContainText(`${unlock.filter((u: { set: boolean }) => !u.set).length} Device chưa có mật khẩu unlock`);
   }).toPass({ timeout: 20_000 });
-
-  // No API lists Enrollment Codes, so the card offers the action instead of a count.
-  const enrollment = page.getByRole("region", { name: "Enrollment Code" });
-  await expect(enrollment.getByRole("link", { name: "Tạo Enrollment Code" })).toHaveAttribute("href", "/admin/enrollment");
 });
 
 test("the overview lists a failed Agent update with the Device name, error and a link to it", async ({ page }) => {

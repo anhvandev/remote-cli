@@ -1,5 +1,5 @@
 "use server";
-// Admin server actions. Each returns a Result for <Form/>: one-time secrets (token, TOTP, Enrollment Code) are shown
+// Admin server actions. Each returns a Result for <Form/>: one-time secrets (token, TOTP) are shown
 // once in `message` and never stored by the Dashboard. The Server enforces admin-only on every call.
 import { revalidatePath } from "next/cache";
 import { api, ApiError } from "@/lib/api";
@@ -57,13 +57,6 @@ export async function revokeToken(_: Result, form: FormData) {
 
 export async function disableUser(_: Result, form: FormData) {
   return run(() => api(`/api/v1/users/${seg(str(form, "user"))}/disable`, json("POST")));
-}
-
-export async function createEnrollmentCode() {
-  return run(async () => {
-    const r = await api<{ code: string; ca_fingerprint: string }>("/api/v1/enrollment-codes", json("POST"));
-    return `${r.code} (dùng một lần) · CA fingerprint ${r.ca_fingerprint}`;
-  });
 }
 
 const device = (form: FormData) => `/api/v1/devices/${seg(str(form, "device"))}`;

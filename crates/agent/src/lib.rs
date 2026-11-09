@@ -1,4 +1,4 @@
-//! Agent core: enrollment and the persistent connection to the Server.
+//! Agent core: registration and the persistent connection to the Server.
 
 pub mod backlog;
 pub mod contract;

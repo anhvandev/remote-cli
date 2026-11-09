@@ -79,6 +79,8 @@ export type ApiToken = { id: string; user: string; created_at: string };
 export type DeviceStatus = "Online" | "Offline" | "Waking";
 export type Device = {
   id: string;
+  /** The 9-digit Device ID a Controller connects to. */
+  device_id: string;
   name: string;
   status: DeviceStatus;
   last_seen_at: string | null;
