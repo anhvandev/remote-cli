@@ -23,6 +23,10 @@ rcli connect 123456789                                                  # hỏi 
 kiểm tra Device ID + Device Password rồi nhớ mật khẩu (file `0600`), nên các lệnh sau chỉ cần Device ID.
 `rcli forget <Device ID>` xoá mật khẩu đã nhớ. `RCLI_SERVER`/`RCLI_TOKEN` không còn dùng.
 
+Lệnh quản trị Server (`user`, `rollout`, `audit`, `server-key`, `server-address`, đổi tên/xoá Device, `lock force-release`,
+`unlock-password`) cần một phiên User: `rcli login <tên>` (mật khẩu Dashboard + mã TOTP), `rcli logout` để xoá.
+Operator đăng nhập được nhưng các lệnh đó trả `admin_required`. Các lệnh trên Device vẫn dùng `rcli connect`.
+
 ## Vai trò
 
 Role chỉ còn quản trị Server; việc gì chạy được trên Device do Device Settings của chính Device đó quyết định.
@@ -32,7 +36,7 @@ Role chỉ còn quản trị Server; việc gì chạy được trên Device do 
 | Xem fleet, metrics, lịch sử, màn hình | ✅ | ✅ |
 | Điều khiển (khi giữ Control Lock), `exec`, `shell`, `--as root` | ✅ | ✅ |
 | Restart/Shut down/Sleep khi người khác giữ lock | ❌ | ❌ |
-| Users, tokens, Server Key, Device (đổi tên/xoá/thu hồi/gộp), mật khẩu unlock, cập nhật Agent, audit, force-release lock | ❌ | ✅ |
+| Users, Server Key, Server Address, Device (đổi tên/xoá/thu hồi/gộp), mật khẩu unlock, rollout Agent, audit, force-release lock | ❌ | ✅ |
 
 ## Xem fleet
 
@@ -130,10 +134,10 @@ rcli wake demo-pc               # Device Offline → Waking; quá 3 phút chưa 
 ## Admin
 
 ```bash
+rcli login an                                 # hỏi mật khẩu Dashboard + mã TOTP, lưu phiên vào config
+rcli logout                                   # thu hồi và xoá phiên đã lưu
 rcli user create an --role operator
 rcli user set-password an --password '...'   # in TOTP secret + otpauth URL cho Dashboard
-rcli token create an                          # token chỉ hiện một lần
-rcli token revoke <token-id>
 rcli user disable an
 rcli server-key show                          # Server Key (rk_<CA fingerprint>_<secret>) để cài Agent
 rcli server-key rotate                        # đổi secret: Device đã đăng ký vẫn Online, bản cài mới cần key mới
@@ -156,7 +160,7 @@ Mở `http://<server>:3080`, đăng nhập bằng tên + mật khẩu + mã TOTP
 - **Trang Device**: inventory, tài nguyên hiện tại, màn khoá/màn đăng nhập, người giữ Control Lock và giờ hết hạn, biểu đồ lịch sử (1h / 24h / 7d / 90d), nút Wake / Lock screen / Sleep / Restart / Shut down.
 - **Live view**: xem màn hình trực tiếp qua WebRTC, chọn màn hình nếu Device có nhiều. Khi bạn giữ Control Lock thì click và gõ trực tiếp lên video. Người khác giữ lock thì vẫn xem được và thấy ai giữ đến lúc nào.
 - **Web terminal**: ngay dưới live view; admin có thêm ô "as root".
-- **Quản trị** (chỉ admin): users và token, mật khẩu unlock, cập nhật Agent, đổi tên/gộp/thu hồi/xoá Device.
+- **Quản trị** (chỉ admin): users, mật khẩu unlock, rollout Agent, đổi tên/gộp/thu hồi/xoá Device.
 
 ## Dùng với Claude Code (MCP)
 
@@ -168,14 +172,14 @@ claude mcp add rcli -- /đường/dẫn/rcli mcp
 
 `rcli mcp` dùng cùng cấu hình và Device Password đã nhớ, nên không cần biến môi trường.
 
-Tools: `devices`, `device`, `lock_acquire`, `lock_release`, `lock_status`, `observe` (shot / frames / clip / marks), `act`, `batch`, `exec`, `wake`, `power`. Ảnh trả về inline, bảng Mark nằm trong kết quả có cấu trúc. Mỗi AI agent nên có user và token riêng để audit tách bạch.
+Tools: `devices`, `device`, `lock_acquire`, `lock_release`, `lock_status`, `observe` (shot / frames / clip / marks), `act`, `batch`, `exec`, `wake`, `power`. Ảnh trả về inline, bảng Mark nằm trong kết quả có cấu trúc. Mỗi AI agent nên dùng một user Dashboard riêng (qua `rcli login`) để audit tách bạch.
 
 Chưa có tool `unlock` và `shell` trong MCP; dùng `rcli unlock` hoặc `exec`.
 
 ## Thử nhanh trên một máy
 
 ```bash
-# 1. Dựng stack theo docs/deploy.md với RCLI_TURN_HOST=localhost, rồi tạo admin `me` và token.
+# 1. Dựng stack theo docs/deploy.md với RCLI_TURN_HOST=localhost, rồi tạo admin `me`.
 # 2. Enroll một Agent giả:
 rcli server-key show                              # Server Key (rk_<CA fingerprint>_<secret>)
 rcli agent run --server localhost:8443 --key <server-key> \

@@ -69,27 +69,19 @@ test("the Quản trị root links to each sub-page", async ({ page }) => {
   }
 });
 
-test("admin creates a user, sets their password, issues and revokes a token, disables them", async ({ page }) => {
+test("admin creates a user, sets their password, and disables them", async ({ page }) => {
   await openAdmin(page, "User");
-  const users = page.getByRole("region", { name: "User & API token" });
+  const users = page.getByRole("region", { name: "User", exact: true });
   const name = `bot-${Date.now()}`;
   await users.getByLabel("Tên user mới").fill(name);
   await users.getByLabel("Vai trò").selectOption("operator");
   await users.getByRole("button", { name: "+ User" }).click();
-  const row = rowIn(page, "User & API token", name);
+  const row = rowIn(page, "User", name);
   await expect(row).toContainText("Operator");
-  await expect(row).toContainText("0 token");
 
   await row.getByLabel(`Mật khẩu Dashboard cho ${name}`).fill("a long password");
   await row.getByRole("button", { name: "Đặt mật khẩu" }).click();
   await expect(row.getByRole("status").filter({ hasText: "otpauth://" })).toBeVisible();
-
-  await row.getByRole("button", { name: "Tạo token" }).click();
-  await expect(row.getByRole("status").filter({ hasText: /rcli_[0-9a-f]{32}/ })).toBeVisible();
-  await expect(row).toContainText("1 token");
-  page.once("dialog", (d) => d.accept());
-  await row.getByRole("button", { name: /Thu hồi token/ }).click();
-  await expect(row).toContainText("0 token");
 
   page.once("dialog", (d) => d.accept());
   await row.getByRole("button", { name: "Vô hiệu" }).click();
@@ -164,7 +156,6 @@ test("the overview shows three cards with counts from the Server", async ({ page
   // Other specs share the devstack, so re-read the Server and the page together until they agree.
   await expect(async () => {
     const users = await adminApi("/api/v1/users");
-    const tokens = await adminApi("/api/v1/tokens");
     const devices = await adminApi("/api/v1/devices");
     const unlock = await Promise.all(
       devices.map((d: { id: string }) => adminApi(`/api/v1/devices/${d.id}/unlock-password`)),
@@ -174,7 +165,6 @@ test("the overview shows three cards with counts from the Server", async ({ page
     const admins = users.filter((u: { role: string }) => u.role === "admin").length;
     await expect(user).toContainText(`${admins} Admin · ${users.length - admins} Operator`);
     await expect(user).toContainText(`${users.filter((u: { disabled_at: string | null }) => u.disabled_at).length} User đã vô hiệu`);
-    await expect(user).toContainText(`${tokens.length} API token`);
 
     const device = page.getByRole("region", { name: "Device" });
     await expect(device).toContainText("5 Online"); // alpha, charlie, golf, india, juliet: no spec takes them Offline

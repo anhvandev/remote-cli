@@ -35,9 +35,9 @@ async fn signed_build_rolls_out_to_selected_devices_then_to_all() {
     let build = temp_file("rcli", b"new agent binary");
     let key = temp_file("update.key", &sys.update_signing_key);
     let target = rcli_agent::target();
-    sys.rcli(&["update", "publish", &build, "--version", "0.2.0", "--target", &target, "--key", &key]).await.unwrap();
+    sys.rcli(&["rollout", "publish", &build, "--version", "0.2.0", "--target", &target, "--key", &key]).await.unwrap();
 
-    sys.rcli(&["update", "rollout", "0.2.0", "--device", a.device_id()]).await.unwrap();
+    sys.rcli(&["rollout", "0.2.0", "--device", a.device_id()]).await.unwrap();
     let d = sys.wait_device(a.device_id(), |d| d["update"]["status"] == "updated").await;
     assert_eq!(d["agent_version"], "0.2.0");
     assert_eq!(a.platform.installed_updates(), ["0.2.0"]);
@@ -45,7 +45,7 @@ async fn signed_build_rolls_out_to_selected_devices_then_to_all() {
     let row = list.lines().find(|l| l.contains("pc-b")).unwrap();
     assert!(row.contains("0.1.0") && !row.contains("0.2.0"), "{list}");
 
-    sys.rcli(&["update", "rollout", "0.2.0", "--all"]).await.unwrap();
+    sys.rcli(&["rollout", "0.2.0", "--all"]).await.unwrap();
     sys.wait_device(b.device_id(), |d| d["agent_version"] == "0.2.0" && d["update"]["status"] == "updated").await;
     let list = sys.rcli(&["devices"]).await.unwrap();
     assert!(list.lines().find(|l| l.contains("pc-b")).unwrap().contains("updated"), "{list}");
@@ -57,15 +57,15 @@ async fn build_signed_with_another_key_is_rejected_and_reported() {
     let agent = sys.start_agent("pc-1").await;
     sys.wait_device(agent.device_id(), |d| d["agent_version"] == "0.1.0").await;
     let rogue_key = temp_path("rogue.key");
-    let out = sys.rcli(&["update", "keygen", &rogue_key]).await.unwrap();
+    let out = sys.rcli(&["rollout", "keygen", &rogue_key]).await.unwrap();
     assert!(out.starts_with("public key "), "{out}");
     let build = temp_file("rcli", b"malicious binary");
     let target = rcli_agent::target();
-    sys.rcli(&["update", "publish", &build, "--version", "6.6.6", "--target", &target, "--key", &rogue_key])
+    sys.rcli(&["rollout", "publish", &build, "--version", "6.6.6", "--target", &target, "--key", &rogue_key])
         .await
         .unwrap();
 
-    sys.rcli(&["update", "rollout", "6.6.6", "--all"]).await.unwrap();
+    sys.rcli(&["rollout", "6.6.6", "--all"]).await.unwrap();
     let d = sys.wait_device(agent.device_id(), |d| d["update"]["status"] == "failed").await;
     assert!(d["update"]["error"].as_str().unwrap().contains("bad signature"), "{d}");
     assert_eq!(d["agent_version"], "0.1.0");

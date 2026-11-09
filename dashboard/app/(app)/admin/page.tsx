@@ -1,12 +1,11 @@
 import Link from "next/link";
-import { api, type ApiToken, type Device, type DeviceStatus, type ServerSettings, type User } from "@/lib/api";
+import { api, type Device, type DeviceStatus, type ServerSettings, type User } from "@/lib/api";
 import { card, cardHead, title } from "../styles";
 import { groupRollouts, unlockPasswords } from "./data";
 
 export default async function AdminPage() {
-  const [users, tokens, devices, settings] = await Promise.all([
+  const [users, devices, settings] = await Promise.all([
     api<User[]>("/api/v1/users"),
-    api<ApiToken[]>("/api/v1/tokens"),
     api<Device[]>("/api/v1/devices"),
     api<ServerSettings>("/api/v1/server-settings"),
   ]);
@@ -31,7 +30,6 @@ export default async function AdminPage() {
             {count("admin")} Admin · {count("operator")} Operator
           </p>
           <p>{users.filter((u) => u.disabled_at).length} User đã vô hiệu</p>
-          <p>{tokens.length} API token</p>
         </div>
       </section>
 

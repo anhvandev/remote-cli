@@ -33,7 +33,10 @@ pub struct TestSystem {
     pub server: rcli_server::Server,
     /// Controller API client authenticated as the `admin` user.
     pub api: ApiClient,
+    /// The `admin` user's session token (sessions expire; `sign_in_admin` renews it).
     pub admin_token: String,
+    /// The `admin` user's TOTP secret, so `sign_in_admin` needs no admin access.
+    pub admin_totp_secret: String,
     /// PKCS#8 Ed25519 key that signs Agent builds; the Server hands its public half to Devices at registration.
     pub update_signing_key: Vec<u8>,
     /// The TURN relay the Server hands out, if started with `start_with_turn`.
@@ -108,14 +111,45 @@ impl TestSystem {
             api: ApiClient::new(format!("http://{}", server.http_addr), Some(BOOTSTRAP_TOKEN)),
             server,
             admin_token: String::new(),
+            admin_totp_secret: String::new(),
             update_signing_key,
             turn,
             config,
             _postgres: postgres,
         };
-        sys.admin_token = sys.create_user("admin", "admin").await;
+        sys.admin_totp_secret = sys.create_dashboard_user("admin", "admin").await;
+        sys.admin_token = sys.sign_in("admin", &sys.admin_totp_secret.clone()).await;
         sys.api = sys.api.with_token(Some(&sys.admin_token));
         sys
+    }
+
+    /// The Dashboard password every test user is signed in with.
+    pub const PASSWORD: &'static str = "correct horse battery";
+
+    /// Signs in `name` with a stored `totp_secret` and returns the session token (no admin access needed).
+    async fn sign_in(&self, name: &str, totp_secret: &str) -> String {
+        let body = serde_json::json!({ "name": name, "password": Self::PASSWORD, "totp": self.totp(totp_secret) });
+        let (status, body) = self.api.with_token(None).post_json("/api/v1/sessions", &body).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        body["token"].as_str().unwrap().to_owned()
+    }
+
+    /// Creates `name` with `role`, sets its Dashboard password to `TestSystem::PASSWORD`, and returns its TOTP
+    /// secret (what `rcli login` needs); it does not sign in.
+    pub async fn create_dashboard_user(&self, name: &str, role: &str) -> String {
+        let (status, body) = self.api.post_json("/api/v1/users", &serde_json::json!({ "name": name, "role": role })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, enrolled) =
+            self.api.post_json(&format!("/api/v1/users/{name}/credentials"), &serde_json::json!({ "password": Self::PASSWORD })).await;
+        assert_eq!(status, StatusCode::OK, "{enrolled}");
+        enrolled["totp_secret"].as_str().unwrap().to_owned()
+    }
+
+    /// Signs the harness admin in again. Sessions expire, so tests that move the clock far past one call this.
+    pub async fn sign_in_admin(&mut self) {
+        let secret = self.admin_totp_secret.clone();
+        self.admin_token = self.sign_in("admin", &secret).await;
+        self.api = self.api.with_token(Some(&self.admin_token));
     }
 
     pub fn advance(&self, seconds: i64) {
@@ -174,13 +208,32 @@ impl TestSystem {
         ().serve(client).await.expect("MCP handshake")
     }
 
-    /// Creates a user with `role` ("admin" | "operator") and returns a fresh API token for it.
+    /// Starts `rcli mcp` like `mcp_as`, but from a config directory: the Server and the session (or a remembered
+    /// Device Password) come only from `rcli setup` / `rcli login` / `rcli connect`, as `rcli mcp` does.
+    pub async fn mcp_in(&self, config_dir: &std::path::Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+        use rmcp::ServiceExt;
+        let api = rcli::Api::from_config(config_dir).expect("MCP config");
+        let (client, server) = tokio::io::duplex(1 << 20);
+        tokio::spawn(async move {
+            let (read, write) = tokio::io::split(server);
+            rcli::mcp::serve(api, read, write).await
+        });
+        ().serve(client).await.expect("MCP handshake")
+    }
+
+    /// A Controller config directory with `rcli setup` (and `rcli connect` when a password is given).
+    pub async fn controller_config(&self, dir: &std::path::Path, device: Option<(&str, &str)>) {
+        let server = format!("http://{}", self.server.http_addr);
+        self.rcli_in(dir, &["setup", "--server", &server, "--key", &self.server_key()]).await.unwrap();
+        if let Some((device, password)) = device {
+            self.rcli_in(dir, &["connect", device, "--password", password]).await.unwrap();
+        }
+    }
+
+    /// Creates a user with `role` ("admin" | "operator"), signs them in, and returns their session token.
     pub async fn create_user(&self, name: &str, role: &str) -> String {
-        let (status, body) = self.api.post_json("/api/v1/users", &serde_json::json!({ "name": name, "role": role })).await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        let (status, body) = self.api.post(&format!("/api/v1/users/{name}/tokens")).await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        body["token"].as_str().unwrap().to_owned()
+        let secret = self.create_dashboard_user(name, role).await;
+        self.sign_in(name, &secret).await
     }
 
     /// The current TOTP code for a base32 `secret` (as an authenticator app would show it), by the Server clock.
