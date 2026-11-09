@@ -542,7 +542,7 @@ where
         Command::Device(DeviceCommand::Merge { old, into }) => {
             let path = format!("/api/v1/devices/{}/merge", path_segment(&into));
             let d = api.call(reqwest::Method::POST, &path, Some(&serde_json::json!({ "from": old }))).await?;
-            let text = format!("merged {old} into {} ({})\n", str_of(&d["name"]), str_of(&d["id"]));
+            let text = format!("merged {old} into {} ({})\n", str_of(&d["name"]), str_of(&d["device_id"]));
             (d, text)
         }
         Command::Metrics(MetricsCommand::History { device, from, to, resolution }) => {

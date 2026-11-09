@@ -42,9 +42,9 @@ async fn rename(
 async fn delete(Admin(user): Admin, State(state): State<super::State>, Path(key): Path<String>) -> Result<StatusCode, ApiError> {
     let id = resolve(&state, &key).await?;
     let name = registry::get(&state, id).await?.name;
-    registry::delete(&state, id).await?;
-    // The entry outlives the Device, so it keeps the name.
+    // Recorded first: the entry captures the Device ID and name before they are gone.
     audit::record(&state, &user, id, "device.delete", json!({ "name": name }), json!({ "error": null })).await?;
+    registry::delete(&state, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -66,8 +66,9 @@ async fn merge(
     if old == new {
         return Err(bad_request("cannot merge a Device into itself"));
     }
+    let from = registry::get(&state, old).await?.device_id;
     registry::merge(&state, old, new).await?;
-    audit::record(&state, &user, new, "device.merge", json!({ "from": old }), json!({ "error": null })).await?;
+    audit::record(&state, &user, new, "device.merge", json!({ "from": from }), json!({ "error": null })).await?;
     Ok(Json(registry::get(&state, new).await?))
 }
 
