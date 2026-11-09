@@ -35,7 +35,7 @@ async fn exec_returns_output_and_exit_code_as_the_terminal_user_without_the_lock
     assert_eq!(status, StatusCode::OK, "{out}");
     assert_eq!(
         out,
-        json!({ "exit_code": 0, "stdout": "hi\n", "stderr": "", "timed_out": false, "as": "user", "root_decision": "" })
+        json!({ "exit_code": 0, "stdout": "hi\n", "stderr": "", "timed_out": false, "as": "user", "root_decision": "", "connect_decision": "" })
     );
 
     // The Terminal User defaults to the account running the Agent (this test process).

@@ -235,7 +235,7 @@ where
                     Some(agent_message::Msg::DisconnectController(d)) => {
                         // The person at the Device ended a Controller: release its Control Lock here (its remote
                         // sessions end at the Agent, which handled the same request).
-                        control_lock::release_if_holder(&state, device, &d.controller)
+                        control_lock::release_if_holder(state, device, &d.controller)
                             .await
                             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
                         // Audited naming the Controller that was ended (the person at the Device has no Server User).
@@ -247,7 +247,7 @@ where
                             device_scope: None,
                         };
                         crate::audit::record(
-                            &state,
+                            state,
                             &actor,
                             device,
                             "disconnect",

@@ -129,6 +129,9 @@ impl Platform for Broken {
     fn ask_root(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
         self.fake.ask_root(requester, timeout)
     }
+    fn ask_accept(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
+        self.fake.ask_accept(requester, timeout)
+    }
 }
 
 #[test]
