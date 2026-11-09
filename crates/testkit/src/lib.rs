@@ -256,7 +256,7 @@ impl TestAgent {
 
     pub fn start(&mut self) {
         let endpoint = ServerEndpoint { addr: self.network.addr.clone(), ..self.endpoint.clone() };
-        let run = rcli_agent::run(endpoint, self.creds.clone(), Arc::new(self.platform.clone()));
+        let run = rcli::agent::serve(endpoint, self.creds.clone(), Arc::new(self.platform.clone()));
         self.task = Some(tokio::spawn(run));
     }
 

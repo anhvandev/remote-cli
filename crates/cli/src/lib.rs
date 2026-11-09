@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod agent;
 pub mod media;
 
 use base64::Engine;
@@ -148,6 +149,9 @@ enum Command {
     },
     /// Serve the Controller operations as MCP tools on stdio, for AI agents (Claude Code etc.).
     Mcp,
+    /// Run the Agent on this Device: one binary for Controller and Agent.
+    #[command(subcommand)]
+    Agent(AgentCommand),
     /// Send an Action Batch from JSON (needs the Control Lock): a list of Actions as in the API
     /// (plus `{"type":"wait","ms":N}`), or a whole request body, which is sent as-is.
     Batch {
@@ -164,6 +168,12 @@ enum Command {
         #[arg(long, default_value = ".")]
         out: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+enum AgentCommand {
+    /// Enroll on first start, then keep the Agent connected to the Server.
+    Run(agent::Run),
 }
 
 #[derive(Subcommand)]
@@ -453,6 +463,9 @@ where
         }
         return Ok(());
     }
+    if let Command::Agent(AgentCommand::Run(run)) = cli.command {
+        return run.run().await;
+    }
     let api = Api {
         base: cli.server.ok_or_else(|| anyhow::anyhow!("--server or RCLI_SERVER is required"))?,
         token: cli.token.ok_or_else(|| anyhow::anyhow!("--token or RCLI_TOKEN is required"))?,
@@ -728,6 +741,7 @@ where
             (obs, text)
         }
         Command::Mcp => return mcp::serve(api.base, api.token, tokio::io::stdin(), tokio::io::stdout()).await,
+        Command::Agent(_) => unreachable!("handled before connecting"),
         Command::Update(UpdateCommand::Keygen { .. }) => unreachable!("handled before connecting"),
         Command::Update(UpdateCommand::Publish { file, version, target, key }) => {
             let build = std::fs::read(&file)?;

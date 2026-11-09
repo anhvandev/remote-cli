@@ -3,11 +3,9 @@ name = "rcli-agent"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
-default-run = "rcli-agent"
 
 [dependencies]
 anyhow.workspace = true
-clap.workspace = true
 hex.workspace = true
 image.workspace = true
 mp4.workspace = true
@@ -16,11 +14,9 @@ rcgen.workspace = true
 rcli-protocol.workspace = true
 rustls.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 bytes.workspace = true
 webrtc.workspace = true

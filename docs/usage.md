@@ -13,8 +13,8 @@ Từ ngữ (Device, Action, Observation, Mark, Control Lock, Wake Relay…) theo
 ## Cài CLI
 
 ```bash
-cargo build --release -p rcli -p rcli-agent
-# binary: target/release/rcli và target/release/rcli-agent
+cargo build --release -p rcli
+# binary: target/release/rcli (Controller và Agent trong cùng một binary)
 export RCLI_SERVER=http://localhost:8080     # URL Controller API
 export RCLI_TOKEN=rcli_xxxxxxxx              # token của bạn (admin cấp bằng `rcli token create <user>`)
 ```
@@ -167,7 +167,7 @@ Chưa có tool `unlock` và `shell` trong MCP; dùng `rcli unlock` hoặc `exec`
 # 2. Enroll một Agent giả:
 rcli enrollment-code create                       # ghi lại code và ca-fingerprint
 curl -s http://localhost:8080/api/v1/server-ca -o /tmp/ca.pem
-rcli-agent --server localhost:8443 --ca /tmp/ca.pem --ca-fingerprint <fp> \
+rcli agent run --server localhost:8443 --ca /tmp/ca.pem --ca-fingerprint <fp> \
   --state-dir /tmp/agent-state --name demo-pc --enroll <code>
 # 3. Ở terminal khác:
 rcli devices && rcli shot demo-pc && rcli exec demo-pc -- echo hello

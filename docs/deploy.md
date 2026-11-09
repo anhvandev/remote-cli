@@ -87,11 +87,11 @@ curl -s https://vps.example.com:8080/api/v1/server-ca -o server-ca.pem
 Trên máy cần quản lý:
 
 ```bash
-rcli-agent \
+rcli agent run \
   --server vps.example.com:8443 \
   --ca server-ca.pem \
   --ca-fingerprint f90a7c21b8... \
-  --state-dir /var/lib/rcli-agent \
+  --state-dir /var/lib/rcli \
   --name ten-may \
   --enroll 9464d662a2b243aaac2728fb94713d94
 ```
@@ -101,7 +101,7 @@ rcli-agent \
 - Cài lại máy luôn tạo Device mới. Muốn giữ lịch sử: `rcli device merge <cũ> --into <mới>` (dùng id nếu hai Device trùng tên).
 - Thêm `--update-key <public key hex>` nếu muốn Agent nhận bản cập nhật tự động (mục 7). Thiếu tham số này, mọi bản cập nhật bị từ chối.
 
-> Hiện `rcli-agent` dùng FakePlatform: Device hiện Online, có inventory/metrics giả, nhận Action nhưng không điều khiển máy thật.
+> Hiện `rcli agent run` dùng FakePlatform: Device hiện Online, có inventory/metrics giả, nhận Action nhưng không điều khiển máy thật.
 
 ## 6. Wake qua Wake Relay
 

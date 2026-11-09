@@ -32,7 +32,7 @@ async fn signed_build_rolls_out_to_selected_devices_then_to_all() {
     for agent in [&a, &b] {
         sys.wait_device(agent.device_id(), |d| d["agent_version"] == "0.1.0").await;
     }
-    let build = temp_file("rcli-agent", b"new agent binary");
+    let build = temp_file("rcli", b"new agent binary");
     let key = temp_file("update.key", &sys.update_signing_key);
     let target = rcli_agent::target();
     sys.rcli(&["update", "publish", &build, "--version", "0.2.0", "--target", &target, "--key", &key]).await.unwrap();
@@ -59,7 +59,7 @@ async fn build_signed_with_another_key_is_rejected_and_reported() {
     let rogue_key = temp_path("rogue.key");
     let out = sys.rcli(&["update", "keygen", &rogue_key]).await.unwrap();
     assert!(out.starts_with("public key "), "{out}");
-    let build = temp_file("rcli-agent", b"malicious binary");
+    let build = temp_file("rcli", b"malicious binary");
     let target = rcli_agent::target();
     sys.rcli(&["update", "publish", &build, "--version", "6.6.6", "--target", &target, "--key", &rogue_key])
         .await

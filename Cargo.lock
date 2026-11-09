@@ -2689,12 +2689,15 @@ dependencies = [
  "clap",
  "crossterm",
  "hex",
+ "rcli-agent",
  "rcli-protocol",
  "reqwest",
  "rmcp",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "webrtc",
 ]
 
@@ -2704,7 +2707,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
- "clap",
  "hex",
  "image",
  "mp4",
@@ -2713,12 +2715,10 @@ dependencies = [
  "rcli-protocol",
  "rustls",
  "serde",
- "serde_json",
  "sha2",
  "tokio",
  "tokio-rustls",
  "tracing",
- "tracing-subscriber",
  "webrtc",
 ]
 

@@ -235,7 +235,7 @@ test("admin uploads a signed Agent build and rolls it out to selected Devices", 
   const { update } = await devstack();
   await openAdmin(page, "Cập nhật Agent");
   const card = page.getByRole("region", { name: "Cập nhật Agent" });
-  await card.getByLabel("File build").setInputFiles({ name: "rcli-agent", mimeType: "application/octet-stream", buffer: Buffer.from(update.build) });
+  await card.getByLabel("File build").setInputFiles({ name: "rcli", mimeType: "application/octet-stream", buffer: Buffer.from(update.build) });
   await card.getByLabel("Phiên bản").first().fill(update.version);
   await card.getByLabel("Target").fill(update.target);
   await card.getByLabel("Chữ ký (hex)").fill(update.signature);
