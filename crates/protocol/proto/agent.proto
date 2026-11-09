@@ -6,7 +6,7 @@ package rcli.agent.v1;
 
 message AgentMessage {
   oneof msg {
-    EnrollRequest enroll = 1;
+    RegisterRequest register = 1;
     Heartbeat heartbeat = 2;
     AgentHello hello = 17;
     UpdateFailed update_failed = 170;
@@ -28,7 +28,7 @@ message AgentMessage {
 
 message ServerMessage {
   oneof msg {
-    EnrollResponse enrolled = 1;
+    RegisterResponse registered = 1;
     Error error = 2;
     AgentUpdate update = 17;
     ProcessListRequest list_processes = 3;
@@ -47,20 +47,25 @@ message ServerMessage {
   }
 }
 
-// Sent on a connection without a client certificate. The Server signs the CSR
-// and returns the Device's mTLS client certificate.
-message EnrollRequest {
-  string code = 1;
+// Sent on a connection without a client certificate. The Server checks the Server Key's
+// secret, signs the CSR, and returns the Device's mTLS client certificate.
+message RegisterRequest {
+  string server_key = 1;
   string csr_pem = 2;
   string hostname = 3;
 }
 
-message EnrollResponse {
+message RegisterResponse {
+  // 9-digit Device ID.
   string device_id = 1;
   string cert_pem = 2;
+  // Raw Ed25519 public key the Device pins for Agent updates; empty = no updates.
+  bytes update_key = 3;
+  // The Server's CA (PEM) whose fingerprint the Server Key pinned; the Device checks it and keeps it to trust later sessions.
+  string ca_pem = 4;
 }
 
-// Sent by an enrolled Agent so the Server can detect half-open connections.
+// Sent by a registered Agent so the Server can detect half-open connections.
 message Heartbeat {}
 
 message Error {

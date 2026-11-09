@@ -24,7 +24,7 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 
-use crate::{control_lock, enrollment, metrics, pki, registry, updates, AppState};
+use crate::{control_lock, metrics, pki, registration, registry, updates, AppState};
 
 /// How long a request to an Agent (e.g. the process list) may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -110,9 +110,11 @@ pub fn acceptor(state: &AppState) -> anyhow::Result<TlsAcceptor> {
     roots.add(CertificateDer::from_pem_slice(state.ca.cert_pem.as_bytes())?)?;
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots)).allow_unauthenticated().build()?;
     let leaf = state.ca.issue_server_cert(state.config.agent_hostnames.clone())?;
+    // The chain carries the CA so an Agent can check its fingerprint against the Server Key (it has no CA file).
+    let chain = vec![leaf.cert_der.into(), state.ca.cert_der.clone().into()];
     let config = ServerConfig::builder()
         .with_client_cert_verifier(verifier)
-        .with_single_cert(vec![leaf.cert_der.into()], PrivatePkcs8KeyDer::from(leaf.key_der).into())?;
+        .with_single_cert(chain, PrivatePkcs8KeyDer::from(leaf.key_der).into())?;
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
@@ -132,7 +134,7 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
     let tls = acceptor.accept(tcp).await?;
     let fingerprint = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| pki::fingerprint(c));
     match fingerprint {
-        None => enroll(&mut Conn::new(tls), &state).await,
+        None => register(&mut Conn::new(tls), &state).await,
         Some(fp) => {
             let mut conn = Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME);
             // shortcut: a revoke landing between this lookup and registering the sender below misses this
@@ -162,20 +164,20 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
     }
 }
 
-async fn enroll<T>(conn: &mut Conn<T>, state: &AppState) -> anyhow::Result<()>
+async fn register<T>(conn: &mut Conn<T>, state: &AppState) -> anyhow::Result<()>
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let Some(AgentMessage { msg: Some(agent_message::Msg::Enroll(req)) }) = conn.recv().await? else {
-        anyhow::bail!("expected EnrollRequest");
+    let Some(AgentMessage { msg: Some(agent_message::Msg::Register(req)) }) = conn.recv().await? else {
+        anyhow::bail!("expected RegisterRequest");
     };
-    let reply = match enrollment::enroll(state, req).await {
-        Ok(r) => server_message::Msg::Enrolled(r),
+    let reply = match registration::register(state, req).await {
+        Ok(r) => server_message::Msg::Registered(r),
         Err(e) => server_message::Msg::Error(match e {
-            enrollment::EnrollError::InvalidCode => error("invalid_enrollment_code", "enrollment code is invalid or already used"),
-            enrollment::EnrollError::BadRequest(m) => error("bad_request", &m),
-            enrollment::EnrollError::Internal(e) => {
-                tracing::error!("enrollment failed: {e:#}");
+            registration::RegisterError::InvalidKey => error("invalid_server_key", "the Server Key's secret is wrong"),
+            registration::RegisterError::BadRequest(m) => error("bad_request", &m),
+            registration::RegisterError::Internal(e) => {
+                tracing::error!("registration failed: {e:#}");
                 error("internal", "internal error")
             }
         }),

@@ -43,9 +43,9 @@ enum Command {
     /// Resource history of Devices.
     #[command(subcommand)]
     Metrics(MetricsCommand),
-    /// Manage Enrollment Codes (admin).
+    /// Read the Server Key Agents and Controllers need to connect (admin).
     #[command(subcommand)]
-    EnrollmentCode(EnrollmentCodeCommand),
+    ServerKey(ServerKeyCommand),
     /// Manage users (admin).
     #[command(subcommand)]
     User(UserCommand),
@@ -172,7 +172,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AgentCommand {
-    /// Enroll on first start, then keep the Agent connected to the Server.
+    /// Register on first start, then keep the Agent connected to the Server.
     Run(agent::Run),
 }
 
@@ -333,7 +333,7 @@ fn lock_text(lock: &Value) -> String {
 
 #[derive(Subcommand)]
 enum UpdateCommand {
-    /// Create an update signing key (offline, no server needed). Agents get the printed public key via --update-key.
+    /// Create an update signing key (offline, no server needed). Give the public key to the Server as RCLI_UPDATE_PUBLIC_KEY.
     Keygen {
         /// Where to write the private key (PKCS#8). Keep it off the Server.
         key_file: String,
@@ -428,9 +428,9 @@ enum MetricsCommand {
 }
 
 #[derive(Subcommand)]
-enum EnrollmentCodeCommand {
-    /// Create a single-use Enrollment Code.
-    Create,
+enum ServerKeyCommand {
+    /// Print the Server Key (rk_<CA fingerprint>_<secret>).
+    Show,
 }
 
 pub async fn run<I, T>(args: I, out: &mut dyn Write) -> anyhow::Result<()>
@@ -475,7 +475,7 @@ where
         Command::Devices => {
             let devices = api.call(reqwest::Method::GET, "/api/v1/devices", None).await?;
             let mut text = format!(
-                "{:<36}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
+                "{:<9}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
                 "ID", "NAME", "STATUS", "LAST SEEN", "AGENT", "UPDATE"
             );
             for d in devices.as_array().into_iter().flatten() {
@@ -487,8 +487,8 @@ where
                     format!("{} {}{error}", str_of(&u["version"]), str_of(&u["status"]))
                 };
                 text += &format!(
-                    "{:<36}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
-                    str_of(&d["id"]),
+                    "{:<9}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
+                    str_of(&d["device_id"]),
                     str_of(&d["name"]),
                     match d["wake_error"].as_str() {
                         Some(e) => format!("{} ({e})", str_of(&d["status"])),
@@ -569,11 +569,10 @@ where
             }
             (history, text)
         }
-        Command::EnrollmentCode(EnrollmentCodeCommand::Create) => {
-            let created = api.call(reqwest::Method::POST, "/api/v1/enrollment-codes", None).await?;
-            // The installer passes both to the Agent: `--enroll CODE --ca-fingerprint FP`.
-            let text = format!("{}\nca-fingerprint {}\n", str_of(&created["code"]), str_of(&created["ca_fingerprint"]));
-            (created, text)
+        Command::ServerKey(ServerKeyCommand::Show) => {
+            let key = api.call(reqwest::Method::GET, "/api/v1/server-key", None).await?;
+            let text = format!("{}\n", str_of(&key["server_key"]));
+            (key, text)
         }
         Command::User(UserCommand::Create { name, role }) => {
             let body = serde_json::json!({ "name": name, "role": role });

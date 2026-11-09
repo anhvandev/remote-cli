@@ -1,6 +1,6 @@
-//! Server: Device registry, enrollment and the Controller API.
+//! Server: Device registry, registration and the Controller API.
 //!
-//! Layout: one module per server area (`registry`, `enrollment`, ...), the Agent
+//! Layout: one module per server area (`registry`, `registration`, ...), the Agent
 //! connection in `agent_link`, and HTTP routes per area under `api/`.
 
 pub mod agent_link;
@@ -9,11 +9,12 @@ pub mod audit;
 pub mod auth;
 pub mod clock;
 pub mod control_lock;
-pub mod enrollment;
 pub mod history;
 pub mod metrics;
 pub mod pki;
+pub mod registration;
 pub mod registry;
+pub mod server_key;
 pub mod shell;
 pub mod updates;
 pub mod wake;
@@ -42,6 +43,8 @@ pub struct Config {
     pub ice_urls: Vec<String>,
     /// coturn `static-auth-secret`: the Server mints short-lived TURN credentials from it.
     pub turn_secret: Option<String>,
+    /// Raw Ed25519 public key handed to Agents at registration so they pin Agent updates; None = no updates.
+    pub update_public_key: Option<Vec<u8>>,
 }
 
 impl Config {
@@ -61,6 +64,7 @@ impl Config {
             master_key: std::env::var("RCLI_MASTER_KEY").ok().filter(|k| !k.is_empty()).map(|k| k.parse()).transpose()?,
             ice_urls: var("RCLI_ICE_URLS", Some(""))?.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
             turn_secret: std::env::var("RCLI_TURN_SECRET").ok().filter(|s| !s.is_empty()),
+            update_public_key: std::env::var("RCLI_UPDATE_PUBLIC_KEY").ok().filter(|s| !s.is_empty()).map(|k| hex::decode(k)).transpose()?,
         })
     }
 }
@@ -70,6 +74,8 @@ pub struct AppState {
     pub db: PgPool,
     pub clock: Arc<dyn Clock>,
     pub ca: pki::Ca,
+    /// `rk_<CA fingerprint>_<secret>`: what Agents and Controllers present to connect.
+    pub server_key: String,
     pub config: Config,
     pub connections: registry::Connections,
     pub resources: metrics::CurrentResources,
@@ -87,6 +93,8 @@ pub struct Server {
     pub agent_addr: SocketAddr,
     /// CA certificate Agents must trust to reach the Server.
     pub ca_pem: String,
+    /// `rk_<CA fingerprint>_<secret>`.
+    pub server_key: String,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -101,6 +109,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
     let db = sqlx::postgres::PgPoolOptions::new().max_connections(10).connect(&config.database_url).await?;
     sqlx::migrate!("./migrations").run(&db).await?;
     let ca = pki::Ca::load_or_create(&db, config.master_key.as_ref()).await?;
+    let server_key = server_key::load_or_create(&db, &ca).await?;
     match &config.master_key {
         Some(key) => auth::seal_totp_secrets(&db, key).await?,
         None => tracing::warn!("no RCLI_MASTER_KEY: the CA private key and TOTP secrets are stored unencrypted"),
@@ -115,6 +124,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
         db,
         clock,
         ca,
+        server_key,
         config,
         connections: Default::default(),
         resources: Default::default(),
@@ -126,6 +136,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
     });
     let acceptor = agent_link::acceptor(&state)?;
     let router = api::router(state.clone());
+    let server_key = state.server_key.clone();
     let tasks = vec![
         tokio::spawn(async move {
             if let Err(e) = axum::serve(http, router).await {
@@ -156,5 +167,5 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
             }
         }),
     ];
-    Ok(Server { http_addr, agent_addr, ca_pem, tasks })
+    Ok(Server { http_addr, agent_addr, ca_pem, server_key, tasks })
 }

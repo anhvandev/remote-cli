@@ -124,8 +124,8 @@ async fn admin_operations_and_live_views_are_recorded_without_the_unlock_passwor
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id().to_owned();
     sys.wait_device(&dev, |d| d["status"] == "Online").await;
-    let old = sys.enroll(&sys.create_enrollment_code().await, &FakePlatform::new("old-pc")).await.unwrap();
-    let doomed = sys.enroll(&sys.create_enrollment_code().await, &FakePlatform::new("doomed")).await.unwrap();
+    let old = sys.register(&FakePlatform::new("old-pc")).await.unwrap();
+    let doomed = sys.register(&FakePlatform::new("doomed")).await.unwrap();
     let path = format!("/api/v1/devices/{dev}");
 
     let live = LiveViewer::open(&sys.api, &dev, false).await.expect("open live view");

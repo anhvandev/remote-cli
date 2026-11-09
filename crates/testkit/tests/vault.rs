@@ -114,7 +114,7 @@ async fn the_master_key_encrypts_the_ca_key_and_totp_secrets_and_seals_old_plain
     assert!(!totp.windows(raw.len()).any(|w| w == raw), "TOTP secret sealed");
     // Same CA, and it still signs: Agents keep trusting the Server and new Devices enroll.
     assert_eq!(sys.api.get("/api/v1/server-ca").await.1, ca);
-    sys.enroll(&sys.create_enrollment_code().await, &FakePlatform::new("new-pc")).await.unwrap();
+    sys.register(&FakePlatform::new("new-pc")).await.unwrap();
     // The sealed TOTP secret still signs the user in.
     let body = json!({"name": "vanna", "password": "pw-1234567", "totp": sys.totp(&secret)});
     let (status, body) = sys.api.with_token(None).post_json("/api/v1/sessions", &body).await;

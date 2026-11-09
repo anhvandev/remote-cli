@@ -55,7 +55,7 @@ async fn rcli_device_show_reports_current_resources_and_lock_screen() {
 
     let json: serde_json::Value =
         serde_json::from_str(&sys.rcli(&["device", "show", "lab-pc", "--json"]).await.unwrap()).unwrap();
-    assert_eq!(json["id"], agent.device_id());
+    assert_eq!(json["device_id"], agent.device_id());
     assert_eq!(json["status"], "Online");
     let r = &json["resources"];
     assert_eq!(r["cpu_percent"], 97.0);

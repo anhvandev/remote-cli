@@ -11,7 +11,7 @@ async fn operator_can_list_devices_but_is_refused_admin_operations() {
     assert_eq!(status, StatusCode::OK);
 
     for (status, body) in [
-        op.post("/api/v1/enrollment-codes").await,
+        op.get("/api/v1/server-key").await,
         op.post_json("/api/v1/users", &json!({"name": "x", "role": "admin"})).await,
         op.get("/api/v1/users").await,
         op.post("/api/v1/users/op/tokens").await,
@@ -68,7 +68,7 @@ async fn admin_manages_users_and_tokens_with_rcli() {
         serde_json::from_str(&sys.rcli(&["token", "create", "alice", "--json"]).await.unwrap()).unwrap();
     let token = issued["token"].as_str().unwrap();
     sys.rcli_as(token, &["devices"]).await.unwrap();
-    let err = sys.rcli_as(token, &["enrollment-code", "create"]).await.unwrap_err();
+    let err = sys.rcli_as(token, &["server-key", "show"]).await.unwrap_err();
     assert!(err.to_string().contains("admin_required"), "{err}");
 
     sys.rcli(&["token", "revoke", issued["id"].as_str().unwrap()]).await.unwrap();

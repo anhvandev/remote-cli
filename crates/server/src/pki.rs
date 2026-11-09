@@ -15,7 +15,9 @@ const CA_KEY_AAD: &[u8] = b"server_ca.key";
 
 pub struct Ca {
     pub cert_pem: String,
-    /// Hex SHA-256 of the CA certificate (DER): handed out with Enrollment Codes so Agents can pin it.
+    /// DER of `cert_pem`, sent in the TLS chain so Agents can check it against the Server Key's fingerprint.
+    pub cert_der: Vec<u8>,
+    /// Hex SHA-256 of the CA certificate (DER): part of the Server Key so Agents can pin it.
     pub fingerprint: String,
     cert: Certificate,
     key: KeyPair,
@@ -66,7 +68,7 @@ impl Ca {
         let cert = CertificateParams::from_ca_cert_pem(&cert_pem)?.self_signed(&key)?;
         let der = rustls::pki_types::CertificateDer::from_pem_slice(cert_pem.as_bytes())?;
         let fingerprint = hex::encode(fingerprint(&der));
-        Ok(Self { cert_pem, fingerprint, cert, key })
+        Ok(Self { cert_pem, cert_der: der.to_vec(), fingerprint, cert, key })
     }
 
     pub fn issue_server_cert(&self, hostnames: Vec<String>) -> anyhow::Result<Issued> {

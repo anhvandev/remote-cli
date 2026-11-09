@@ -11,19 +11,14 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 #[tokio::test]
 async fn rcli_agent_run_registers_and_connects_a_device() {
     let sys = TestSystem::start().await;
-    let created = sys.rcli(&["enrollment-code", "create"]).await.unwrap();
-    let (code, pin) = (created.lines().next().unwrap(), created.lines().nth(1).unwrap().trim_start_matches("ca-fingerprint "));
+    let key = sys.rcli(&["server-key", "show"]).await.unwrap();
     let dir = temp_dir("agent-run");
-    let ca = dir.join("ca.pem");
-    std::fs::write(&ca, &sys.server.ca_pem).unwrap();
     let argv = [
         "rcli", "agent", "run",
-        "--server", &format!("localhost:{}", sys.server.agent_addr.port()),
-        "--ca", ca.to_str().unwrap(),
-        "--ca-fingerprint", pin,
+        "--server", &sys.agent_addr(),
+        "--key", key.trim(),
         "--state-dir", dir.to_str().unwrap(),
         "--name", "lab-pc",
-        "--enroll", code,
     ];
     let mut out = Vec::new();
     let agent = rcli::run(argv, &mut out);
@@ -46,8 +41,7 @@ async fn rcli_agent_run_registers_and_connects_a_device() {
 #[tokio::test]
 async fn rcli_devices_shows_device_status_as_text_and_json() {
     let sys = TestSystem::start().await;
-    let code = sys.rcli(&["enrollment-code", "create"]).await.unwrap();
-    let creds = sys.enroll(code.lines().next().unwrap(), &rcli_testkit::FakePlatform::new("lab-pc")).await.unwrap();
+    let creds = sys.register(&rcli_testkit::FakePlatform::new("lab-pc")).await.unwrap();
     let mut agent = rcli_testkit::TestAgent::new(sys.endpoint(), rcli_testkit::FakePlatform::new("lab-pc"), creds);
     agent.start();
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
@@ -57,7 +51,7 @@ async fn rcli_devices_shows_device_status_as_text_and_json() {
     assert!(row.contains("lab-pc") && row.contains("Online"), "{text}");
 
     let json: serde_json::Value = serde_json::from_str(&sys.rcli(&["devices", "--json"]).await.unwrap()).unwrap();
-    assert_eq!(json[0]["id"], agent.device_id());
+    assert_eq!(json[0]["device_id"], agent.device_id());
     assert_eq!(json[0]["name"], "lab-pc");
     assert_eq!(json[0]["status"], "Online");
     assert!(json[0]["last_seen_at"].is_null());

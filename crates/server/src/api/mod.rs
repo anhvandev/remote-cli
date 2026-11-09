@@ -4,7 +4,6 @@ mod actions;
 mod audit;
 mod control_lock;
 mod devices;
-mod enrollment;
 mod exec;
 mod history;
 mod power;
@@ -34,8 +33,8 @@ pub type State = Arc<AppState>;
 pub fn router(state: State) -> Router {
     Router::new()
         .route("/api/v1/server-ca", get(|s: axum::extract::State<State>| async move { s.ca.cert_pem.clone() }))
+        .route("/api/v1/server-key", get(server_key))
         .merge(devices::routes())
-        .merge(enrollment::routes())
         .merge(history::routes())
         .merge(updates::routes())
         .merge(users::routes())
@@ -50,6 +49,14 @@ pub fn router(state: State) -> Router {
         .merge(live::routes())
         .merge(shell::routes())
         .with_state(state)
+}
+
+/// The Server Key (admin): Agents and Controllers need it to connect.
+async fn server_key(
+    _: Admin,
+    axum::extract::State(state): axum::extract::State<State>,
+) -> Json<serde_json::Value> {
+    Json(json!({ "server_key": state.server_key, "ca_fingerprint": state.ca.fingerprint }))
 }
 
 /// Typed API error: `{"error": {"code": "...", "message": "..."}}`.

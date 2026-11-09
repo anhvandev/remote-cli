@@ -23,15 +23,16 @@ use backlog::Backlog;
 use platform::Platform;
 use rcli_protocol::{
     agent::{
-        agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, DisplayList, EnrollRequest, Error,
-        ExecRequest, ExecResult, Heartbeat, PowerResult, ProcessList, ResourceSample, Resources, ServerMessage,
+        agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, DisplayList, Error, ExecRequest,
+        ExecResult, Heartbeat, PowerResult, ProcessList, RegisterRequest, ResourceSample, Resources, ServerMessage,
         ShellExit, ShellOpen, ShellOpened, ShellOutput, UpdateFailed, WakeResult,
     },
     Conn,
 };
 use rustls::{
+    client::WebPkiServerVerifier,
     pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName},
-    ClientConfig, RootCertStore,
+    ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
 };
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
@@ -42,14 +43,13 @@ const HEARTBEAT_EVERY: Duration = Duration::from_secs(10);
 const SAMPLE_EVERY: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-/// Where the Server's Agent port is and what to trust from it.
+/// Where the Server's Agent port is and the Server Key that pins its CA.
 #[derive(Clone, Debug)]
 pub struct ServerEndpoint {
     /// `host:port`; `host` must be one of the Server's `agent_hostnames`.
     pub addr: String,
-    pub ca_pem: String,
-    /// Raw Ed25519 public key Agent builds must be signed with; `None` rejects every update.
-    pub update_key: Option<Vec<u8>>,
+    /// `rk_<CA fingerprint>_<secret>`.
+    pub server_key: String,
 }
 
 /// `<os>-<arch>` of this Agent binary; Agent builds are signed for one target.
@@ -57,26 +57,112 @@ pub fn target() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// The Device's identity, obtained once by enrolling.
+/// The Device's identity, obtained once by registering.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Credentials {
+    /// 9-digit Device ID.
     pub device_id: String,
     pub cert_pem: String,
     pub key_pem: String,
+    /// DER of the Server's CA that the Server Key's fingerprint pinned at registration.
+    pub ca_der: Vec<u8>,
+    /// Raw Ed25519 public key pinned at registration; empty rejects every update.
+    pub update_key: Vec<u8>,
 }
 
-async fn connect(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow::Result<Conn<TlsStream<TcpStream>>> {
+/// `rk_<fingerprint>_<secret>` as `(fingerprint, secret)`.
+fn split_server_key(key: &str) -> anyhow::Result<(&str, &str)> {
+    let (fingerprint, secret) = key
+        .trim()
+        .strip_prefix("rk_")
+        .and_then(|rest| rest.split_once('_'))
+        .ok_or_else(|| anyhow::anyhow!("the Server Key must look like rk_<fingerprint>_<secret>"))?;
+    Ok((fingerprint, secret))
+}
+
+/// A TLS verifier that accepts only a chain containing the CA named by `fingerprint` (hex SHA-256 of its DER),
+/// then checks the Server certificate against that CA and the connection's hostname.
+#[derive(Debug)]
+struct PinnedCa {
+    fingerprint: String,
+    provider: std::sync::Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for PinnedCa {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        // The Server sends [leaf, CA]; the pinned CA may also arrive as an intermediate.
+        let ca = std::iter::once(end_entity)
+            .chain(intermediates.iter())
+            .find(|c| hex::encode(sha256(c)) == self.fingerprint)
+            .ok_or_else(|| rustls::Error::General("the Server's CA fingerprint does not match the Server Key".into()))?;
+        let mut roots = RootCertStore::empty();
+        roots.add(ca.clone()).map_err(|e| rustls::Error::General(format!("bad Server CA: {e}")))?;
+        let verifier = WebPkiServerVerifier::builder_with_provider(roots.into(), self.provider.clone())
+            .build()
+            .map_err(|e| rustls::Error::General(format!("cannot verify the Server: {e}")))?;
+        verifier.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+fn sha256(der: &[u8]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(der).to_vec()
+}
+
+/// Hex SHA-256 of a CA certificate (PEM).
+pub fn ca_fingerprint(ca_pem: &str) -> anyhow::Result<String> {
+    Ok(hex::encode(sha256(&CertificateDer::from_pem_slice(ca_pem.as_bytes())?)))
+}
+
+fn config(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow::Result<ClientConfig> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let mut roots = RootCertStore::empty();
-    roots.add(CertificateDer::from_pem_slice(server.ca_pem.as_bytes())?)?;
-    let builder = ClientConfig::builder().with_root_certificates(roots);
-    let config = match creds {
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no crypto provider"))?;
+    let builder = ClientConfig::builder().dangerous().with_custom_certificate_verifier(std::sync::Arc::new(PinnedCa {
+        fingerprint: split_server_key(&server.server_key)?.0.to_owned(),
+        provider,
+    }));
+    Ok(match creds {
         None => builder.with_no_client_auth(),
         Some(c) => builder.with_client_auth_cert(
             vec![CertificateDer::from_pem_slice(c.cert_pem.as_bytes())?],
             PrivateKeyDer::from_pem_slice(c.key_pem.as_bytes())?,
         )?,
-    };
+    })
+}
+
+async fn connect(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow::Result<Conn<TlsStream<TcpStream>>> {
+    let config = config(server, creds)?;
     let host = server.addr.rsplit_once(':').map_or(server.addr.as_str(), |(h, _)| h);
     let name = ServerName::try_from(host.trim_matches(['[', ']']).to_owned())?;
     let tcp = TcpStream::connect(&server.addr).await?;
@@ -84,32 +170,34 @@ async fn connect(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow
     Ok(Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME))
 }
 
-/// Hex SHA-256 of a CA certificate (PEM), as the Server reports it with each Enrollment Code.
-pub fn ca_fingerprint(ca_pem: &str) -> anyhow::Result<String> {
-    use sha2::{Digest, Sha256};
-    Ok(hex::encode(Sha256::digest(CertificateDer::from_pem_slice(ca_pem.as_bytes())?)))
-}
-
-/// Exchanges a single-use Enrollment Code for this Device's credentials.
-/// The private key never leaves the Agent; only a CSR is sent. Refuses to talk to the Server unless its CA matches
-/// `ca_fingerprint` (from the Enrollment Code; hex, any case, colons allowed): the CA file itself may come over plain HTTP.
-pub async fn enroll(server: &ServerEndpoint, code: &str, ca_fingerprint: &str, platform: &dyn Platform) -> anyhow::Result<Credentials> {
-    let pinned = ca_fingerprint.replace(':', "").to_lowercase();
-    let actual = self::ca_fingerprint(&server.ca_pem)?;
-    if pinned != actual {
-        anyhow::bail!("the Server CA's fingerprint {actual} does not match the pinned fingerprint {pinned}; refusing to enroll");
-    }
+/// Registers this Device with the Server Key: checks the Server's CA against the key's fingerprint, presents its
+/// secret, and gets back this Device's mTLS certificate, 9-digit Device ID and update key to pin.
+/// The private key never leaves the Agent; only a CSR is sent.
+pub async fn register(server: &ServerEndpoint, platform: &dyn Platform) -> anyhow::Result<Credentials> {
+    split_server_key(&server.server_key)?;
     let key = rcgen::KeyPair::generate()?;
     let csr = rcgen::CertificateParams::new(vec![])?.serialize_request(&key)?.pem()?;
     let mut conn = connect(server, None).await?;
-    let req = EnrollRequest { code: code.into(), csr_pem: csr, hostname: platform.hostname() };
-    conn.send(&AgentMessage { msg: Some(agent_message::Msg::Enroll(req)) }).await?;
+    let req = RegisterRequest { server_key: server.server_key.clone(), csr_pem: csr, hostname: platform.hostname() };
+    conn.send(&AgentMessage { msg: Some(agent_message::Msg::Register(req)) }).await?;
     match conn.recv::<ServerMessage>().await?.and_then(|m| m.msg) {
-        Some(server_message::Msg::Enrolled(r)) => {
-            Ok(Credentials { device_id: r.device_id, cert_pem: r.cert_pem, key_pem: key.serialize_pem() })
+        Some(server_message::Msg::Registered(r)) => {
+            // The verifier accepted the chain only because it held the pinned CA; the Server sends it here.
+            let ca_der = CertificateDer::from_pem_slice(r.ca_pem.as_bytes())?.to_vec();
+            anyhow::ensure!(
+                hex::encode(sha256(&ca_der)) == split_server_key(&server.server_key)?.0.to_lowercase(),
+                "the Server CA's fingerprint does not match the Server Key; refusing to register"
+            );
+            Ok(Credentials {
+                device_id: r.device_id,
+                cert_pem: r.cert_pem,
+                key_pem: key.serialize_pem(),
+                ca_der,
+                update_key: r.update_key,
+            })
         }
-        Some(server_message::Msg::Error(e)) => anyhow::bail!("enrollment rejected: {}: {}", e.code, e.message),
-        Some(_) | None => anyhow::bail!("server closed the connection during enrollment"),
+        Some(server_message::Msg::Error(e)) => anyhow::bail!("registration rejected: {}: {}", e.code, e.message),
+        Some(_) | None => anyhow::bail!("server closed the connection during registration"),
     }
 }
 
@@ -136,7 +224,7 @@ pub async fn run(server: ServerEndpoint, creds: Credentials, platform: Arc<dyn P
         match connect(&server, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
-                if let Err(e) = session(conn, &server, &platform, &executor, &live, &media, &backlog).await {
+                if let Err(e) = session(conn, &creds, &platform, &executor, &live, &media, &backlog).await {
                     tracing::warn!("connection to server lost: {e}");
                 }
             }
@@ -160,7 +248,7 @@ async fn sample_forever(platform: Arc<dyn Platform>, backlog: Arc<Backlog>) {
 
 async fn session(
     mut conn: Conn<TlsStream<TcpStream>>,
-    server: &ServerEndpoint,
+    creds: &Credentials,
     platform_arc: &Arc<dyn Platform>,
     executor: &Arc<Mutex<Executor>>,
     live: &Arc<live::Live>,
@@ -308,7 +396,7 @@ async fn session(
                     }
                     Some(server_message::Msg::Update(update)) => {
                         // shortcut: installs inline, blocking heartbeats; fine while installs take well under 30 s.
-                        match install(server, platform, &update) {
+                        match install(creds, platform, &update) {
                             // Reconnect so the Server sees the new version (real adapters restart instead).
                             Ok(()) => return Ok(()),
                             Err(e) => {
@@ -414,9 +502,10 @@ fn clamp_u16(n: u32) -> u16 {
     n.clamp(1, u16::MAX.into()) as u16
 }
 
-/// Verifies `update` against the configured update key and target, then installs it.
-fn install(server: &ServerEndpoint, platform: &dyn Platform, update: &AgentUpdate) -> anyhow::Result<()> {
-    let key = server.update_key.as_deref().ok_or_else(|| anyhow::anyhow!("no update key configured on this Agent"))?;
+/// Verifies `update` against the update key pinned at registration and the target, then installs it.
+fn install(creds: &Credentials, platform: &dyn Platform, update: &AgentUpdate) -> anyhow::Result<()> {
+    anyhow::ensure!(!creds.update_key.is_empty(), "no update key pinned on this Agent");
+    let key = &creds.update_key;
     anyhow::ensure!(update.target == target(), "build is for {}, this Agent is {}", update.target, target());
     anyhow::ensure!(
         rcli_protocol::update::verify(key, &update.version, &update.target, &update.build, &update.signature),

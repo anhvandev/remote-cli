@@ -34,9 +34,8 @@ pub struct TestSystem {
     /// Controller API client authenticated as the `admin` user.
     pub api: ApiClient,
     pub admin_token: String,
-    /// PKCS#8 Ed25519 key that signs Agent builds; Agents from `endpoint()` trust its public half.
+    /// PKCS#8 Ed25519 key that signs Agent builds; the Server hands its public half to Devices at registration.
     pub update_signing_key: Vec<u8>,
-    update_public_key: Vec<u8>,
     /// The TURN relay the Server hands out, if started with `start_with_turn`.
     pub turn: Option<TestTurn>,
     /// The running Server's config (`database_url` reaches its Postgres).
@@ -81,6 +80,7 @@ impl TestSystem {
         let postgres = Postgres::default().with_tag("16-alpine").start().await.expect("start postgres container");
         let port = postgres.get_host_port_ipv4(5432).await.unwrap();
         let clock = Arc::new(ManualClock::default());
+        let (update_signing_key, update_public_key) = rcli_protocol::update::generate_key().unwrap();
         let config = rcli_server::Config {
             database_url: format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
             http_addr,
@@ -90,16 +90,15 @@ impl TestSystem {
             master_key,
             ice_urls: turn.iter().map(|t| format!("turn:{}?transport=udp", t.addr)).collect(),
             turn_secret: turn.as_ref().map(|_| TURN_SECRET.into()),
+            update_public_key: Some(update_public_key),
         };
         let server = rcli_server::start(config.clone(), clock.clone()).await.expect("start server");
-        let (update_signing_key, update_public_key) = rcli_protocol::update::generate_key().unwrap();
         let mut sys = Self {
             clock,
             api: ApiClient::new(format!("http://{}", server.http_addr), Some(BOOTSTRAP_TOKEN)),
             server,
             admin_token: String::new(),
             update_signing_key,
-            update_public_key,
             turn,
             config,
             _postgres: postgres,
@@ -113,12 +112,18 @@ impl TestSystem {
         self.clock.advance(chrono::Duration::seconds(seconds));
     }
 
+    /// The Server Key as an admin reads it (`rcli server-key show`).
+    pub fn server_key(&self) -> String {
+        self.server.server_key.clone()
+    }
+
+    /// `localhost:port` of the Agent port, as an Agent is given it.
+    pub fn agent_addr(&self) -> String {
+        format!("localhost:{}", self.server.agent_addr.port())
+    }
+
     pub fn endpoint(&self) -> ServerEndpoint {
-        ServerEndpoint {
-            addr: format!("localhost:{}", self.server.agent_addr.port()),
-            ca_pem: self.server.ca_pem.clone(),
-            update_key: Some(self.update_public_key.clone()),
-        }
+        ServerEndpoint { addr: self.agent_addr(), server_key: self.server_key() }
     }
 
     /// Runs `rcli <args>` in-process against this Server as the admin; returns stdout.
@@ -164,36 +169,29 @@ impl TestSystem {
         format!("{:06}", rcli_server::auth::totp(&secret, self.clock.now().timestamp()))
     }
 
-    pub async fn create_enrollment_code(&self) -> String {
-        let (status, body) = self.api.post("/api/v1/enrollment-codes").await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        body["code"].as_str().unwrap().to_owned()
+    /// Registers a Device on `platform` with the Server Key (not started).
+    pub async fn register(&self, platform: &FakePlatform) -> anyhow::Result<Credentials> {
+        rcli_agent::register(&self.endpoint(), platform).await
     }
 
-    pub async fn enroll(&self, code: &str, platform: &FakePlatform) -> anyhow::Result<Credentials> {
-        let endpoint = self.endpoint();
-        rcli_agent::enroll(&endpoint, code, &rcli_agent::ca_fingerprint(&endpoint.ca_pem)?, platform).await
-    }
-
-    /// Enrolls a new Device named `hostname` and starts its Agent.
+    /// Registers a new Device named `hostname` and starts its Agent.
     pub async fn start_agent(&self, hostname: &str) -> TestAgent {
         self.start_agent_on(FakePlatform::new(hostname)).await
     }
 
-    /// Enrolls a new Device and starts its Agent on `platform` (keep a clone to script it).
+    /// Registers a new Device and starts its Agent on `platform` (keep a clone to script it).
     pub async fn start_agent_on(&self, platform: FakePlatform) -> TestAgent {
-        let code = self.create_enrollment_code().await;
-        let creds = self.enroll(&code, &platform).await.expect("enroll");
+        let creds = self.register(&platform).await.expect("register");
         let mut agent = TestAgent::new(self.endpoint(), platform, creds);
         agent.start();
         agent
     }
 
-    /// Polls the Device list until the Device with `id` satisfies `pred`; returns it.
+    /// Polls the Device list until the Device with 9-digit Device ID `id` satisfies `pred`; returns it.
     pub async fn wait_device(&self, id: &str, pred: impl Fn(&Value) -> bool) -> Value {
         eventually(|| async {
             let (_, devices) = self.api.get("/api/v1/devices").await;
-            devices.as_array()?.iter().find(|d| d["id"] == id && pred(d)).cloned()
+            devices.as_array()?.iter().find(|d| d["device_id"] == id && pred(d)).cloned()
         })
         .await
     }

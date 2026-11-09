@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
     ]);
     let fleet = [alpha, FakePlatform::new("bravo"), charlie, FakePlatform::new("golf"), hotel, FakePlatform::new("india")];
     for platform in fleet {
-        let creds = sys.enroll(&sys.create_enrollment_code().await, &platform).await?;
+        let creds = sys.register(&platform).await?;
         let mut agent = TestAgent::new(sys.endpoint(), platform, creds);
         agent.start();
         sys.wait_device_details(agent.device_id(), |d| !d["inventory"].is_null() && !d["resources"].is_null()).await;
@@ -85,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
     sys.wait_history(agents[0].device_id(), &query, |h| h["samples"].as_array().is_some_and(|s| !s.is_empty())).await;
 
     for name in ["delta", "echo", "foxtrot"] {
-        sys.enroll(&sys.create_enrollment_code().await, &FakePlatform::new(name)).await?;
+        sys.register(&FakePlatform::new(name)).await?;
     }
     let (version, target, build) = ("9.9.9", "fake-x86_64", "fake agent build");
     let signature = rcli_protocol::update::sign(&sys.update_signing_key, version, target, build.as_bytes())?;

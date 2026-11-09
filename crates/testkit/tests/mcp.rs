@@ -56,7 +56,7 @@ async fn an_agent_lists_devices_takes_the_lock_acts_and_observes_with_marks() {
     let (devices, _) = ok(&mcp, "devices", json!({})).await;
     assert_eq!(devices["devices"][0]["name"], "lab-pc", "{devices}");
     let (details, _) = ok(&mcp, "device", json!({ "device": "lab-pc" })).await;
-    assert_eq!(details["id"], dev);
+    assert_eq!(details["device_id"], dev);
 
     let (lock, _) = ok(&mcp, "lock_acquire", json!({ "device": "lab-pc" })).await;
     assert_eq!(lock["holder"], "admin");
