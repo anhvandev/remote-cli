@@ -555,7 +555,13 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = match Cli::try_parse_from(args) {
+    let argv: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    // `rcli` with no arguments on a desktop opens the Agent GUI (ticket 14).
+    #[cfg(feature = "gui")]
+    if argv.len() == 1 {
+        return crate::gui::run(std::env::var_os("RCLI_AGENT_SOCKET").map(PathBuf::from));
+    }
+    let cli = match Cli::try_parse_from(argv) {
         Ok(cli) => cli,
         Err(e) if !e.use_stderr() => return Ok(write!(out, "{e}")?), // --help / --version
         Err(e) => anyhow::bail!("{e}"),
