@@ -176,6 +176,14 @@ enum AgentCommand {
     Run(agent::Run),
     /// Show the Device ID and connection status (any local user).
     Info(agent::Info),
+    /// The Device Password: show it (root only).
+    Password {
+        #[command(subcommand)]
+        command: agent::PasswordCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -469,6 +477,7 @@ where
         return match command {
             AgentCommand::Run(run) => run.run().await,
             AgentCommand::Info(info) => info.run(out).await,
+            AgentCommand::Password { command, socket } => agent::run_password(command, socket, out).await,
         };
     }
     let api = Api {

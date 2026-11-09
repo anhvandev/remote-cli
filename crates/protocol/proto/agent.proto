@@ -63,6 +63,8 @@ message RegisterResponse {
   bytes update_key = 3;
   // The Server's CA (PEM) whose fingerprint the Server Key pinned; the Device checks it and keeps it to trust later sessions.
   string ca_pem = 4;
+  // The Device Password generated at registration; the Device keeps it in its Secret Store, the Server only its hash.
+  string device_password = 5;
 }
 
 // Sent by a registered Agent so the Server can detect half-open connections.

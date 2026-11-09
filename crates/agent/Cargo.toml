@@ -11,6 +11,7 @@ image.workspace = true
 mp4.workspace = true
 openh264.workspace = true
 rcgen.workspace = true
+ring.workspace = true
 rcli-protocol.workspace = true
 rustls.workspace = true
 serde.workspace = true

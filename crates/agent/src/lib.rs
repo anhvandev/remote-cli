@@ -11,6 +11,7 @@ mod marks;
 mod media;
 mod observer;
 pub mod platform;
+pub mod secret_store;
 
 use std::{
     io::Read,
@@ -69,6 +70,10 @@ pub struct Credentials {
     pub ca_der: Vec<u8>,
     /// Raw Ed25519 public key pinned at registration; empty rejects every update.
     pub update_key: Vec<u8>,
+    /// The Device Password returned at registration. Never written to `credentials.json`: the Agent keeps it in its
+    /// Secret Store and the Server only its hash.
+    #[serde(default, skip_serializing)]
+    pub device_password: String,
 }
 
 /// `rk_<fingerprint>_<secret>` as `(fingerprint, secret)`.
@@ -195,6 +200,7 @@ pub async fn register(server: &ServerEndpoint, platform: &dyn Platform) -> anyho
                 key_pem: key.serialize_pem(),
                 ca_der,
                 update_key: r.update_key,
+                device_password: r.device_password,
             })
         }
         Some(server_message::Msg::Error(e)) => anyhow::bail!("registration rejected: {}: {}", e.code, e.message),

@@ -180,8 +180,11 @@ impl TestSystem {
     }
 
     /// Registers a new Device named `hostname` and starts its Agent with its local IPC socket in `dir`.
+    /// The Agent's Secret Store lives in `dir` too, as on a real Device.
     pub async fn start_agent_with_socket(&self, hostname: &str, dir: &std::path::Path) -> TestAgent {
-        let agent = self.start_agent(hostname).await;
+        let creds = self.register(&FakePlatform::new(hostname)).await.expect("register");
+        let mut agent = TestAgent::with_secrets_dir(self.endpoint(), FakePlatform::new(hostname), creds, dir.to_path_buf());
+        agent.start();
         tokio::spawn(rcli_agent::ipc::serve(dir.join("agent.sock"), agent.status.clone()));
         agent
     }
@@ -254,9 +257,25 @@ impl TestAgent {
     /// An Agent for already-enrolled credentials; call `start` to connect.
     /// It reaches `endpoint` through a link the test can cut (`cut_network`). Needs a Tokio runtime.
     pub fn new(endpoint: ServerEndpoint, platform: FakePlatform, creds: Credentials) -> Self {
+        let dir = std::env::temp_dir().join(format!("rcli-test-agent-{}-{}", std::process::id(), creds.device_id));
+        Self::with_secrets_dir(endpoint, platform, creds, dir)
+    }
+
+    /// An Agent that keeps its Device Password in `secrets_dir`.
+    pub fn with_secrets_dir(endpoint: ServerEndpoint, platform: FakePlatform, creds: Credentials, secrets_dir: std::path::PathBuf) -> Self {
         let network = NetworkLink::new(&endpoint.addr);
-        let status = Arc::new(rcli_agent::ipc::Status::new(&creds.device_id, &endpoint.addr));
+        use rcli_agent::secret_store::SecretStore;
+        let secrets = std::sync::Arc::new(rcli_agent::secret_store::FileSecretStore::new(secrets_dir));
+        if !creds.device_password.is_empty() {
+            secrets.set(rcli_agent::ipc::DEVICE_PASSWORD, &creds.device_password).expect("store the Device Password");
+        }
+        let status = Arc::new(rcli_agent::ipc::Status::new(&creds.device_id, &endpoint.addr, secrets));
         Self { endpoint, platform, creds, status, task: None, network }
+    }
+
+    /// The Device Password generated at registration.
+    pub fn device_password(&self) -> Option<String> {
+        (!self.creds.device_password.is_empty()).then(|| self.creds.device_password.clone())
     }
 
     /// Drops the Agent's connection and stalls new ones until `restore_network`; the Agent keeps running.
@@ -328,6 +347,14 @@ impl NetworkLink {
         });
         Self { addr, up, task }
     }
+}
+
+/// Whether the tests run as root (then the IPC password gate lets them through).
+pub fn running_as_root() -> bool {
+    #[cfg(unix)]
+    return std::process::Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0");
+    #[cfg(not(unix))]
+    false
 }
 
 /// Retries `f` until it returns `Some`, for up to 10 seconds of real time.

@@ -34,22 +34,30 @@ pub async fn register(state: &AppState, req: RegisterRequest) -> Result<Register
         .sign_device_csr(&req.csr_pem, &device_id.to_string())
         .map_err(|e| RegisterError::BadRequest(format!("invalid CSR: {e}")))?;
 
+    let device_password = rcli_protocol::password::generate();
+    let password_hash = rcli_protocol::password::hash(&device_password);
+
     let mut tx = state.db.begin().await?;
     let device_number = next_device_number(&mut tx).await?;
-    sqlx::query("INSERT INTO devices (id, device_number, name, cert_fingerprint, enrolled_at) VALUES ($1, $2, $3, $4, $5)")
-        .bind(device_id)
-        .bind(&device_number)
-        .bind(name)
-        .bind(pki::fingerprint(&issued.cert_der))
-        .bind(state.clock.now())
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO devices (id, device_number, name, cert_fingerprint, enrolled_at, device_password_hash)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(device_id)
+    .bind(&device_number)
+    .bind(name)
+    .bind(pki::fingerprint(&issued.cert_der))
+    .bind(state.clock.now())
+    .bind(&password_hash)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(RegisterResponse {
         device_id: device_number,
         cert_pem: issued.cert_pem,
         update_key: state.config.update_public_key.clone().unwrap_or_default(),
         ca_pem: state.ca.cert_pem.clone(),
+        device_password,
     })
 }
 
