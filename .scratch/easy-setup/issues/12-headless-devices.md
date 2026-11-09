@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Screen Actions return the 'no display' error; everything else works
 - [x] The Dashboard hides the Screen tab and explains why
@@ -19,3 +19,9 @@
   displays from the platform. `cargo test --workspace` 95 passed / 0 failed; clippy and `tsc --noEmit` clean.
   Playwright was not run in this worktree (no local `node_modules`/browser stack); the new
   `dashboard/tests/headless.spec.ts` is written but unverified.
+- Merged into `easy-setup` (fast-forward to `06c9e31`). Verified on the merged tree: `cargo test --workspace`
+  117 passed / 0 failed, `cargo clippy --workspace --all-targets` and `tsc --noEmit` clean. Playwright WAS run
+  here (`DOCKER_HOST` = Colima, ports 18081/3101): `headless.spec.ts` 2 passed, and together with the three
+  specs whose counts moved to "5 Online" (`signin-fleet`, `fleet-filter`, `admin`) 19 passed / 0 failed. One
+  spec bug surfaced and was fixed: on the direct `/screen` URL the explanation appears twice (tab bar and page),
+  so the locator now targets the page paragraph.

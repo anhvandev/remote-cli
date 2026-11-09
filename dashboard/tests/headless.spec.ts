@@ -20,7 +20,8 @@ test("a Device with no display hides the Screen tab and says why", async ({ page
 
   // Visiting the Screen URL directly says why instead of showing the Live view.
   await page.goto(page.url().replace(/\/terminal$/, "/screen"));
-  await expect(page.getByText("Device không có màn hình.")).toBeVisible();
+  // The tab bar says it too, so target the page's own paragraph.
+  await expect(page.getByRole("paragraph").filter({ hasText: "Device không có màn hình." })).toBeVisible();
   await expect(page.getByRole("region", { name: "Live view" })).toHaveCount(0);
 });
 
