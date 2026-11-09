@@ -4,7 +4,7 @@
 
 **Blocked by:** 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Admin can change ID (duplicate refused), name and set a new password; the Device picks them up live
 - [x] Operators do not see these actions
@@ -59,3 +59,19 @@
   Server-initiated mirror of ticket 06's messages; the Offline-Device refusal (`409 device_not_connected`, no
   queueing) and rename working Offline; `audit` action names `device.id` and `device.password`; the Dashboard card
   living on the Device page rather than in `/admin/devices`.
+
+## Comments
+
+- Implemented by a subagent on branch `t/11` (`bf52a5b`, 7 commits). Admin `PATCH /api/v1/devices/{device}` accepts
+  `name`, `device_id`, `device_password`; ID and password are pushed to the Agent over the live TLS channel first and
+  the Server row is written only after the Agent applies them, so a refusal cannot desync the two sides. Validation:
+  password >= 8 chars (both ends), Device ID 9 digits and unique (`409 device_id_taken`), Operators get `403
+  admin_required` from the Server. Dashboard card is admin-only; no endpoint ever returns a password; audit
+  `device.id` / `device.password` carry empty params. Reuses ticket 06's `IdentityUpdate`.
+- Verified on the merged integration tree: `cargo test --workspace` green, clippy and `tsc --noEmit` clean, full
+  Playwright suite 38 passed / 0 failed (`device-admin.spec.ts` 2 passed) on ports 18090/3110.
+- Invented behaviour: an Offline Device refuses ID/password changes with `409 device_not_connected` (no queueing);
+  rename still works Offline because it is Server-side only.
+- Not verified: the Windows named pipe (ticket 03 shortcut), and a live Controller holding a stream while the Device ID
+  changes (only a new connection using the new ID is covered).
+- `shortcut:` in `api::devices::push`: a reply lost after the Agent applied a change leaves the two sides diverged.

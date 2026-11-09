@@ -4,7 +4,7 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] A Controller-only machine upgrades itself
 - [x] A bad signature is rejected and the old binary is kept
@@ -49,3 +49,21 @@
   UID 0 (not merely "Linux"), so a Controller-only machine never touches systemd.
 - `cargo test --workspace`: see the report; `cargo clippy --workspace --all-targets` and
   `cd dashboard && npx tsc --noEmit` clean. Dashboard untouched, so Playwright was not run.
+
+## Comments
+
+- Implemented by a subagent on branch `t/13` (`c171689`, 4 commits). `rcli upgrade` fetches the newest published build
+  for its target from `GET /api/v1/agent-builds/{target}`, verifies the Ed25519 signature against the pinned update
+  key, and replaces the binary atomically (temp file + rename). No build for the target gives a clear error. On Linux
+  as root it checks the `rcli-agent` unit exists before swapping, then restarts it; non-root or non-Linux leaves the
+  service alone.
+- The update-key pin caveat from ticket 03's review is fixed: `/api/v1/update-key` now also returns
+  `mac` = HMAC-SHA256 of the key under the Server Key secret, and `rcli setup` recomputes and rejects a mismatch. An
+  on-path attacker rewriting both `/server-ca` and `/update-key` over plain HTTP cannot forge the MAC without the
+  secret. Covered by a test with a local impostor serving the real CA and a fake key.
+- Verified on the merged integration tree: `cargo test --workspace` green (5 tests in `tests/upgrade.rs`), clippy and
+  `tsc` clean. Playwright not applicable (dashboard untouched).
+- Not verified: the installed-Device path needs a real Linux machine with systemd; `service_to_restart`/`restart` are
+  compile-checked only.
+- `shortcut:` (1) `service_to_restart` assumes a unit named `rcli-agent` — ticket 16 must confirm the real name and
+  path; (2) `replace` over a running `.exe` fails on Windows — ticket 22 must move the file aside first.
