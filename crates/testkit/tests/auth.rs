@@ -91,7 +91,13 @@ async fn rcli_login_saves_a_session_that_admin_commands_and_logout_use() {
     assert!(out.contains("bob") && out.contains("admin"), "{out}");
 
     let config: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
-    assert!(config["token"].as_str().is_some_and(|t| t.starts_with("rcli_")), "{config}");
+    let token = config["token"].as_str().filter(|t| t.starts_with("rcli_")).unwrap_or_else(|| panic!("{config}")).to_owned();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join("config.json")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "the session file must not be readable by other local users");
+    }
 
     // Admin commands use the saved session.
     let out = sys.rcli_in(&dir, &["user", "list"]).await.unwrap();
@@ -108,6 +114,9 @@ async fn rcli_login_saves_a_session_that_admin_commands_and_logout_use() {
     assert!(out.contains("signed out"), "{out}");
     let config: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
     assert!(config["token"].is_null(), "{config}");
+    // `logout` revokes it at the Server too, not just locally.
+    let (status, _) = sys.api.with_token(Some(&token)).get("/api/v1/devices").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     let err = sys.rcli_in(&dir, &["user", "list"]).await.unwrap_err();
     assert!(err.to_string().contains("rcli login"), "{err}");
 }

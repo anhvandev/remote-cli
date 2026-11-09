@@ -4,7 +4,7 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Admin commands work after `rcli login` and fail with a clear 'run rcli login' error otherwise
 - [x] Operators get a clear refusal for admin commands
@@ -47,4 +47,34 @@
   cookie path is unchanged by this ticket.
 - Invented where the spec is silent: the `admin_only` local refusal wording (the Server remains the authority);
   `logout` revoking best-effort before clearing the saved session.
+- Merged into `easy-setup` (merge `491a250`). **No conflicts**: ticket 04 had landed on `8c80bdf`, one commit before
+  this merge, and the three overlapping files merged cleanly. Verified both behaviours survived:
+  - `auth.rs`: `authenticate` keeps 04's `expires_at` bootstrap fix and 05's deletion of the token helpers; the
+    password path (`authenticate_controller`, limiter, atomic upsert, lockout doubling) is untouched by 05, and
+    `is_admin()` still refuses `role = "controller"`.
+  - `config.rs`: 04's `verify` lockout message and 05's `set_token` both present.
+  - `testkit/src/lib.rs`: 04's `start_dual_stack` and 05's `create_dashboard_user`/`sign_in_admin`/`mcp_in` both
+    present; `create_user` still signs in, so `rate_limit.rs` callers are unchanged.
+- Merger verification on `491a250` + the fix below: `cargo test --workspace` 150 passed / 0 failed (run alone);
+  `cargo clippy --workspace --all-targets` clean; `cd dashboard && npx tsc --noEmit` clean; Playwright
+  `tests/admin.spec.ts` 10/10 on ports 18089/3109.
+- Merger fix: the saved session was written by `std::fs::write`, i.e. the default `0644`, so any local user could
+  read an Admin's session token. `config::save` now chmods `config.json` to `0600` (and the test asserts it).
+  The auth test also now checks that `logout` revokes the token at the Server (a later request with it is 401).
+- Review points:
+  - **Password connections are still refused admin:** `Admin` → `Caller` → `is_admin()` (`role == "admin" &&
+    device_scope.is_none()`), and `controller_user` sets `role = "controller"`, so the session path 05 added cannot
+    be reached with Server-Key headers. `controller.rs::a_password_connection_reaches_its_own_device_only` proves
+    the 403 `admin_required` at runtime; the CLI's `admin_only()` refusal is an extra local guard only, the Server
+    is the authority. The limiter still runs on that path (`auth.rs::authenticate_controller`).
+  - **Session in `config.json` is acceptable** now that the file is `0600`; it is a 12 h expiring session,
+    `logout` revokes it at the Server (tested), and a password connection cannot present a bearer token to become
+    an Admin (the two auth paths in `Caller` are disjoint). A stolen `config.json` is equivalent to a stolen
+    Dashboard cookie, which is the accepted model. Not verified: the OS keychain (spec's preferred store for
+    remembered Device Passwords; the session itself is spec'd as living in the CLI config).
+  - **Leftovers:** none in code, docs, Dashboard or tests except the two deliberate negative tests in
+    `tests/auth.rs` (`/api/v1/tokens` must be 404) and the spec/ticket prose. `RCLI_SERVER`/`RCLI_TOKEN` are gone
+    (only `RCLI_SERVER_KEY` remains, which is a different Agent flag). Two stale comments ("all of their API
+    tokens stop working", "a live API token") were corrected to "sessions".
+  - **Scope:** nothing from 06 (no Device identity/GUI changes) or 13 (no `rcli upgrade`); `agent.proto` untouched.
 

@@ -433,7 +433,7 @@ enum UserCommand {
     },
     /// List users.
     List,
-    /// Disable a user; all of their API tokens stop working.
+    /// Disable a user; all of their sessions stop working.
     Disable { name: String },
     /// Set a user's Dashboard password and enroll a new TOTP secret (shown once; scan the otpauth URL).
     SetPassword {

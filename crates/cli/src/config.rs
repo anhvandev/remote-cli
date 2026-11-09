@@ -50,7 +50,11 @@ pub fn load_at(dir: &Path) -> anyhow::Result<Option<Config>> {
 
 fn save(dir: &Path, config: &Config) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)?;
-    std::fs::write(dir.join("config.json"), serde_json::to_vec_pretty(config)?)?;
+    let path = dir.join("config.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(config)?)?;
+    // The file holds the User session, so keep it private even if an older `rcli setup` created it world-readable.
+    #[cfg(unix)]
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     Ok(())
 }
 

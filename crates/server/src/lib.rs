@@ -36,7 +36,7 @@ pub struct Config {
     pub agent_addr: SocketAddr,
     /// Seeds the Server Address on first start; after that the stored setting wins (Admins edit it).
     pub agent_hostnames: Vec<String>,
-    /// First-run admin token: accepted only until an enabled admin user has a live API token.
+    /// First-run admin token: accepted only until an enabled admin user has a live session.
     pub bootstrap_admin_token: String,
     /// Secrets Vault key (`RCLI_MASTER_KEY`); None = unlock passwords can't be stored or used.
     pub master_key: Option<vault::MasterKey>,
