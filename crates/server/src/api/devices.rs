@@ -43,7 +43,7 @@ async fn change(
         return Err(bad_request("give a name, device_id or device_password"));
     }
     let id = resolve(&state, &key).await?;
-
+    // Everything is checked before anything is pushed or stored, so a refusal leaves both sides unchanged.
     if let Some(password) = &body.device_password {
         if password.chars().count() < rcli_protocol::password::MIN_LENGTH {
             return Err(bad_request(format!(
@@ -51,6 +51,18 @@ async fn change(
                 rcli_protocol::password::MIN_LENGTH
             )));
         }
+    }
+    if let Some(number) = &body.device_id {
+        match registry::validate_device_number(&state, id, number).await? {
+            Ok(()) => {}
+            Err(registry::NumberError::Malformed(m)) => return Err(bad_request(m)),
+            Err(registry::NumberError::Taken(m)) => {
+                return Err(ApiError::new(StatusCode::CONFLICT, "device_id_taken", m))
+            }
+        }
+    }
+
+    if let Some(password) = &body.device_password {
         push(&state, id, |request_id| {
             IdentityUpdate { request_id, device_password: password.clone(), device_id: String::new(), name: String::new() }
         })
@@ -60,13 +72,6 @@ async fn change(
     }
 
     if let Some(number) = &body.device_id {
-        match registry::validate_device_number(&state, id, number).await? {
-            Ok(()) => {}
-            Err(registry::NumberError::Malformed(m)) => return Err(bad_request(m)),
-            Err(registry::NumberError::Taken(m)) => {
-                return Err(ApiError::new(StatusCode::CONFLICT, "device_id_taken", m))
-            }
-        }
         push(&state, id, |request_id| {
             IdentityUpdate { request_id, device_password: String::new(), device_id: number.clone(), name: String::new() }
         })
