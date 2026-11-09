@@ -4,7 +4,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use rcli_protocol::agent::{agent_message, server_message, Inventory, Process, ProcessListRequest, Resources};
+use rcli_protocol::agent::{agent_message, server_message, IdentityUpdate, Inventory, Process, ProcessListRequest, Resources};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -15,28 +15,87 @@ use crate::{audit, metrics, registry};
 pub fn routes() -> Router<super::State> {
     Router::new()
         .route("/api/v1/devices", get(list))
-        .route("/api/v1/devices/{device}", get(show).patch(rename).delete(delete))
+        .route("/api/v1/devices/{device}", get(show).patch(change).delete(delete))
         .route("/api/v1/devices/{device}/processes", get(processes))
         .route("/api/v1/devices/{device}/revoke", post(revoke))
         .route("/api/v1/devices/{device}/merge", post(merge))
 }
 
+/// An Admin's change to a Device's identity; any field may be given, each one is applied on its own.
 #[derive(Deserialize)]
-struct Rename {
-    name: String,
+struct Change {
+    name: Option<String>,
+    device_id: Option<String>,
+    device_password: Option<String>,
 }
 
-async fn rename(
+/// Renames the Device, changes its Device ID and sets a new Device Password.
+/// A new ID or password is pushed to the Device's Agent first and only then stored on the Server, so a Device that
+/// cannot apply it (it is Offline, or its Secret Store refuses) leaves both sides unchanged.
+async fn change(
     Admin(user): Admin,
     State(state): State<super::State>,
     Path(key): Path<String>,
-    body: Result<Json<Rename>, JsonRejection>,
+    body: Result<Json<Change>, JsonRejection>,
 ) -> Result<Json<registry::Device>, ApiError> {
     let Json(body) = body.map_err(|e| bad_request(e.body_text()))?;
+    if body.name.is_none() && body.device_id.is_none() && body.device_password.is_none() {
+        return Err(bad_request("give a name, device_id or device_password"));
+    }
     let id = resolve(&state, &key).await?;
-    registry::rename(&state, id, &body.name).await?.map_err(bad_request)?;
-    audit::record(&state, &user, id, "device.rename", json!({ "name": body.name }), json!({ "error": null })).await?;
+
+    if let Some(password) = &body.device_password {
+        if password.chars().count() < rcli_protocol::password::MIN_LENGTH {
+            return Err(bad_request(format!(
+                "the Device Password must be at least {} characters",
+                rcli_protocol::password::MIN_LENGTH
+            )));
+        }
+        push(&state, id, |request_id| {
+            IdentityUpdate { request_id, device_password: password.clone(), device_id: String::new(), name: String::new() }
+        })
+        .await?;
+        registry::set_device_password(&state, id, password).await?;
+        audit::record(&state, &user, id, "device.password", json!({}), json!({ "error": null })).await?;
+    }
+
+    if let Some(number) = &body.device_id {
+        match registry::validate_device_number(&state, id, number).await? {
+            Ok(()) => {}
+            Err(registry::NumberError::Malformed(m)) => return Err(bad_request(m)),
+            Err(registry::NumberError::Taken(m)) => {
+                return Err(ApiError::new(StatusCode::CONFLICT, "device_id_taken", m))
+            }
+        }
+        push(&state, id, |request_id| {
+            IdentityUpdate { request_id, device_password: String::new(), device_id: number.clone(), name: String::new() }
+        })
+        .await?;
+        registry::set_device_number(&state, id, number).await?.map_err(bad_request)?;
+        audit::record(&state, &user, id, "device.id", json!({ "device_id": number }), json!({ "error": null })).await?;
+    }
+
+    if let Some(name) = &body.name {
+        registry::rename(&state, id, name).await?.map_err(bad_request)?;
+        audit::record(&state, &user, id, "device.rename", json!({ "name": name }), json!({ "error": null })).await?;
+    }
     Ok(Json(registry::get(&state, id).await?))
+}
+
+/// Sends an identity change to the Device's Agent and returns its refusal message, if any.
+async fn push(
+    state: &super::State,
+    id: Uuid,
+    build: impl FnOnce(u64) -> IdentityUpdate,
+) -> Result<(), ApiError> {
+    let msg = |request_id| server_message::Msg::IdentityChange(build(request_id));
+    match state.agents.request(id, msg).await? {
+        agent_message::Msg::IdentityUpdated(r) => match r.error {
+            None => Ok(()),
+            Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
+        },
+        _ => Err(anyhow::anyhow!("unexpected reply to IdentityChange").into()),
+    }
 }
 
 async fn delete(Admin(user): Admin, State(state): State<super::State>, Path(key): Path<String>) -> Result<StatusCode, ApiError> {

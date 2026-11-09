@@ -23,6 +23,8 @@ message AgentMessage {
     ShellOutput shell_output = 120;
     ShellExit shell_exit = 121;
     IdentityUpdate identity_update = 20;
+    // The Agent's answer to a Server-initiated `identity_change`.
+    IdentityUpdated identity_updated = 22;
   }
   reserved 30; // was a bare Resources delta; now ResourceSample
 }
@@ -46,6 +48,8 @@ message ServerMessage {
     LiveOffer live_offer = 21;
     LiveClose live_close = 210;
     IdentityUpdated identity_updated = 20;
+    // An Admin changed the Device ID or set a new Device Password from the Dashboard: the Device must apply it.
+    IdentityUpdate identity_change = 22;
   }
 }
 
@@ -404,8 +408,9 @@ message ShellExit {
   int32 exit_code = 2;
 }
 
-// A change made at the Device itself (`sudo rcli agent password|id|name set`). Empty = unchanged.
-// The Server checks the Device ID for uniqueness and stores a new password as a hash.
+// A change to the Device's identity. The Agent sends it after `sudo rcli agent password|id|name set`
+// (`identity_update`); the Server sends it back for an Admin's change on the Dashboard (`identity_change`).
+// Empty = unchanged. The Server checks the Device ID for uniqueness and stores a new password as a hash.
 message IdentityUpdate {
   uint64 request_id = 1;
   string device_password = 2;
@@ -414,6 +419,7 @@ message IdentityUpdate {
 }
 
 // `error` set = nothing was changed. `device_id` is the Device ID in effect after the change.
+// Sent by the Server for an Agent-initiated change, and by the Agent for a Server-initiated one.
 message IdentityUpdated {
   uint64 request_id = 1;
   Error error = 2;

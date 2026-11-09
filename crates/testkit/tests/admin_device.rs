@@ -2,7 +2,7 @@
 //! (`PATCH /api/v1/devices/{device}`). A new password is pushed to the Device's Secret Store live; Admins never
 //! read a password back. Operators cannot reach these actions.
 
-use rcli_testkit::{eventually, StatusCode, TestSystem};
+use rcli_testkit::{StatusCode, TestSystem};
 use serde_json::json;
 
 /// A short temp directory: the IPC socket path must fit in `SUN_LEN` (104 bytes on macOS).
@@ -128,6 +128,7 @@ async fn an_offline_device_can_be_renamed_but_its_id_and_password_need_it_online
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
     let id = agent.device_id().to_owned();
     agent.stop();
+    sys.wait_device(&id, |d| !d["last_seen_at"].is_null()).await;
     sys.advance(31);
     sys.wait_device(&id, |d| d["status"] == "Offline").await;
 
@@ -145,7 +146,4 @@ async fn an_offline_device_can_be_renamed_but_its_id_and_password_need_it_online
     let (status, body) = sys.api.patch_json(&path, &json!({ "name": "gone-pc-2" })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["name"], "gone-pc-2");
-
-    // The Agent was never told (it was Offline) and cannot be reached later without a reconnect: that is the error.
-    eventually(|| async { (sys.api.get(&path).await.0 == StatusCode::OK).then_some(()) }).await;
 }

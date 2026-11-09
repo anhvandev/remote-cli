@@ -26,8 +26,9 @@ use platform::Platform;
 use rcli_protocol::{
     agent::{
         agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, DisplayList, Error, ExecRequest,
-        ExecResult, Heartbeat, PowerResult, ProcessList, RegisterRequest, ResourceSample, Resources, ServerMessage,
-        ShellExit, ShellOpen, ShellOpened, ShellOutput, UpdateFailed, WakeResult,
+        ExecResult, Heartbeat, IdentityUpdate, IdentityUpdated, PowerResult, ProcessList, RegisterRequest,
+        ResourceSample, Resources, ServerMessage, ShellExit, ShellOpen, ShellOpened, ShellOutput, UpdateFailed,
+        WakeResult,
     },
     Conn,
 };
@@ -489,6 +490,10 @@ async fn session(
                     Some(server_message::Msg::ControlIndicator(c)) => {
                         live.set_lock_indicator(c.on);
                     }
+                    Some(server_message::Msg::IdentityChange(u)) => {
+                        let reply = server_identity_change(&u, status, creds);
+                        conn.send(&send(agent_message::Msg::IdentityUpdated(reply))).await?;
+                    }
                     Some(server_message::Msg::IdentityUpdated(r)) => {
                         if let Some(reply) = pending.remove(&r.request_id) {
                             let result = match r.error {
@@ -510,6 +515,29 @@ async fn session(
             }
         }
     }
+}
+
+/// Applies an Admin's identity change from the Dashboard: writes a new Device Password to the Secret Store and keeps
+/// a new Device ID. The Server has already checked and stored its side; `error` tells it to leave the Server side
+/// alone (nothing is half-applied here: the password is stored first and an ID change never writes the password).
+fn server_identity_change(u: &IdentityUpdate, status: Option<&ipc::Status>, creds: &mut Credentials) -> IdentityUpdated {
+    let (password, device_id) = (&u.device_password, &u.device_id);
+    let error = match status {
+        Some(s) if !password.is_empty() => s.store_password(password).err().map(|e| Error { code: "secret_store".into(), message: format!("{e:#}") }),
+        None if !password.is_empty() => Some(Error { code: "no_secret_store".into(), message: "the Agent has no Secret Store".into() }),
+        _ => None,
+    };
+    if error.is_some() {
+        return IdentityUpdated { request_id: u.request_id, error, device_id: String::new() };
+    }
+    if !device_id.is_empty() {
+        if let Some(s) = status {
+            s.set_device_id(device_id);
+        }
+        creds.device_id = device_id.clone();
+    }
+    let in_effect = if device_id.is_empty() { creds.device_id.clone() } else { device_id.clone() };
+    IdentityUpdated { request_id: u.request_id, error: None, device_id: in_effect }
 }
 
 /// Who a terminal command or session runs as: the logged-in user, or root when asked or allowed with nobody logged in.

@@ -161,10 +161,25 @@ pub async fn revoke(state: &AppState, id: Uuid) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Changes the Device ID; `Err` with a message if it is not 9 digits or another Device has it.
-pub async fn set_device_number(state: &AppState, id: Uuid, number: &str) -> anyhow::Result<Result<(), String>> {
+/// Why a new Device ID was refused: not 9 digits, or another Device has it.
+pub enum NumberError {
+    Malformed(String),
+    Taken(String),
+}
+
+impl NumberError {
+    pub fn message(&self) -> &str {
+        match self {
+            NumberError::Malformed(m) | NumberError::Taken(m) => m,
+        }
+    }
+}
+
+/// Checks a new Device ID without changing anything; `Err` with a reason if it is not 9 digits or another
+/// Device has it. Used before a change is pushed to the Device, so a refusal changes nothing.
+pub async fn validate_device_number(state: &AppState, id: Uuid, number: &str) -> anyhow::Result<Result<(), NumberError>> {
     if number.len() != 9 || !number.chars().all(|c| c.is_ascii_digit()) {
-        return Ok(Err("the Device ID must be 9 digits".into()));
+        return Ok(Err(NumberError::Malformed("the Device ID must be 9 digits".into())));
     }
     let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM devices WHERE device_number = $1 AND id <> $2)")
         .bind(number)
@@ -172,7 +187,15 @@ pub async fn set_device_number(state: &AppState, id: Uuid, number: &str) -> anyh
         .fetch_one(&state.db)
         .await?;
     if taken {
-        return Ok(Err(format!("Device ID {number} is already used by another Device")));
+        return Ok(Err(NumberError::Taken(format!("Device ID {number} is already used by another Device"))));
+    }
+    Ok(Ok(()))
+}
+
+/// Changes the Device ID; `Err` with a message if it is not 9 digits or another Device has it.
+pub async fn set_device_number(state: &AppState, id: Uuid, number: &str) -> anyhow::Result<Result<(), String>> {
+    if let Err(e) = validate_device_number(state, id, number).await? {
+        return Ok(Err(e.message().to_owned()));
     }
     sqlx::query("UPDATE devices SET device_number = $2 WHERE id = $1").bind(id).bind(number).execute(&state.db).await?;
     Ok(Ok(()))

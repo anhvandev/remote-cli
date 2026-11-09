@@ -229,6 +229,9 @@ where
                         let reply = identity_update(state, device, u).await;
                         conn.send(&ServerMessage { msg: Some(server_message::Msg::IdentityUpdated(reply)) }).await?;
                     }
+                    Some(agent_message::Msg::IdentityUpdated(r)) => {
+                        state.agents.reply(device, r.request_id, agent_message::Msg::IdentityUpdated(r));
+                    }
                     // Later tickets dispatch more replies here.
                     _ => {}
                 }
