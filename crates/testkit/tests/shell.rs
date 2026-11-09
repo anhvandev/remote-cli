@@ -119,7 +119,7 @@ async fn interactive_shell_runs_commands_as_the_logged_in_user_and_audits_start_
     assert_eq!(entries.len(), 2, "{entries:?}");
     assert_eq!(entries[0]["action"], "shell.start");
     assert_eq!(entries[0]["user"], "alice");
-    assert_eq!(entries[0]["result"], json!({ "session": sh.session, "as": "user", "error": null }));
+    assert_eq!(entries[0]["result"], json!({ "session": sh.session, "as": "user", "root_decision": "", "error": null }));
     assert_eq!(entries[1]["action"], "shell.end");
     assert_eq!(entries[1]["params"], json!({ "session": sh.session }));
     assert_eq!(entries[1]["result"], json!({ "exit_code": 0, "reason": "exited" }));

@@ -217,6 +217,25 @@ async fn every_root_run_and_prompt_answer_is_audited() {
 }
 
 #[tokio::test]
+async fn the_terminal_user_setting_survives_a_restart() {
+    let sys = TestSystem::start().await;
+    let (mut agent, dir) = online(&sys, "terminal-user-persisted", FakePlatform::new("lab-pc")).await;
+    let dev = agent.device_id().to_owned();
+    sys.agent_rcli(&dir.join("agent.sock"), &["agent", "terminal-user", "set", "alice"]).await.unwrap();
+
+    // The setting is in the Device Settings file next to the credentials, so a restart keeps it.
+    let settings: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(settings["terminal_user"], "alice");
+    agent.stop();
+    let mut restarted = sys.resume_agent_on(agent, FakePlatform::new("lab-pc"), &dir).await;
+    sys.wait_device(&dev, |d| d["status"] == "Online").await;
+    let (status, out) = sys.api.post_json(&format!("/api/v1/devices/{dev}/exec"), &json!({ "command": "whoami" })).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["stdout"], "alice\n");
+    restarted.stop();
+}
+
+#[tokio::test]
 async fn only_root_can_change_the_terminal_user() {
     let sys = TestSystem::start().await;
     let dir = temp_dir("terminal-user-gate");

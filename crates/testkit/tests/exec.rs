@@ -33,7 +33,10 @@ async fn exec_returns_output_and_exit_code_as_the_terminal_user_without_the_lock
     let path = format!("/api/v1/devices/{dev}/exec");
     let (status, out) = alice.post_json(&path, &json!({ "command": "echo hi" })).await;
     assert_eq!(status, StatusCode::OK, "{out}");
-    assert_eq!(out, json!({ "exit_code": 0, "stdout": "hi\n", "stderr": "", "timed_out": false, "as": "user" }));
+    assert_eq!(
+        out,
+        json!({ "exit_code": 0, "stdout": "hi\n", "stderr": "", "timed_out": false, "as": "user", "root_decision": "" })
+    );
 
     // The Terminal User defaults to the account running the Agent (this test process).
     let running = std::env::var("USER").expect("USER");
