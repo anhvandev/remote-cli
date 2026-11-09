@@ -39,7 +39,8 @@
     signs in, returning the session token, so every caller stays unchanged. Sign-in needs no admin rights, which
     keeps the helper usable from within tests. Sessions expire after 12 h, so tests that move the clock past that
     call `sign_in_admin()` (history, audit, sessions) and the dev stack renews once after it jumps to real time.
-- Verification: `cargo test --workspace` 141 passed / 0 failed; `cargo clippy --workspace --all-targets` and
+- Verification: on the merge of `easy-setup` (ticket 04 included), `cargo test --workspace` 150 passed / 0 failed;
+  `cargo clippy --workspace --all-targets` and
   `cd dashboard && npx tsc --noEmit` clean. Playwright `tests/admin.spec.ts` 10/10 passed on ports 18085/3105
   against the dev stack (the spec's token step was removed; the rest is unchanged).
 - Not verified: the interactive password/TOTP prompts (tests pass `--password`/`--totp`); the Dashboard sign-out
