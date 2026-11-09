@@ -21,7 +21,7 @@ use tokio::{
     sync::{mpsc, oneshot, watch},
 };
 
-use crate::{secret_store::SecretStore, ServerEndpoint};
+use crate::{secret_store::SecretStore, settings, ServerEndpoint};
 
 /// The Device Password's name in the Secret Store.
 pub const DEVICE_PASSWORD: &str = "device_password";
@@ -48,6 +48,8 @@ pub struct Status {
     changes: mpsc::UnboundedSender<Change>,
     changes_rx: Mutex<Option<mpsc::UnboundedReceiver<Change>>>,
     next_request: AtomicU64,
+    /// The Device Settings the Agent enforces; kept here so `rcli agent …` can change them live.
+    settings: settings::Handle,
 }
 
 impl Status {
@@ -62,7 +64,17 @@ impl Status {
             changes,
             changes_rx: Mutex::new(Some(changes_rx)),
             next_request: AtomicU64::new(0),
+            settings: settings::Handle::new(),
         }
+    }
+
+    /// Where Device Settings are saved (the Agent's state directory); they apply to the running Agent at once.
+    pub fn set_settings_dir(&self, dir: std::path::PathBuf) {
+        self.settings.set_dir(dir);
+    }
+
+    pub fn settings(&self) -> &settings::Handle {
+        &self.settings
     }
 
     pub fn set_connected(&self, connected: bool) {
@@ -246,6 +258,16 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
             match status.identity(None, None, Some(name)).await {
                 Ok(_) => json!({ "message": "the Device name was changed" }),
                 Err(e) => json!({ "error": e }),
+            }
+        }
+        Some("terminal-user.set") => {
+            let user = request["user"].as_str().unwrap_or_default().trim().to_owned();
+            if user.is_empty() || user.len() > 64 || user.chars().any(|c| c.is_whitespace() || c == ':') {
+                return json!({ "error": "the Terminal User must be a local account name (1-64 characters, no spaces)" });
+            }
+            match status.settings().update(|s| s.terminal_user = user.clone()) {
+                Ok(s) => json!({ "terminal_user": s.terminal_user, "message": format!("terminal commands and shells now run as {user}") }),
+                Err(e) => json!({ "error": format!("cannot save the Device Settings: {e:#}") }),
             }
         }
         Some("server.set") => {

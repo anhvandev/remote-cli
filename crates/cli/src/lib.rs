@@ -253,6 +253,14 @@ enum AgentCommand {
         #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
         socket: Option<PathBuf>,
     },
+    /// The Terminal User: the account terminal commands and shells run as (root only).
+    TerminalUser {
+        #[command(subcommand)]
+        command: agent::TerminalUserCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -558,6 +566,7 @@ where
             AgentCommand::Id { command, socket } => agent::run_id(command, socket, out).await,
             AgentCommand::Name { command, socket } => agent::run_name(command, socket, out).await,
             AgentCommand::Server { command, socket } => agent::run_server(command, socket, out).await,
+            AgentCommand::TerminalUser { command, socket } => agent::run_terminal_user(command, socket, out).await,
         };
     }
     let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);

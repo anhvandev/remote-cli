@@ -359,11 +359,13 @@ impl TestAgent {
     pub fn with_secrets_dir(endpoint: ServerEndpoint, platform: FakePlatform, creds: Credentials, secrets_dir: std::path::PathBuf) -> Self {
         let network = NetworkLink::new(&endpoint.addr);
         use rcli_agent::secret_store::SecretStore;
-        let secrets = std::sync::Arc::new(rcli_agent::secret_store::FileSecretStore::new(secrets_dir));
+        let secrets = std::sync::Arc::new(rcli_agent::secret_store::FileSecretStore::new(secrets_dir.clone()));
         if !creds.device_password.is_empty() {
             secrets.set(rcli_agent::ipc::DEVICE_PASSWORD, &creds.device_password).expect("store the Device Password");
         }
         let status = Arc::new(rcli_agent::ipc::Status::new(&creds.device_id, endpoint.clone(), secrets));
+        // Device Settings live beside the credentials, as on a real Device.
+        status.set_settings_dir(secrets_dir);
         Self { endpoint, platform, creds, status, task: None, network }
     }
 

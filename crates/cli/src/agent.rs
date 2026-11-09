@@ -63,6 +63,8 @@ impl Run {
         };
         tracing::info!("Device {} connecting to {}", creds.device_id, server.addr);
         let status = Arc::new(ipc::Status::new(&creds.device_id, server.clone(), Arc::new(secrets)));
+        // Device Settings live beside the credentials, so `rcli agent …` changes survive a restart.
+        status.set_settings_dir(self.state_dir.clone());
         // A new Device ID set at the Device must survive a restart.
         status.set_credentials_path(path);
         let socket = self.socket.unwrap_or_else(ipc::default_socket);
@@ -202,6 +204,33 @@ pub async fn run_name(command: NameCommand, socket: Option<PathBuf>, out: &mut d
     let reply = match command {
         NameCommand::Set { name } => {
             ipc::send(&socket.unwrap_or_else(ipc::default_socket), serde_json::json!({ "command": "name.set", "name": name }))
+                .await?
+        }
+    };
+    writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
+    Ok(())
+}
+
+/// `rcli agent terminal-user ...`: the account terminal commands and shells run as (root only).
+#[derive(Args)]
+pub struct TerminalUser {
+    #[command(subcommand)]
+    command: TerminalUserCommand,
+    /// Local IPC socket of the running Agent.
+    #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+    socket: Option<PathBuf>,
+}
+
+#[derive(clap::Subcommand)]
+pub enum TerminalUserCommand {
+    /// Run terminal commands and shells as this account (requires root/Administrator).
+    Set { user: String },
+}
+
+pub async fn run_terminal_user(command: TerminalUserCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    let reply = match command {
+        TerminalUserCommand::Set { user } => {
+            ipc::send(&socket.unwrap_or_else(ipc::default_socket), serde_json::json!({ "command": "terminal-user.set", "user": user }))
                 .await?
         }
     };

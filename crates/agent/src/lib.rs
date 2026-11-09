@@ -12,6 +12,7 @@ mod media;
 mod observer;
 pub mod platform;
 pub mod secret_store;
+pub mod settings;
 
 use std::{
     io::Read,
