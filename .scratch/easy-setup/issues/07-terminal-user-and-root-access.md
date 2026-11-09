@@ -47,8 +47,10 @@
   session), `rcli root on|off`, and the audit entries. `exec.rs`/`shell.rs` updated where they encoded the old
   rules (run as the logged-in user, root unchecked by Device settings, login screen = root): the `--as root`
   success cases now set the Device to `always` through the trusting socket.
-- Verification: see the final counts in the report; `cargo clippy --workspace --all-targets` clean. No dashboard
-  change, so `tsc --noEmit` and Playwright are unaffected.
+- Verification: on the merged tree (after `git merge easy-setup`), `cargo test --workspace` 176 passed / 0 failed;
+  the affected suites re-run alone — `terminal_user` 10, `exec` 4, `shell` 6, `device_identity` 5.
+  `cargo clippy --workspace --all-targets` clean; `cd dashboard && npx tsc --noEmit` clean. No dashboard change, so
+  Playwright is unaffected (not run).
 - Not verified: a real OS adapter running a command as another account (`RunAs::User` is honored by the
   FakePlatform; ticket 15+ adapters will need `su`/`runas`), and the GUI that shows prompts (ticket 14).
 - Invented where the spec is silent: the `Platform::ask_root` port and its scripted FakePlatform answers; the
