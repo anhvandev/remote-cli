@@ -18,7 +18,7 @@ export async function Nav() {
       <NavLinks admin={me.role === "admin"} />
       <div className="mt-4 flex items-center justify-between gap-2 border-t border-border pt-4 md:flex-col md:items-stretch">
         <div className="min-w-0 truncate px-2 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">{me.name}</span> · {me.role}
+          <span className="font-medium text-foreground">{me.name}</span> · {me.role === "admin" ? "Admin" : "Operator"}
         </div>
         <form action={signOut}>
           <Button variant="ghost" size="sm" className="w-full justify-start text-muted-foreground md:mt-2">

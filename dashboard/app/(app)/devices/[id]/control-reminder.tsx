@@ -9,7 +9,7 @@ export function ControlReminder() {
   if (!holding) return null;
   return (
     <p className="flex items-center gap-2 text-sm">
-      <span>Bạn đang giữ Control Lock</span>
+      <span>Bạn đang giữ Control Lock ·</span>
       <Button size="sm" variant="secondary" onClick={() => release()}>
         Nhả
       </Button>

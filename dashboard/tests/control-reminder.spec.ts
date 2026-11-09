@@ -1,12 +1,11 @@
 import { expect, test } from "@playwright/test";
 import { newUser, signIn } from "./devstack";
 
-// Uses hotel: no other spec takes its Control Lock (alpha is signin-fleet's, bravo device-tabs',
-// charlie direct-control's, golf power-wake's; delta/echo/foxtrot are the admin spec's).
+// Uses india (Online: Màn hình hides the Control Lock while Offline); no other spec takes its Control Lock.
 test("the Control Lock reminder shows on every tab and Nhả releases from the header", async ({ page }) => {
   const user = await newUser();
   await signIn(page, user);
-  await page.getByRole("link", { name: "hotel" }).click();
+  await page.getByRole("link", { name: "india" }).click();
   await page.getByRole("link", { name: "Màn hình" }).click();
 
   const lock = page.getByRole("region", { name: "Control Lock" });

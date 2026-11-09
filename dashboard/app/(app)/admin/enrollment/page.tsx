@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import * as act from "../actions";
 import { Form } from "../form";
-import { card, cardHead, title } from "../shared";
+import { card, cardHead, title } from "../../styles";
 
 export default function EnrollmentPage() {
   return (

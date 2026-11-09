@@ -4,7 +4,8 @@
 //! Fleet: `alpha` Online (LockScreen, user "an", full inventory, a rolled-up minute of history), `bravo` Offline,
 //! `charlie` Online (logged in, a second 1024x768 display; its Control Lock belongs to the direct-control test),
 //! and never-connected `delta`, `echo`, `foxtrot` for the admin screen tests to rename/revoke/delete/merge.
-//! `golf` Online (power test), `hotel` Offline in alpha's LAN whose last Wake failed (wake test).
+//! `golf` Online (power test), `hotel` Offline in alpha's LAN whose last Wake failed (wake test),
+//! `india` Online (its Control Lock belongs to the control-reminder test).
 //! `update` in info.json is a build signed with the key the Agents trust, for the update screen tests.
 //! The clock starts at real time (the Dashboard picks history ranges by its own clock) and is frozen after seeding.
 
@@ -55,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
         DisplayInfo { index: 0, x: 0, y: 0, width: 1920, height: 1080, scale: 1.0, primary: true },
         DisplayInfo { index: 1, x: 1920, y: 0, width: 1024, height: 768, scale: 1.0, primary: false },
     ]);
-    let fleet = [alpha, FakePlatform::new("bravo"), charlie, FakePlatform::new("golf"), hotel];
+    let fleet = [alpha, FakePlatform::new("bravo"), charlie, FakePlatform::new("golf"), hotel, FakePlatform::new("india")];
     for platform in fleet {
         let creds = sys.enroll(&sys.create_enrollment_code().await, &platform).await?;
         let mut agent = TestAgent::new(sys.endpoint(), platform, creds);

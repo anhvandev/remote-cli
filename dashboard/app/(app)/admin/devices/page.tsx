@@ -1,18 +1,17 @@
-import { api, type Device, type UnlockPassword } from "@/lib/api";
+import { api, type Device } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Status, updateStatus } from "../../../status";
+import { Status } from "../../../status";
 import * as act from "../actions";
 import { Form } from "../form";
-import { card, cardHead, day, nativeSelect, title } from "../shared";
+import { card, cardHead, nativeSelect, title } from "../../styles";
+import { unlockPasswords } from "../data";
 
 export default async function DevicesPage() {
   const devices = await api<Device[]>("/api/v1/devices");
-  const unlock = await Promise.all(
-    devices.map((d) => api<UnlockPassword>(`/api/v1/devices/${d.id}/unlock-password`)),
-  );
+  const unlock = await unlockPasswords(devices);
   return (
     <div className="grid items-start gap-5">
       <section className={card} aria-label="Device">
@@ -48,7 +47,7 @@ export default async function DevicesPage() {
                   {d.update && (
                     <>
                       {" → "}
-                      {d.update.version} · {updateStatus(d.update.status)}
+                      {d.update.version} · {d.update.status}
                       {d.update.error && <span className="text-destructive"> ({d.update.error})</span>}
                     </>
                   )}
@@ -125,7 +124,7 @@ export default async function DevicesPage() {
               <TableRow key={d.id}>
                 <TableCell>{d.name}</TableCell>
                 <TableCell className="text-muted-foreground">
-                  {unlock[i].set ? `đã lưu · không hiển thị (${day(unlock[i].updated_at!)})` : "chưa có"}
+                  {unlock[i].set ? `đã lưu · không hiển thị (${new Date(unlock[i].updated_at!).toLocaleString("vi-VN")})` : "chưa có"}
                 </TableCell>
                 <TableCell className="whitespace-normal">
                   <div className="flex flex-wrap items-center gap-1.5">

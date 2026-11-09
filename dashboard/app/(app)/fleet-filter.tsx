@@ -1,5 +1,6 @@
 "use client";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import type { DeviceStatus } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -29,7 +30,7 @@ export function FleetFilter() {
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {["All", "Online", "Offline", "Waking"].map((s) => (
+          {(["All", "Online", "Offline", "Waking"] satisfies ("All" | DeviceStatus)[]).map((s) => (
             <SelectItem key={s} value={s}>
               {s === "All" ? "Tất cả" : s}
             </SelectItem>
