@@ -52,3 +52,40 @@
   entry, and the macOS permission guide. Windows UAC elevation is not implemented (ticket 22's flow owns it).
 - Invented: the `settings` field on the `info` IPC reply; `rcli agent password set` reading stdin when
   `--password` is omitted.
+
+## Comments
+
+- Completed on branch `t/14` on top of the three `feat(gui)` commits above (`096fd47`, `0c2e8aa`): every item
+  that section lists as "Not implemented yet" now exists, except the app-menu entry (installers 17/22/24 own
+  it) and Windows UAC elevation (ticket 22's flow, as noted above).
+- **Device Settings and unlock password editors.** The window edits Terminal User (text), root level and accept
+  mode (selectable values) with one Apply button, and sets/clears the unlock password. Every change follows the
+  same path as Reveal: the IPC first, and when the Agent refuses only for lack of root the same `rcli agent …`
+  command runs elevated (`rcli agent unlock-password set` reads stdin, like `password set`, so no secret reaches
+  a command line). Changes apply live (the Agent saves Device Settings at once).
+- **Server Key and unlock password reveal.** Root-only fields `server_key` and `unlock_password` were added to
+  the `info` reply (root callers only), so the elevated helper is the existing `rcli agent info --json`. The
+  window shows them after one "Reveal Server Key and unlock password" (OS elevation) click.
+- **Prompts (tickets 07/08) in the window.** `Platform::ask_root`/`ask_accept` are routed through the new
+  `ipc::Prompts` queue by `gui::WindowPlatform`, a Platform wrapper `rcli agent run` installs on desktop builds:
+  the prompt reaches the window over the IPC (`prompts` lists it), the person answers Accept/Reject in the
+  window, and no answer in time auto-rejects (the 30 s rule). Accept is root-only (`prompt.answer` refuses it
+  without root, so a local process cannot grant root or let a Controller in); Reject is open to any local user,
+  like `disconnect`. The GUI's Accept runs `sudo rcli agent prompt answer <id> accept` elevated;
+  `rcli agent prompts` lists the waiting prompts for scripting.
+- **"Grant root to this session"** is a button per connected Controller (root, like ticket 07's `root.grant`).
+- **The service opens the window** when someone starts controlling the Device — `WindowPlatform` opens it on
+  the control indicator (Control Lock held / live stream), input, exec and shell — and for every prompt. It
+  spawns `rcli` (no arguments) with the socket in `RCLI_AGENT_SOCKET`, reopening if the person closed it.
+- **macOS permission guide**: the window lists the Screen Recording and Accessibility grants.
+- Tests: `crates/agent/src/ipc.rs` (prompt queue listing/answer/timeout; the accept/reject permission split;
+  root-only `info` secrets) and `crates/cli/src/gui.rs` (prompts reach the queue, not the platform dialog;
+  timeout rejects). `cargo test --workspace` and clippy (with and without `--features gui`) are clean.
+- Not verified here: anything visual or interactive — the window itself, polkit/macOS authorization dialogs,
+  clipboard, and the manual checklist above (no display session was used; compile-checked only).
+- Invented (on top of the two items above): `prompts`/`prompt.answer` and the accept/reject permission split;
+  root-only `server_key`/`unlock_password` fields on `info`; the `WindowPlatform` decorator and its spawn;
+  `rcli agent prompts` and `rcli agent prompt answer` as the GUI's (and scripts') entry points.
+- shortcut: with a desktop build but no window answering (spawn failed, no display), a prompt waits its full
+  timeout and then rejects instead of falling back to the platform's own dialog; upgrade when an OS adapter
+  (tickets 28-35) supplies one.
