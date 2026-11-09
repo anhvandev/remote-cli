@@ -62,11 +62,11 @@ Lần build đầu mất vài phút (biên dịch Rust và `next build`).
 Cần binary `rcli` trên máy của bạn (xem `docs/usage.md`, mục Cài CLI).
 
 ```bash
-export RCLI_SERVER=https://vps.example.com:8080     # hoặc http://localhost:8080 khi thử trên máy
+rcli setup --server https://vps.example.com:8080 --key rk_xxxxxxxx_yyyyyyyy   # Server Key (bước 5)
 rcli --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user create me --role admin
 rcli --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" token create me
 #   → in ra: token rcli_xxxxxxxx   (chỉ hiện một lần, lưu lại)
-export RCLI_TOKEN=rcli_xxxxxxxx
+export RCLI_TOKEN=rcli_xxxxxxxx   # token tạm cho các lệnh quản trị ở bước này
 rcli user set-password me --password '<mật khẩu Dashboard>'
 #   → in ra totp_secret và otpauth_url: quét otpauth_url bằng app Authenticator
 ```
@@ -91,6 +91,10 @@ rcli agent run \
   --state-dir /var/lib/rcli \
   --name ten-may
 ```
+
+`--socket` (mặc định `/run/rcli/agent.sock`, trên macOS `/var/run/rcli/agent.sock`) là socket IPC nội bộ.
+Từ máy đó: `rcli agent info` xem Device ID + trạng thái kết nối (mọi user); `sudo rcli agent password show` xem
+Device Password (chỉ root). Device Password được sinh lúc đăng ký và lưu mã hoá trong `--state-dir`.
 
 - Agent từ chối kết nối nếu CA của Server không khớp fingerprint trong Server Key (chống giả Server).
 - Agent tự đăng ký, nhận chứng chỉ mTLS, **Device ID 9 chữ số** và public key cập nhật (pin lại). Không cần tạo mã enroll.

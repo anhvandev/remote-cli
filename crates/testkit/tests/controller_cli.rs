@@ -58,6 +58,26 @@ async fn connect_then_shot_works_with_no_env_vars_and_the_password_is_not_in_the
 }
 
 #[tokio::test]
+async fn devices_lists_only_the_connected_device_and_another_device_is_refused() {
+    let sys = TestSystem::start().await;
+    let mine = sys.start_agent("mine").await;
+    let other = sys.start_agent("other").await;
+    sys.wait_device(mine.device_id(), |d| d["status"] == "Online").await;
+    sys.wait_device(other.device_id(), |d| d["status"] == "Online").await;
+    let dir = temp_dir("devices");
+    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.rcli_in(&dir, &["connect", mine.device_id(), "--password", &mine.device_password().unwrap()]).await.unwrap();
+
+    let list = sys.rcli_in(&dir, &["devices"]).await.unwrap();
+    assert!(list.contains(mine.device_id()), "{list}");
+    assert!(!list.contains(other.device_id()), "a password connection sees only its own Device: {list}");
+
+    let shots = temp_dir("devices-shots");
+    let err = sys.rcli_in(&dir, &["shot", other.device_id(), "--out", shots.to_str().unwrap()]).await.unwrap_err();
+    assert!(err.to_string().contains("forbidden_device"), "{err}");
+}
+
+#[tokio::test]
 async fn a_wrong_password_is_reported_and_not_saved() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;

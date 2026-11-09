@@ -128,6 +128,12 @@ pub fn remembered(dir: &Path, device: &str) -> anyhow::Result<Option<Remembered>
     }
 }
 
+/// Any Device ID with a remembered password (cheapest is fine: the Server scopes the answer anyway).
+pub fn some_remembered(dir: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(dir.join("passwords")).ok()?;
+    entries.flatten().find_map(|e| e.file_name().to_str()?.strip_suffix(".json").map(str::to_owned))
+}
+
 pub fn forget(dir: &Path, device: &str) -> anyhow::Result<()> {
     match std::fs::remove_file(password_path(dir, device)) {
         Ok(()) => Ok(()),

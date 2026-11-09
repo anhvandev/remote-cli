@@ -15,18 +15,23 @@ Từ ngữ (Device, Action, Observation, Mark, Control Lock, Wake Relay…) theo
 ```bash
 cargo build --release -p rcli
 # binary: target/release/rcli (Controller và Agent trong cùng một binary)
-export RCLI_SERVER=http://localhost:8080     # URL Controller API
-export RCLI_TOKEN=rcli_xxxxxxxx              # token của bạn (admin cấp bằng `rcli token create <user>`)
+rcli setup --server http://localhost:8080 --key rk_xxxxxxxx_yyyyyyyy   # một lần
+rcli connect 123456789                                                  # hỏi Device Password một lần
 ```
 
+`rcli setup` lưu Server Address, Server Key và update key đã pin vào thư mục cấu hình của bạn. `rcli connect`
+kiểm tra Device ID + Device Password rồi nhớ mật khẩu (file `0600`), nên các lệnh sau chỉ cần Device ID.
+`rcli forget <Device ID>` xoá mật khẩu đã nhớ. `RCLI_SERVER`/`RCLI_TOKEN` không còn dùng.
+
 ## Vai trò
+
+Role chỉ còn quản trị Server; việc gì chạy được trên Device do Device Settings của chính Device đó quyết định.
 
 | | operator | admin |
 |---|---|---|
 | Xem fleet, metrics, lịch sử, màn hình | ✅ | ✅ |
-| Điều khiển (khi giữ Control Lock), `exec`, `shell` dưới quyền user đang đăng nhập | ✅ | ✅ |
-| `exec`/`shell --as root`, chạy lệnh khi chưa ai đăng nhập | ❌ | ✅ |
-| Restart/Shut down/Sleep khi người khác giữ lock | ❌ | ✅ |
+| Điều khiển (khi giữ Control Lock), `exec`, `shell`, `--as root` | ✅ | ✅ |
+| Restart/Shut down/Sleep khi người khác giữ lock | ❌ | ❌ |
 | Users, tokens, Server Key, Device (đổi tên/xoá/thu hồi/gộp), mật khẩu unlock, cập nhật Agent, audit, force-release lock | ❌ | ✅ |
 
 ## Xem fleet
@@ -153,8 +158,12 @@ Mở `http://<server>:3080`, đăng nhập bằng tên + mật khẩu + mã TOTP
 ## Dùng với Claude Code (MCP)
 
 ```bash
-claude mcp add rcli --env RCLI_SERVER=http://localhost:8080 --env RCLI_TOKEN=rcli_xxxxxxxx -- /đường/dẫn/rcli mcp
+rcli setup --server http://localhost:8080 --key rk_xxxxxxxx_yyyyyyyy
+rcli connect 123456789
+claude mcp add rcli -- /đường/dẫn/rcli mcp
 ```
+
+`rcli mcp` dùng cùng cấu hình và Device Password đã nhớ, nên không cần biến môi trường.
 
 Tools: `devices`, `device`, `lock_acquire`, `lock_release`, `lock_status`, `observe` (shot / frames / clip / marks), `act`, `batch`, `exec`, `wake`, `power`. Ảnh trả về inline, bảng Mark nằm trong kết quả có cấu trúc. Mỗi AI agent nên có user và token riêng để audit tách bạch.
 

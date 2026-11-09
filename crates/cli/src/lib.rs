@@ -1056,11 +1056,16 @@ impl Api {
         if let Some(token) = &self.connection.token {
             return Ok(req.bearer_auth(token));
         }
-        let device = path
+        // The path's Device authenticates the connection when its password is saved; otherwise any remembered
+        // Device does, and the Server refuses the unrelated Device itself (`forbidden_device`).
+        let path_device = path
             .and_then(|p| p.strip_prefix("/api/v1/devices/"))
             .and_then(|rest| rest.split('/').next())
             .filter(|d| !d.is_empty())
-            .map(str::to_owned)
+            .map(str::to_owned);
+        let device = path_device
+            .filter(|d| config::remembered(&self.dir, d).ok().flatten().is_some())
+            .or_else(|| config::some_remembered(&self.dir))
             .ok_or_else(|| anyhow::anyhow!("no User session saved; run `rcli connect <Device ID>` or `rcli login`"))?;
         let Some(remembered) = config::remembered(&self.dir, &device)? else {
             anyhow::bail!("no Device Password saved for {device}; run `rcli connect {device}`");
