@@ -4,9 +4,13 @@
 
 **Blocked by:** 34, plus results of the Wayland lockscreen probe (human)
 
-**Status:** needs-info
+**Status:** wontfix
 
 - [ ] Wayland probe results recorded in the prototype README
 - [ ] If KMS works: contract suite passes at the lock screen and greeter on the tested desktops; handles the newer GDM greeter user
 - [ ] If not: the Device reports the limitation clearly in CLI and Dashboard
 - [ ] Known limits (NVIDIA proprietary, no VA-API) documented
+
+## Comments
+
+- 2026-11-09: Closed. Superseded by `.scratch/easy-setup/issues/20-linux-wayland-lock-greeter-kms.md` (new install flow: Server Key, Device ID + Device Password, ADR 0003/0004).

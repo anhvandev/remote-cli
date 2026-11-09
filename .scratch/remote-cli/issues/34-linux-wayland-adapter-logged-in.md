@@ -4,8 +4,12 @@
 
 **Blocked by:** 27
 
-**Status:** ready-for-agent
+**Status:** wontfix
 
 - [ ] Contract suite passes logged in on GNOME and KDE; wlroots (Sway/Hyprland) result recorded
 - [ ] Restore token persists across Agent restarts so no repeated approval is needed
 - [ ] AT-SPI tree feeds Marks where available, OCR otherwise
+
+## Comments
+
+- 2026-11-09: Closed. Superseded by `.scratch/easy-setup/issues/19-linux-wayland-adapter-logged-in.md` (new install flow: Server Key, Device ID + Device Password, ADR 0003/0004).

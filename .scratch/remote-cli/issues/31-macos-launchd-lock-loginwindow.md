@@ -4,9 +4,13 @@
 
 **Blocked by:** 30
 
-**Status:** ready-for-agent
+**Status:** wontfix
 
 - [ ] Installer enrolls the Device and installs both launchd jobs; guides the permission grants
 - [ ] Contract suite passes at the lock screen (capture + key)
 - [ ] At the login window: Observations work; input Actions fail with a clear "input unavailable at macOS login window" error
 - [ ] Device detail (CLI and Dashboard) shows when a Mac is at the login window and needs a human login or auto-login
+
+## Comments
+
+- 2026-11-09: Closed. Superseded by `.scratch/easy-setup/issues/24-macos-launchd-app-installer.md` (new install flow: Server Key, Device ID + Device Password, ADR 0003/0004).
