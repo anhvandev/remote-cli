@@ -126,7 +126,9 @@ impl Status {
         }
         match tokio::time::timeout(CHANGE_TIMEOUT, answer).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) | Err(_) => Err("the Agent did not get an answer from the Server; nothing was changed".into()),
+            // shortcut: a connection lost after the Server applied the change also lands here; re-read `rcli agent info`
+            // to see the Device ID. Add an idempotent re-check if that race ever shows up.
+            Ok(Err(_)) | Err(_) => Err("the Agent did not get an answer from the Server; check `rcli agent info`".into()),
         }
     }
 

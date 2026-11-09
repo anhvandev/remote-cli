@@ -253,7 +253,6 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
                     &media,
                     &backlog,
                     status.as_deref(),
-                    &endpoint,
                     &mut endpoints,
                     &mut changes,
                 )
@@ -325,7 +324,6 @@ async fn session(
     media: &Arc<media::Media>,
     backlog: &Backlog,
     status: Option<&ipc::Status>,
-    endpoint: &ServerEndpoint,
     endpoints: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>,
     changes: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>,
 ) -> anyhow::Result<bool> {
@@ -378,11 +376,8 @@ async fn session(
                 pending.insert(change.update.request_id, change.reply);
                 conn.send(&send(agent_message::Msg::IdentityUpdate(change.update))).await?;
             }
-            // A new Server Address: drop this connection so `run` connects to the new one.
-            _ = endpoints_changed(endpoints) => {
-                let current = endpoints.as_ref().map(|rx| rx.borrow().addr == endpoint.addr).unwrap_or(true);
-                return Ok(!current);
-            }
+            // A new Server Address or Key: drop this connection so `run` connects with the new values.
+            _ = endpoints_changed(endpoints) => return Ok(true),
             msg = conn.recv::<ServerMessage>() => {
                 match msg?.and_then(|m| m.msg) {
                     None => anyhow::bail!("server closed the connection"),

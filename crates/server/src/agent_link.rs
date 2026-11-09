@@ -248,7 +248,7 @@ where
     }
 }
 
-/// A change made at the Device: checks everything first, then applies it, so a refused change changes nothing.
+/// A change made at the Device. Each command sends one field, so a refusal leaves the Device untouched.
 /// The reply carries the Device ID in effect afterwards.
 async fn identity_update(state: &AppState, device: uuid::Uuid, u: rcli_protocol::agent::IdentityUpdate) -> rcli_protocol::agent::IdentityUpdated {
     let reply = |error: Option<rcli_protocol::agent::Error>, device_id: String| rcli_protocol::agent::IdentityUpdated {
