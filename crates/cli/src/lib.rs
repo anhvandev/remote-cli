@@ -288,6 +288,10 @@ enum AgentCommand {
         #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
         socket: Option<PathBuf>,
     },
+    /// The prompts waiting for the person at the Device (any local user).
+    Prompts(agent::Prompts),
+    /// Answer one of those prompts: refusing is open to anyone, accepting needs root.
+    Prompt(agent::Prompt),
 }
 
 #[derive(Subcommand)]
@@ -590,6 +594,8 @@ where
             AgentCommand::Accept(accept) => accept.run(out).await,
             AgentCommand::Disconnect(disconnect) => disconnect.run(out).await,
             AgentCommand::UnlockPassword { command, socket } => agent::run_unlock_password(command, socket, out).await,
+            AgentCommand::Prompts(prompts) => prompts.run(out).await,
+            AgentCommand::Prompt(prompt) => agent::run_prompt(prompt.command, prompt.socket, out).await,
         };
     }
     let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);

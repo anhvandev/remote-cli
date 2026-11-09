@@ -68,6 +68,9 @@ impl Run {
         // A new Device ID set at the Device must survive a restart.
         status.set_credentials_path(path);
         let socket = self.socket.unwrap_or_else(ipc::default_socket);
+        // Desktop build: prompts and control events open the GUI window (ticket 14).
+        #[cfg(feature = "gui")]
+        let platform = crate::gui::wrap(platform, status.prompts(), socket.clone());
         let serve_status = status.clone();
         tokio::spawn(async move {
             if let Err(e) = ipc::serve(socket, serve_status).await {
@@ -208,9 +211,10 @@ pub struct UnlockPassword {
 pub enum UnlockPasswordCommand {
     /// Store (or replace) the unlock password on this Device (requires root/Administrator).
     Set {
-        /// The password `unlock` types at the lock or login screen.
+        /// The password `unlock` types at the lock or login screen. Reads one line from stdin when omitted,
+        /// so an elevated helper never puts a password on a command line.
         #[arg(long, env = "RCLI_UNLOCK_PASSWORD", hide_env_values = true)]
-        password: String,
+        password: Option<String>,
     },
     /// Forget the unlock password; `unlock` says none is set until one is stored again.
     Clear,
@@ -220,6 +224,14 @@ pub async fn run_unlock_password(command: UnlockPasswordCommand, socket: Option<
     let socket = socket.unwrap_or_else(ipc::default_socket);
     let reply = match command {
         UnlockPasswordCommand::Set { password } => {
+            let password = match password {
+                Some(p) => p,
+                None => {
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line)?;
+                    line.trim_end_matches(['\n', '\r']).to_owned()
+                }
+            };
             ipc::send(&socket, serde_json::json!({ "command": "unlock-password.set", "password": password })).await?
         }
         UnlockPasswordCommand::Clear => ipc::request(&socket, "unlock-password.clear").await?,
@@ -424,6 +436,70 @@ pub async fn run_server(command: ServerCommand, socket: Option<PathBuf>, out: &m
             .await?
         }
     };
+    writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
+    Ok(())
+}
+
+/// `rcli agent prompt answer`: the person at the Device's answer to a waiting prompt (tickets 07/08).
+/// Refusing is open to any local user; accepting needs root, so the GUI runs this command elevated.
+#[derive(Args)]
+pub struct Prompt {
+    #[command(subcommand)]
+    pub command: PromptCommand,
+    /// Local IPC socket of the running Agent.
+    #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+    pub socket: Option<PathBuf>,
+}
+
+#[derive(clap::Subcommand)]
+pub enum PromptCommand {
+    /// Accept or refuse the prompt with this id (`rcli agent prompts` lists them).
+    Answer {
+        id: u64,
+        #[arg(value_parser = ["accept", "reject"])]
+        decision: String,
+    },
+}
+
+/// `rcli agent prompts`: the prompts waiting for the person at the Device (any local user).
+#[derive(Args)]
+pub struct Prompts {
+    /// Local IPC socket of the running Agent.
+    #[arg(long, env = "RCLI_AGENT_SOCKET")]
+    socket: Option<PathBuf>,
+    /// Machine-readable JSON output.
+    #[arg(long)]
+    json: bool,
+}
+
+impl Prompts {
+    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        let reply = ipc::request(&self.socket.unwrap_or_else(ipc::default_socket), "prompts").await?;
+        if self.json {
+            writeln!(out, "{}", serde_json::to_string_pretty(&reply)?)?;
+        } else {
+            for p in reply.as_array().map(Vec::as_slice).unwrap_or_default() {
+                writeln!(
+                    out,
+                    "{} {} ({}, {}s left)",
+                    p["id"].as_u64().unwrap_or_default(),
+                    p["who"].as_str().unwrap_or_default(),
+                    p["kind"].as_str().unwrap_or_default(),
+                    p["seconds_left"].as_u64().unwrap_or_default(),
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub async fn run_prompt(command: PromptCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    let PromptCommand::Answer { id, decision } = command;
+    let reply = ipc::send(
+        &socket.unwrap_or_else(ipc::default_socket),
+        serde_json::json!({ "command": "prompt.answer", "id": id, "accept": decision == "accept" }),
+    )
+    .await?;
     writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
     Ok(())
 }
