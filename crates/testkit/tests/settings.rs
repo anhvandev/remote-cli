@@ -42,3 +42,25 @@ async fn replacing_the_server_key_keeps_registered_devices_and_retires_the_old_k
     let new = ServerEndpoint { addr: sys.agent_addr(), server_key: new_key.to_owned() };
     rcli_agent::register(&new, &FakePlatform::new("new-pc")).await.unwrap();
 }
+
+#[tokio::test]
+async fn setting_the_server_address_reissues_the_certificate_and_is_refused_to_operators() {
+    let sys = TestSystem::start().await;
+    let port = sys.server.agent_addr.port();
+    // Only `localhost` is in the certificate at first, so the Agent's pinning refuses another name.
+    let by_ip = ServerEndpoint { addr: format!("127.0.0.1:{port}"), server_key: sys.server_key() };
+    assert!(rcli_agent::register(&by_ip, &FakePlatform::new("lab-pc")).await.is_err());
+
+    sys.rcli(&["server-address", "set", "127.0.0.1"]).await.unwrap();
+    assert_eq!(sys.rcli(&["server-address", "show"]).await.unwrap().trim(), "127.0.0.1");
+    // The certificate was reissued for the new name: registration through it now works.
+    rcli_agent::register(&by_ip, &FakePlatform::new("lab-pc")).await.unwrap();
+
+    let op = sys.create_user("op", "operator").await;
+    for args in [vec!["server-address", "set", "example.com"], vec!["server-key", "rotate"]] {
+        let err = sys.rcli_as(&op, &args).await.unwrap_err();
+        assert!(err.to_string().contains("admin_required"), "{err}");
+    }
+    let (status, _) = sys.api.with_token(Some(&op)).post("/api/v1/server-settings/server-key/rotate").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
