@@ -62,6 +62,8 @@ async fn main() -> anyhow::Result<()> {
     // juliet is a headless server: no displays, so the Dashboard hides its Screen tab.
     let juliet = FakePlatform::new("juliet");
     juliet.set_displays(vec![]);
+    // kilo is a separate Online Device: the admin Device-actions test changes its identity, which no other spec
+    // asserts on (changing an ID or password would break their names and connections).
     let fleet = [
         alpha,
         FakePlatform::new("bravo"),
@@ -70,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
         hotel,
         FakePlatform::new("india"),
         juliet,
+        FakePlatform::new("kilo"),
     ];
     for platform in fleet {
         // The Dashboard reads displays from the inventory; keep it in step with what the platform reports.
