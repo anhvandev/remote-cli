@@ -9,6 +9,7 @@ const adminPages = [
   { href: "/admin/users", name: "User" },
   { href: "/admin/devices", name: "Device" },
   { href: "/admin/updates", name: "Cập nhật Agent" },
+  { href: "/admin/settings", name: "Server Settings" },
 ];
 
 export function NavLinks({ admin }: { admin: boolean }) {
