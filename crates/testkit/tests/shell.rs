@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use base64::Engine;
-use rcli_testkit::{FakePlatform, SessionState, StatusCode, TestSystem};
+use rcli_testkit::{FakePlatform, StatusCode, TestSystem};
 use serde_json::{json, Value};
 
 /// An open interactive shell: the NDJSON output stream plus the session id for input/resize.
@@ -108,8 +108,10 @@ async fn interactive_shell_runs_commands_as_the_logged_in_user_and_audits_start_
     let (mut sh, first) = Shell::open(&sys, &alice, &dev, json!({ "cols": 80, "rows": 24 })).await.unwrap();
     assert_eq!(first["as"], "user", "{first}");
     sh.expect("$ ").await;
+    // The Terminal User defaults to the account running the Agent (this test process).
+    let running = std::env::var("USER").expect("USER");
     sh.input("whoami\r").await;
-    sh.expect("whoami\r\nuser\r\n$ ").await;
+    sh.expect(&format!("whoami\r\n{running}\r\n$ ")).await;
     sh.input("exit\r").await;
     assert_eq!(sh.finish().await, json!({ "exit_code": 0 }));
 
@@ -142,11 +144,18 @@ async fn the_terminal_resizes_and_ctrl_c_reaches_the_shell() {
 
 #[tokio::test]
 async fn root_shells_are_not_gated_by_server_roles() {
+    use rcli_testkit::eventually;
     let sys = TestSystem::start().await;
-    let (dev, _agent) = online(&sys, FakePlatform::new("lab-pc")).await;
+    let dir = rcli_testkit::temp_dir("shell-root");
+    let agent = sys.start_agent_trusting_socket("lab-pc", &dir).await;
+    let dev = agent.device_id().to_owned();
+    sys.wait_device(&dev, |d| d["status"] == "Online").await;
+    let socket = dir.join("agent.sock");
+    eventually(|| async { socket.exists().then_some(()) }).await;
+    // The Device allows root always; who asks does not matter.
+    sys.agent_rcli(&socket, &["agent", "root", "always"]).await.unwrap();
     let alice = sys.create_user("alice", "operator").await;
 
-    // The Device's Device Settings decide root access (ticket 07), not the Server role.
     let (mut sh, first) = Shell::open(&sys, &alice, &dev, json!({ "as": "root" })).await.unwrap();
     assert_eq!(first["as"], "root");
     sh.input("whoami\r").await;
@@ -154,18 +163,8 @@ async fn root_shells_are_not_gated_by_server_roles() {
     sh.input("exit\r").await;
     assert_eq!(sh.finish().await, json!({ "exit_code": 0 }));
 
-    let platform = FakePlatform::new("kiosk");
-    platform.set_session_state(SessionState::LoginScreen);
-    let (kiosk, _kiosk_agent) = online(&sys, platform).await;
-    let (mut sh, first) = Shell::open(&sys, &alice, &kiosk, json!({})).await.unwrap();
-    assert_eq!(first["as"], "root", "with nobody logged in, commands run as root");
-    sh.input("whoami\r").await;
-    sh.expect("root\r\n").await;
-    sh.input("exit\r").await;
-    assert_eq!(sh.finish().await, json!({ "exit_code": 0 }));
-
     let starts: Vec<Value> = audit(&sys).await.into_iter().filter(|e| e["action"] == "shell.start").collect();
-    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert_eq!(starts.len(), 1, "{starts:?}");
     assert_eq!(starts[0]["params"], json!({ "as": "root" }));
     assert_eq!(starts[0]["user"], "alice");
 }
@@ -221,16 +220,14 @@ async fn rcli_shell_relays_keystrokes_and_exits_with_the_remote_code() {
         }
     };
 
+    let running = std::env::var("USER").expect("USER");
     let (result, out) = rcli(&alice, &["shell", "lab-pc"], &["whoami\r", "exit 5\r"]).await;
-    assert!(out.contains("whoami\r\nuser\r\n"), "{out:?}");
+    assert!(out.contains(&format!("whoami\r\n{running}\r\n")), "{out:?}");
     let exit = result.unwrap_err();
     assert_eq!(exit.downcast_ref::<rcli::RemoteExit>().map(|e| e.exit_code()), Some(5), "{exit:#}");
 
+    // Server roles no longer gate Device work; the Device's root setting (default `ask`, with no session to show
+    // the prompt in) does, whoever asks.
     let (result, _) = rcli(&sys.admin_token, &["shell", "lab-pc", "--as", "root"], &["exit\r"]).await;
-    result.unwrap();
-
-    // Server roles no longer gate Device work; the Device's settings decide root access (ticket 07).
-    let (result, out) = rcli(&alice, &["shell", "lab-pc", "--as", "root"], &["whoami\r", "exit\r"]).await;
-    result.unwrap();
-    assert!(out.contains("root\r\n"), "{out:?}");
+    assert!(format!("{:#}", result.unwrap_err()).contains("root_denied"));
 }

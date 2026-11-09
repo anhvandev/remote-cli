@@ -28,7 +28,7 @@ pub trait Platform: Send + Sync + 'static {
     fn metrics(&self) -> anyhow::Result<Resources>;
     fn processes(&self) -> anyhow::Result<Vec<Process>>;
     /// One-shot command through the OS shell, as `run_as`. Kills it after `timeout` and returns what it printed
-    /// so far with `timed_out` set. `RunAs::LoggedInUser` is only asked while someone is logged in.
+    /// so far with `timed_out` set. `RunAs::User` always names an account; `sudo` inside works as over SSH.
     fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput>;
     /// Interactive login shell on a new PTY of `cols` x `rows`, as `run_as` (same rule as `shell`).
     /// Full PTY semantics: input goes to the terminal as typed (Ctrl-C = 0x03 interrupts), TERM supports full-screen programs.
@@ -119,10 +119,10 @@ pub trait PtyControl: Send {
     fn kill(&mut self) -> anyhow::Result<()>;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunAs {
-    /// The user logged in at the console.
-    LoggedInUser,
+    /// The Terminal User: the account Device Settings say commands and shells run as.
+    User(String),
     /// root, or SYSTEM on Windows.
     Root,
 }
@@ -342,8 +342,15 @@ fn fake_shell(command: &str, run_as: RunAs, timeout: Duration) -> ShellOutput {
     }
     match (command, command.strip_prefix("echo ")) {
         (_, Some(text)) => ok(format!("{text}\n")),
-        ("whoami", _) => ok(if run_as == RunAs::Root { "root\n" } else { "user\n" }.into()),
-        _ => ShellOutput { exit_code: 127, stdout: String::new(), stderr: format!("{command}: not found\n"), timed_out: false },
+        ("whoami", _) => ok(match &run_as {
+            RunAs::User(user) => format!("{user}\n"),
+            RunAs::Root => "root\n".into(),
+        }),
+        // `sudo` inside the terminal works as over SSH: the command then runs as root.
+        _ => match command.strip_prefix("sudo ") {
+            Some(inner) => fake_shell(inner, RunAs::Root, timeout),
+            None => ShellOutput { exit_code: 127, stdout: String::new(), stderr: format!("{command}: not found\n"), timed_out: false },
+        },
     }
 }
 
@@ -384,7 +391,7 @@ impl std::io::Read for FakePty {
 
 impl std::io::Write for FakePty {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let run_as = self.run_as;
+        let run_as = self.run_as.clone();
         self.update(|s| {
             for &b in buf {
                 if s.exit.is_some() {
@@ -407,7 +414,7 @@ impl std::io::Write for FakePty {
                                 break;
                             }
                             l => {
-                                let out = fake_shell(l, run_as, Duration::ZERO);
+                                let out = fake_shell(l, run_as.clone(), Duration::ZERO);
                                 out.stdout + &out.stderr
                             }
                         };

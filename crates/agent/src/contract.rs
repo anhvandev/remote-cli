@@ -134,19 +134,19 @@ pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
         Ok(())
     });
     r.check("shell", Env::LoggedIn, || {
-        let out = p.shell("echo rcli-contract", RunAs::LoggedInUser, SHELL_TIMEOUT)?;
+        let out = p.shell("echo rcli-contract", RunAs::User("user".into()), SHELL_TIMEOUT)?;
         anyhow::ensure!(out.exit_code == 0 && out.stdout.trim() == "rcli-contract", "unexpected {out:?}");
         Ok(())
     });
     r.check("shell timeout", Env::LoggedIn, || {
         let start = Instant::now();
-        let out = p.shell("sleep 30", RunAs::LoggedInUser, Duration::from_secs(1))?;
+        let out = p.shell("sleep 30", RunAs::User("user".into()), Duration::from_secs(1))?;
         anyhow::ensure!(out.timed_out, "not reported as timed out: {out:?}");
         anyhow::ensure!(start.elapsed() < SHELL_TIMEOUT, "not killed in time: took {:?}", start.elapsed());
         Ok(())
     });
     r.check("pty", Env::LoggedIn, || {
-        let mut pty = p.pty(RunAs::LoggedInUser, 80, 24)?;
+        let mut pty = p.pty(RunAs::User("user".into()), 80, 24)?;
         pty.control.resize(100, 30)?;
         pty.input.write_all(b"echo rcli-contract\rexit 3\r")?;
         let (tx, rx) = std::sync::mpsc::channel();

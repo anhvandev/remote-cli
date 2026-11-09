@@ -261,6 +261,8 @@ enum AgentCommand {
         #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
         socket: Option<PathBuf>,
     },
+    /// Whether `--as root` is never allowed, asked at the Device, or always allowed (root only).
+    Root(agent::Root),
 }
 
 #[derive(Subcommand)]
@@ -567,6 +569,7 @@ where
             AgentCommand::Name { command, socket } => agent::run_name(command, socket, out).await,
             AgentCommand::Server { command, socket } => agent::run_server(command, socket, out).await,
             AgentCommand::TerminalUser { command, socket } => agent::run_terminal_user(command, socket, out).await,
+            AgentCommand::Root(root) => root.run(out).await,
         };
     }
     let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);

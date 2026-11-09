@@ -446,6 +446,15 @@ impl NetworkLink {
     }
 }
 
+/// A short temp directory: the Agent's IPC socket path must fit in `SUN_LEN` (104 bytes on macOS).
+pub fn temp_dir(name: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
+    let dir = std::env::temp_dir().join(format!("rcli-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 /// Whether the tests run as root (then the IPC password gate lets them through).
 pub fn running_as_root() -> bool {
     #[cfg(unix)]

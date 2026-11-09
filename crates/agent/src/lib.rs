@@ -232,6 +232,8 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
     // Live streams are peer-to-peer, so they survive a lost Server connection.
     let live = live::Live::new(platform.clone());
     let media = Arc::new(media::Media::default());
+    // Device Settings survive reconnects; with no Status (no IPC) the defaults apply.
+    let settings = status.as_ref().map_or_else(|| Arc::new(settings::Handle::new()), |s| s.settings());
     let mut backoff = Duration::from_secs(1);
     loop {
         // Another Server Address is one switch away; pick up whichever is current.
@@ -254,6 +256,7 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
                     &media,
                     &backlog,
                     status.as_deref(),
+                    &settings,
                     &mut endpoints,
                     &mut changes,
                 )
@@ -325,6 +328,7 @@ async fn session(
     media: &Arc<media::Media>,
     backlog: &Backlog,
     status: Option<&ipc::Status>,
+    settings: &settings::Handle,
     endpoints: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>,
     changes: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>,
 ) -> anyhow::Result<bool> {
@@ -412,13 +416,13 @@ async fn session(
                     }
                     Some(server_message::Msg::Exec(req)) => {
                         // Off the loop: a command may run for minutes; commands run concurrently.
-                        let (platform, replies) = (platform_arc.clone(), replies.clone());
+                        let (platform, replies, settings) = (platform_arc.clone(), replies.clone(), settings.get());
                         tokio::task::spawn_blocking(move || {
-                            let _ = replies.send(agent_message::Msg::ExecResult(exec(platform.as_ref(), &req)));
+                            let _ = replies.send(agent_message::Msg::ExecResult(exec(platform.as_ref(), &req, &settings)));
                         });
                     }
                     Some(server_message::Msg::ShellOpen(req)) => {
-                        let reply = open_shell(platform, &req, &replies, &mut shells);
+                        let reply = open_shell(platform, &req, &settings.get(), &replies, &mut shells);
                         conn.send(&send(agent_message::Msg::ShellOpened(reply))).await?;
                     }
                     Some(server_message::Msg::ShellInput(i)) => {
@@ -513,23 +517,29 @@ async fn session(
     }
 }
 
-/// Who a terminal command or session runs as: the logged-in user, or root when asked or allowed with nobody logged in.
-fn run_as(platform: &dyn Platform, as_root: bool, root_if_nobody_logged_in: bool) -> Result<(platform::RunAs, bool), Error> {
-    let nobody = match platform.session_state() {
-        Ok(state) => state == platform::SessionState::LoginScreen,
-        Err(e) => return Err(Error { code: "platform".into(), message: format!("{e:#}") }),
-    };
-    if nobody && !as_root && !root_if_nobody_logged_in {
-        return Err(Error { code: "no_logged_in_user".into(), message: "nobody is logged in on the Device".into() });
+/// Who a terminal command or session runs as: the Device's Terminal User, or root when asked and allowed.
+fn run_as(as_root: bool, root_access: settings::RootAccess, terminal_user: &str) -> Result<(platform::RunAs, bool), Error> {
+    if as_root {
+        return match root_access {
+            settings::RootAccess::Always => Ok((platform::RunAs::Root, true)),
+            settings::RootAccess::Never => Err(Error {
+                code: "root_denied".into(),
+                message: "root access is turned off on this Device".into(),
+            }),
+            // Ticket 07's prompt replaces this refusal in the next slice.
+            settings::RootAccess::Ask => Err(Error {
+                code: "root_denied".into(),
+                message: "root access on this Device must be granted by a person at it".into(),
+            }),
+        };
     }
-    let as_root = as_root || nobody;
-    Ok((if as_root { platform::RunAs::Root } else { platform::RunAs::LoggedInUser }, as_root))
+    Ok((platform::RunAs::User(terminal_user.to_owned()), false))
 }
 
 /// Runs a one-shot command (see `run_as`).
-fn exec(platform: &dyn Platform, req: &ExecRequest) -> ExecResult {
+fn exec(platform: &dyn Platform, req: &ExecRequest, settings: &settings::DeviceSettings) -> ExecResult {
     let reply = |error: Error| ExecResult { request_id: req.request_id, error: Some(error), ..Default::default() };
-    let (run_as, as_root) = match run_as(platform, req.as_root, req.root_if_nobody_logged_in) {
+    let (run_as, as_root) = match run_as(req.as_root, settings.root, &settings.terminal_user) {
         Ok(r) => r,
         Err(e) => return reply(e),
     };
@@ -565,11 +575,12 @@ impl Drop for Shells {
 fn open_shell(
     platform: &dyn Platform,
     req: &ShellOpen,
+    settings: &settings::DeviceSettings,
     replies: &tokio::sync::mpsc::UnboundedSender<agent_message::Msg>,
     shells: &mut Shells,
 ) -> ShellOpened {
     let reply = |error: Error| ShellOpened { request_id: req.request_id, error: Some(error), ..Default::default() };
-    let (run_as, as_root) = match run_as(platform, req.as_root, req.root_if_nobody_logged_in) {
+    let (run_as, as_root) = match run_as(req.as_root, settings.root, &settings.terminal_user) {
         Ok(r) => r,
         Err(e) => return reply(e),
     };

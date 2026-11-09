@@ -49,7 +49,7 @@ pub struct Status {
     changes_rx: Mutex<Option<mpsc::UnboundedReceiver<Change>>>,
     next_request: AtomicU64,
     /// The Device Settings the Agent enforces; kept here so `rcli agent …` can change them live.
-    settings: settings::Handle,
+    settings: Arc<settings::Handle>,
 }
 
 impl Status {
@@ -64,7 +64,7 @@ impl Status {
             changes,
             changes_rx: Mutex::new(Some(changes_rx)),
             next_request: AtomicU64::new(0),
-            settings: settings::Handle::new(),
+            settings: Arc::new(settings::Handle::new()),
         }
     }
 
@@ -73,8 +73,8 @@ impl Status {
         self.settings.set_dir(dir);
     }
 
-    pub fn settings(&self) -> &settings::Handle {
-        &self.settings
+    pub fn settings(&self) -> Arc<settings::Handle> {
+        self.settings.clone()
     }
 
     pub fn set_connected(&self, connected: bool) {
@@ -267,6 +267,18 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
             }
             match status.settings().update(|s| s.terminal_user = user.clone()) {
                 Ok(s) => json!({ "terminal_user": s.terminal_user, "message": format!("terminal commands and shells now run as {user}") }),
+                Err(e) => json!({ "error": format!("cannot save the Device Settings: {e:#}") }),
+            }
+        }
+        Some("root.set") => {
+            let root = match request["root"].as_str() {
+                Some("never") => settings::RootAccess::Never,
+                Some("ask") => settings::RootAccess::Ask,
+                Some("always") => settings::RootAccess::Always,
+                _ => return json!({ "error": "root must be one of never, ask, always" }),
+            };
+            match status.settings().update(|s| s.root = root) {
+                Ok(s) => json!({ "root": s.root.name(), "message": format!("root access is now {}", s.root.name()) }),
                 Err(e) => json!({ "error": format!("cannot save the Device Settings: {e:#}") }),
             }
         }

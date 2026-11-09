@@ -71,6 +71,8 @@ async fn exec(
     let result = match state.agents.request_within(device, wait, req).await {
         Ok(agent_message::Msg::ExecResult(r)) => match r.error {
             Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
+            // The Device's root setting refused, or asked and nobody answered: a plain refusal to the caller.
+            Some(e) if e.code == "root_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "root_denied", e.message)),
             Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
             None => Ok(json!({
                 "exit_code": (!r.timed_out).then_some(r.exit_code),

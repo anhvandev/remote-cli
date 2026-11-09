@@ -104,6 +104,7 @@ async fn open(
     let opened = match state.agents.request(device, req).await {
         Ok(agent_message::Msg::ShellOpened(r)) => match r.error {
             Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
+            Some(e) if e.code == "root_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "root_denied", e.message)),
             Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
             None => Ok(if r.as_root { "root" } else { "user" }),
         },

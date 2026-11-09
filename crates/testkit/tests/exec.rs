@@ -3,6 +3,15 @@ use std::time::{Duration, Instant};
 use rcli_testkit::{FakePlatform, SessionState, StatusCode, TestSystem};
 use serde_json::{json, Value};
 
+/// A short temp directory: the IPC socket path must fit in `SUN_LEN` (104 bytes on macOS).
+fn temp_dir(name: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
+    let dir = std::path::PathBuf::from(format!("/tmp/rcli07e-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 async fn audit(sys: &TestSystem) -> Vec<Value> {
     let (status, body) = sys.api.get("/api/v1/audit").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -10,7 +19,7 @@ async fn audit(sys: &TestSystem) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn exec_returns_output_and_exit_code_as_the_logged_in_user_without_the_lock() {
+async fn exec_returns_output_and_exit_code_as_the_terminal_user_without_the_lock() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id().to_owned();
@@ -26,8 +35,10 @@ async fn exec_returns_output_and_exit_code_as_the_logged_in_user_without_the_loc
     assert_eq!(status, StatusCode::OK, "{out}");
     assert_eq!(out, json!({ "exit_code": 0, "stdout": "hi\n", "stderr": "", "timed_out": false, "as": "user" }));
 
+    // The Terminal User defaults to the account running the Agent (this test process).
+    let running = std::env::var("USER").expect("USER");
     let (_, out) = alice.post_json(&path, &json!({ "command": "whoami" })).await;
-    assert_eq!(out["stdout"], "user\n", "{out}");
+    assert_eq!(out["stdout"], format!("{running}\n"), "{out}");
 
     let (_, out) = alice.post_json(&path, &json!({ "command": "nope" })).await;
     assert_eq!(out["exit_code"], 127, "{out}");
@@ -72,14 +83,18 @@ async fn exec_timeout_is_enforced() {
 #[tokio::test]
 async fn root_is_not_gated_by_server_roles() {
     let sys = TestSystem::start().await;
-    let agent = sys.start_agent("lab-pc").await;
+    let dir = temp_dir("exec-root");
+    let agent = sys.start_agent_trusting_socket("lab-pc", &dir).await;
     let dev = agent.device_id().to_owned();
     sys.wait_device(&dev, |d| d["status"] == "Online").await;
+    let socket = dir.join("agent.sock");
+    rcli_testkit::eventually(|| async { socket.exists().then_some(()) }).await;
+    // The Device allows root always; who asks does not matter.
+    sys.agent_rcli(&socket, &["agent", "root", "always"]).await.unwrap();
     let alice_token = sys.create_user("alice", "operator").await;
     let path = format!("/api/v1/devices/{dev}/exec");
     let as_root = json!({ "command": "whoami", "as": "root" });
 
-    // The Device's own Device Settings decide root access (ticket 07), not the Server role.
     let (status, body) = sys.api.with_token(Some(&alice_token)).post_json(&path, &as_root).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["as"], "root");
@@ -93,7 +108,7 @@ async fn root_is_not_gated_by_server_roles() {
 }
 
 #[tokio::test]
-async fn with_nobody_logged_in_any_caller_runs_commands_as_root() {
+async fn with_nobody_logged_in_commands_still_run_as_the_terminal_user() {
     let sys = TestSystem::start().await;
     let platform = FakePlatform::new("lab-pc");
     platform.set_session_state(SessionState::LoginScreen);
@@ -103,12 +118,16 @@ async fn with_nobody_logged_in_any_caller_runs_commands_as_root() {
     let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
     let path = format!("/api/v1/devices/{dev}/exec");
 
+    // The Terminal User is a local account, so it exists with nobody at the console.
+    let running = std::env::var("USER").expect("USER");
     let (status, out) = alice.post_json(&path, &json!({ "command": "whoami" })).await;
     assert_eq!(status, StatusCode::OK, "{out}");
-    assert_eq!(out["stdout"], "root\n");
-    assert_eq!(out["as"], "root");
+    assert_eq!(out["stdout"], format!("{running}\n"));
+    assert_eq!(out["as"], "user");
 
-    let (status, out) = sys.api.post_json(&path, &json!({ "command": "whoami" })).await;
-    assert_eq!(status, StatusCode::OK, "{out}");
-    assert_eq!(out["as"], "root");
+    // Root still follows the Device's setting; `ask` has no session to prompt in, so it is refused.
+    let (status, out) = alice.post_json(&path, &json!({ "command": "whoami", "as": "root" })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{out}");
+    assert_eq!(out["error"]["code"], "root_denied", "{out}");
 }
+

@@ -238,6 +238,26 @@ pub async fn run_terminal_user(command: TerminalUserCommand, socket: Option<Path
     Ok(())
 }
 
+/// `rcli agent root never|ask|always`: whether `--as root` is allowed (root only).
+#[derive(Args)]
+pub struct Root {
+    /// `never`, `ask` (a person at the Device decides) or `always`.
+    #[arg(value_parser = ["never", "ask", "always"])]
+    access: String,
+    /// Local IPC socket of the running Agent.
+    #[arg(long, env = "RCLI_AGENT_SOCKET")]
+    socket: Option<PathBuf>,
+}
+
+impl Root {
+    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        let socket = self.socket.unwrap_or_else(ipc::default_socket);
+        let reply = ipc::send(&socket, serde_json::json!({ "command": "root.set", "root": self.access })).await?;
+        writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
+        Ok(())
+    }
+}
+
 /// `rcli agent server ...`: which Server the Agent connects to (root only).
 #[derive(Args)]
 pub struct Server {
