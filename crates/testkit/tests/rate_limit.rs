@@ -1,7 +1,7 @@
 //! Wrong Device Passwords are rate-limited per (Device ID, IP): 5 failures lock the pair out for a minute, and each
 //! later lockout doubles up to an hour. Every failure and lockout is audited (tested below as the slices land).
 
-use rcli_testkit::{StatusCode, TestSystem};
+use rcli_testkit::{Clock, StatusCode, TestSystem};
 
 #[tokio::test]
 async fn five_wrong_passwords_lock_the_device_and_ip_out_for_a_minute() {
