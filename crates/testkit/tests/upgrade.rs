@@ -87,6 +87,31 @@ async fn upgrade_fetches_the_newest_published_build_for_this_target() {
     assert_eq!(std::fs::read(&target).unwrap(), b"new build");
 }
 
+/// An on-path attacker can serve the real CA (so the fingerprint matches) but cannot sign another update key
+/// without the Server Key's secret: `rcli setup` refuses the pin, so `rcli upgrade` can never trust it.
+#[tokio::test]
+async fn a_server_that_cannot_prove_the_update_key_is_refused() {
+    use axum::{routing::get, Router};
+    let sys = TestSystem::start().await;
+    let ca = sys.server.ca_pem.clone();
+    let impostor = Router::new().route("/api/v1/server-ca", get(move || async move { ca.clone() })).route(
+        "/api/v1/update-key",
+        get(|| async { axum::Json(serde_json::json!({ "update_key": "00".repeat(32), "mac": "00".repeat(32) })) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, impostor).await });
+    let dir = temp_dir("impostor");
+
+    let err = sys
+        .rcli_in(&dir, &["setup", "--server", &format!("http://{addr}"), "--key", &sys.server_key()])
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("did not prove the update key"), "{err}");
+    assert!(!dir.join("config.json").exists(), "nothing was pinned");
+}
+
 #[tokio::test]
 async fn no_build_for_this_os_and_arch_is_a_clear_error() {
     let sys = TestSystem::start().await;

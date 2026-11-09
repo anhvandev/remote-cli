@@ -98,14 +98,25 @@ pub async fn setup(dir: &Path, server: &str, key: &str) -> anyhow::Result<String
         "the Server's CA fingerprint does not match the Server Key"
     );
     let update: serde_json::Value = http.get(format!("{base}/api/v1/update-key")).send().await?.error_for_status()?.json().await?;
+    let update_key = update["update_key"].as_str().unwrap_or_default().to_owned();
+    check_pin(&fingerprint.1, &update_key, update["mac"].as_str())?;
     let config = Config {
         server: base.to_owned(),
         server_key: key.trim().to_owned(),
-        update_key: update["update_key"].as_str().unwrap_or_default().to_owned(),
+        update_key,
         token: None,
     };
     save(dir, &config)?;
     Ok(format!("saved the Server {} and its key\n", config.server))
+}
+
+/// The update key must come with the HMAC under the Server Key's secret, or an impostor could swap it in.
+fn check_pin(server_key_secret: &str, update_key_hex: &str, mac: Option<&str>) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        mac == Some(hex::encode(rcli_protocol::update::pin_mac(server_key_secret, update_key_hex)).as_str()),
+        "the Server did not prove the update key with this Server Key; refusing to pin it"
+    );
+    Ok(())
 }
 
 fn ca_der(pem: &str) -> anyhow::Result<Vec<u8>> {

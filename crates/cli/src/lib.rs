@@ -65,8 +65,8 @@ enum Command {
     /// Replace this `rcli` binary with the newest build published for this OS/arch, after checking its signature.
     /// As root on an installed Device it also restarts the Agent service.
     Upgrade {
-        /// Binary to replace; default: the one running now.
-        #[arg(long)]
+        /// Binary to replace; default: the one running now. Hidden: a seam for tests.
+        #[arg(long, hide = true)]
         target: Option<PathBuf>,
     },
     /// Remember a Device's Device Password, so later commands take just its Device ID.

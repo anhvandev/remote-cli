@@ -34,6 +34,13 @@ pub fn verify(public_key: &[u8], version: &str, target: &str, build: &[u8], sign
     UnparsedPublicKey::new(&ED25519, public_key).verify(&message(version, target, build), signature).is_ok()
 }
 
+/// HMAC-SHA256 of the hex update key under the Server Key's secret. A Controller checking this at `rcli setup`
+/// holds the secret already, so an on-path attacker who rewrites the plain-HTTP reply cannot produce it.
+pub fn pin_mac(server_key_secret: &str, update_key_hex: &str) -> Vec<u8> {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, server_key_secret.as_bytes());
+    ring::hmac::sign(&key, update_key_hex.as_bytes()).as_ref().to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
