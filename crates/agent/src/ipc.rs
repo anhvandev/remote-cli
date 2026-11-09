@@ -170,6 +170,7 @@ impl Status {
             "device_id": self.device_id(),
             "server": self.endpoint.borrow().addr,
             "connected": self.connected.load(Ordering::Relaxed),
+            "controllers": self.controllers.list(),
         })
     }
 }

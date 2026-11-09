@@ -118,3 +118,28 @@ async fn accept_auto_rejects_when_nobody_answers() {
     assert_eq!(agent.platform.accept_prompts().len(), 1);
     assert_eq!(agent.platform.accept_prompts()[0].1, Duration::from_secs(30));
 }
+
+#[tokio::test]
+async fn info_lists_connected_controllers() {
+    let sys = TestSystem::start().await;
+    let (agent, dir) = online(&sys, "info", FakePlatform::new("lab-pc")).await;
+    let dev = agent.device_id().to_owned();
+    let password = agent.device_password().unwrap();
+
+    // A password connection from machine `dev-laptop` shows as `dev-laptop (<IP>)`.
+    let (status, out) = sys
+        .device_client(&dev, &password)
+        .with_controller("dev-laptop")
+        .post_json(&format!("/api/v1/devices/{dev}/exec"), &json!({ "command": "whoami" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+
+    // A Dashboard User shows as `<name> (Dashboard)`.
+    let alice = sys.create_user("alice", "operator").await;
+    let (status, out) = sys.api.with_token(Some(&alice)).post_json(&format!("/api/v1/devices/{dev}/exec"), &json!({ "command": "whoami" })).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+
+    let out = sys.agent_rcli(&dir.join("agent.sock"), &["agent", "info"]).await.unwrap();
+    assert!(out.contains("dev-laptop (127.0.0.1)"), "{out}");
+    assert!(out.contains("alice (Dashboard)"), "{out}");
+}

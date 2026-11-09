@@ -103,6 +103,13 @@ impl Info {
                 if reply["connected"] == true { "connected" } else { "disconnected" },
                 reply["server"].as_str().unwrap_or_default(),
             )?;
+            let controllers = reply["controllers"].as_array().map(Vec::as_slice).unwrap_or_default();
+            if !controllers.is_empty() {
+                writeln!(out, "controlled by:")?;
+                for c in controllers {
+                    writeln!(out, "  {}", c.as_str().unwrap_or_default())?;
+                }
+            }
         }
         Ok(())
     }
