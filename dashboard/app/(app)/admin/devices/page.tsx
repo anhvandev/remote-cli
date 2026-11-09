@@ -7,11 +7,9 @@ import { Status } from "../../../status";
 import * as act from "../actions";
 import { Form } from "../form";
 import { card, cardHead, nativeSelect, title } from "../../styles";
-import { unlockPasswords } from "../data";
 
 export default async function DevicesPage() {
   const devices = await api<Device[]>("/api/v1/devices");
-  const unlock = await unlockPasswords(devices);
   return (
     <div className="grid items-start gap-5">
       <section className={card} aria-label="Device">
@@ -99,57 +97,6 @@ export default async function DevicesPage() {
                         Xoá
                       </Button>
                     </Form>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </section>
-
-      <section className={card} aria-label="Mật khẩu unlock">
-        <div className={cardHead}>
-          <h3 className={title}>Mật khẩu unlock</h3>
-        </div>
-        <Table>
-          <TableHeader>
-            <TableRow className="hover:bg-transparent">
-              <TableHead>Device</TableHead>
-              <TableHead>Mật khẩu</TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {devices.map((d, i) => (
-              <TableRow key={d.id}>
-                <TableCell>{d.name}</TableCell>
-                <TableCell className="text-muted-foreground">
-                  {unlock[i].set ? `đã lưu · không hiển thị (${new Date(unlock[i].updated_at!).toLocaleString("vi-VN")})` : "chưa có"}
-                </TableCell>
-                <TableCell className="whitespace-normal">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <Form action={act.setUnlockPassword}>
-                      <input type="hidden" name="device" value={d.id} />
-                      <Input
-                        type="password"
-                        name="password"
-                        aria-label={`Mật khẩu unlock cho ${d.name}`}
-                        autoComplete="off"
-                        required
-                        className="h-8 w-36"
-                      />
-                      <Button size="xs" variant="outline">
-                        Lưu
-                      </Button>
-                    </Form>
-                    {unlock[i].set && (
-                      <Form action={act.clearUnlockPassword}>
-                        <input type="hidden" name="device" value={d.id} />
-                        <Button size="xs" variant="ghost" className="text-destructive">
-                          Xoá
-                        </Button>
-                      </Form>
-                    )}
                   </div>
                 </TableCell>
               </TableRow>

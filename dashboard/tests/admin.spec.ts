@@ -121,24 +121,6 @@ test("admin renames, revokes, deletes and merges Devices", async ({ page }) => {
   await expect(rowIn(page, "Device", /^foxtrot /)).toBeVisible();
 });
 
-test("unlock passwords can be set and cleared but are never shown", async ({ page }) => {
-  await openAdmin(page, "Device");
-  const row = rowIn(page, "Mật khẩu unlock", "bravo");
-  await expect(row).toContainText("chưa có");
-  const input = row.getByLabel("Mật khẩu unlock cho bravo");
-  await expect(input).toHaveAttribute("type", "password");
-  await input.fill("s3cret-unlock");
-  await row.getByRole("button", { name: "Lưu" }).click();
-  await expect(row).toContainText("đã lưu");
-  await expect(input).toHaveValue("");
-  expect(await page.content()).not.toContain("s3cret-unlock");
-  await page.reload();
-  expect(await page.content()).not.toContain("s3cret-unlock");
-
-  await row.getByRole("button", { name: "Xoá" }).click();
-  await expect(row).toContainText("chưa có");
-});
-
 test("the overview shows three cards with counts from the Server", async ({ page }) => {
   await signIn(page, await newUser("admin"));
   await page.getByRole("link", { name: "Quản trị" }).click();
@@ -157,9 +139,6 @@ test("the overview shows three cards with counts from the Server", async ({ page
   await expect(async () => {
     const users = await adminApi("/api/v1/users");
     const devices = await adminApi("/api/v1/devices");
-    const unlock = await Promise.all(
-      devices.map((d: { id: string }) => adminApi(`/api/v1/devices/${d.id}/unlock-password`)),
-    );
     await page.goto("/admin");
     const user = page.getByRole("region", { name: "User" });
     const admins = users.filter((u: { role: string }) => u.role === "admin").length;
@@ -171,7 +150,6 @@ test("the overview shows three cards with counts from the Server", async ({ page
     const count = (s: string) => devices.filter((d: { status: string }) => d.status === s).length;
     await expect(device).toContainText(`${count("Online")} Online · ${count("Offline")} Offline · ${count("Waking")} Waking`);
     await expect(device).toContainText(`${devices.filter((d: { revoked_at: string | null }) => d.revoked_at).length} Device đã thu hồi`);
-    await expect(device).toContainText(`${unlock.filter((u: { set: boolean }) => !u.set).length} Device chưa có mật khẩu unlock`);
   }).toPass({ timeout: 20_000 });
 });
 

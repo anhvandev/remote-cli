@@ -153,16 +153,13 @@ enum Command {
         state: String,
         device: String,
     },
-    /// Make the Agent type the Device's stored unlock password + Enter (needs the Control Lock).
+    /// Make the Agent type the unlock password stored on the Device + Enter (needs the Control Lock).
     Unlock {
         device: String,
         /// Directory to save the Observation in.
         #[arg(long, default_value = ".")]
         out: PathBuf,
     },
-    /// Store or clear a Device's unlock password in the Secrets Vault (admin).
-    #[command(subcommand)]
-    UnlockPassword(UnlockPasswordCommand),
     /// Interactive shell on a Device, like SSH. Exits with the remote shell's exit code.
     Shell {
         device: String,
@@ -277,19 +274,14 @@ enum AgentCommand {
     },
     /// Whether `--as root` is never allowed, asked at the Device, or always allowed (root only).
     Root(agent::Root),
-}
-
-#[derive(Subcommand)]
-enum UnlockPasswordCommand {
-    /// Store (or replace) the password; it is encrypted on the Server and never shown again.
-    Set {
-        device: String,
-        #[arg(long, env = "RCLI_UNLOCK_PASSWORD", hide_env_values = true)]
-        password: String,
+    /// The password `unlock` types at the lock or login screen: set or clear it (root only).
+    UnlockPassword {
+        #[command(subcommand)]
+        command: agent::UnlockPasswordCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
     },
-    Clear { device: String },
-    /// Whether a password is stored.
-    Status { device: String },
 }
 
 #[derive(Subcommand)]
@@ -340,7 +332,6 @@ fn admin_only(command: &Command) -> bool {
             | Command::User(_)
             | Command::Rollout { .. }
             | Command::Audit { .. }
-            | Command::UnlockPassword(_)
             | Command::Device(DeviceCommand::Rename { .. } | DeviceCommand::Delete { .. } | DeviceCommand::Revoke { .. } | DeviceCommand::Merge { .. })
             | Command::Lock(LockCommand::ForceRelease { .. })
     )
@@ -584,6 +575,7 @@ where
             AgentCommand::Server { command, socket } => agent::run_server(command, socket, out).await,
             AgentCommand::TerminalUser { command, socket } => agent::run_terminal_user(command, socket, out).await,
             AgentCommand::Root(root) => root.run(out).await,
+            AgentCommand::UnlockPassword { command, socket } => agent::run_unlock_password(command, socket, out).await,
         };
     }
     let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);
@@ -902,22 +894,6 @@ where
             let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{}/unlock", path_segment(&device)), None).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
             (obs, text)
-        }
-        Command::UnlockPassword(cmd) => {
-            let (method, device, suffix, body) = match cmd {
-                UnlockPasswordCommand::Set { device, password } => {
-                    (reqwest::Method::POST, device, "", Some(json!({ "password": password })))
-                }
-                UnlockPasswordCommand::Clear { device } => (reqwest::Method::POST, device, "/clear", None),
-                UnlockPasswordCommand::Status { device } => (reqwest::Method::GET, device, "", None),
-            };
-            let path = format!("/api/v1/devices/{}/unlock-password{suffix}", path_segment(&device));
-            let r = api.call(method, &path, body.as_ref()).await?;
-            let text = match r["updated_at"].as_str() {
-                Some(at) => format!("unlock password set ({at})\n"),
-                None => "no unlock password\n".into(),
-            };
-            (r, text)
         }
         Command::Root { state, device } => {
             let root = state == "on";

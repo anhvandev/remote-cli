@@ -25,6 +25,8 @@ use crate::{secret_store::SecretStore, settings, ServerEndpoint};
 
 /// The Device Password's name in the Secret Store.
 pub const DEVICE_PASSWORD: &str = "device_password";
+/// The unlock password's name in the Secret Store.
+pub const UNLOCK_PASSWORD: &str = "unlock_password";
 
 /// How long a change may wait for the Server's answer.
 const CHANGE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -80,6 +82,11 @@ impl Status {
         self.settings.clone()
     }
 
+    /// The Secret Store, for the Server's `unlock` (the password is read here, never sent to the Server).
+    pub fn secrets(&self) -> Arc<dyn SecretStore> {
+        self.secrets.clone()
+    }
+
     /// The session root grant: shared with `run`, cleared whenever the connection is re-established.
     pub fn grant(&self) -> Arc<crate::Grant> {
         self.grant.clone()
@@ -119,6 +126,11 @@ impl Status {
     /// Stores a Device Password the Server set from the Dashboard.
     pub fn store_password(&self, password: &str) -> anyhow::Result<()> {
         self.secrets.set(DEVICE_PASSWORD, password)
+    }
+
+    /// The unlock password set at this Device; None = none set.
+    pub fn unlock_password(&self) -> anyhow::Result<Option<String>> {
+        self.secrets.get(UNLOCK_PASSWORD)
     }
 
     pub fn set_device_id(&self, device_id: &str) {
@@ -241,6 +253,20 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
             Ok(Some(password)) => json!({ "password": password }),
             Ok(None) => json!({ "error": "no Device Password is stored" }),
             Err(e) => json!({ "error": format!("{e:#}") }),
+        },
+        Some("unlock-password.set") => {
+            let password = request["password"].as_str().unwrap_or_default();
+            if password.is_empty() {
+                return json!({ "error": "the unlock password must not be empty" });
+            }
+            match status.secrets.set(UNLOCK_PASSWORD, password) {
+                Ok(()) => json!({ "message": "the unlock password was set" }),
+                Err(e) => json!({ "error": format!("cannot store the unlock password: {e:#}") }),
+            }
+        }
+        Some("unlock-password.clear") => match status.secrets.remove(UNLOCK_PASSWORD) {
+            Ok(()) => json!({ "message": "the unlock password was cleared" }),
+            Err(e) => json!({ "error": format!("cannot clear the unlock password: {e:#}") }),
         },
         Some("password.set") => {
             let password = request["password"].as_str().unwrap_or_default();

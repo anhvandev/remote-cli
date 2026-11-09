@@ -154,6 +154,40 @@ pub async fn run_password(command: PasswordCommand, socket: Option<PathBuf>, out
     Ok(())
 }
 
+/// `rcli agent unlock-password set|clear`: the password `unlock` types (root only).
+#[derive(Args)]
+pub struct UnlockPassword {
+    #[command(subcommand)]
+    command: UnlockPasswordCommand,
+    /// Local IPC socket of the running Agent.
+    #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+    socket: Option<PathBuf>,
+}
+
+#[derive(clap::Subcommand)]
+pub enum UnlockPasswordCommand {
+    /// Store (or replace) the unlock password on this Device (requires root/Administrator).
+    Set {
+        /// The password `unlock` types at the lock or login screen.
+        #[arg(long, env = "RCLI_UNLOCK_PASSWORD", hide_env_values = true)]
+        password: String,
+    },
+    /// Forget the unlock password; `unlock` says none is set until one is stored again.
+    Clear,
+}
+
+pub async fn run_unlock_password(command: UnlockPasswordCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    let socket = socket.unwrap_or_else(ipc::default_socket);
+    let reply = match command {
+        UnlockPasswordCommand::Set { password } => {
+            ipc::send(&socket, serde_json::json!({ "command": "unlock-password.set", "password": password })).await?
+        }
+        UnlockPasswordCommand::Clear => ipc::request(&socket, "unlock-password.clear").await?,
+    };
+    writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
+    Ok(())
+}
+
 /// `rcli agent id ...`: the Device ID (root only).
 #[derive(Args)]
 pub struct Id {

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { api, type Device, type DeviceStatus, type ServerSettings, type User } from "@/lib/api";
 import { card, cardHead, title } from "../styles";
-import { groupRollouts, unlockPasswords } from "./data";
+import { groupRollouts } from "./data";
 
 export default async function AdminPage() {
   const [users, devices, settings] = await Promise.all([
@@ -9,7 +9,6 @@ export default async function AdminPage() {
     api<Device[]>("/api/v1/devices"),
     api<ServerSettings>("/api/v1/server-settings"),
   ]);
-  const unlock = await unlockPasswords(devices);
   const rollouts = groupRollouts(devices);
   const failed = devices.filter((d) => d.update?.status === "failed");
   const count = (role: User["role"]) => users.filter((u) => u.role === role).length;
@@ -46,7 +45,6 @@ export default async function AdminPage() {
             {status("Online")} Online · {status("Offline")} Offline · {status("Waking")} Waking
           </p>
           <p>{devices.filter((d) => d.revoked_at).length} Device đã thu hồi</p>
-          <p>{unlock.filter((u) => !u.set).length} Device chưa có mật khẩu unlock</p>
         </div>
       </section>
 

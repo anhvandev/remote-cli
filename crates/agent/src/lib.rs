@@ -394,11 +394,26 @@ async fn session(
                 match msg?.and_then(|m| m.msg) {
                     None => anyhow::bail!("server closed the connection"),
                     Some(server_message::Msg::Error(e)) => anyhow::bail!("server refused: {}: {}", e.code, e.message),
-                    Some(server_message::Msg::Act(req)) => {
+                    Some(server_message::Msg::Act(mut req)) => {
                         // The Executor's lock runs requests one at a time, in arrival order.
                         let (platform, executor, replies) = (platform_arc.clone(), executor.clone(), replies.clone());
                         let (media, rt) = (media.clone(), tokio::runtime::Handle::current());
+                        let secrets = status.map(|s| s.secrets());
                         tokio::task::spawn_blocking(move || {
+                            // `unlock`: type this Device's own password; the Server never has it.
+                            if req.unlock {
+                                match unlock_actions(secrets.as_deref()) {
+                                    Ok(actions) => req.actions = actions,
+                                    Err(e) => {
+                                        let _ = replies.send(agent_message::Msg::ActResult(rcli_protocol::agent::ActResult {
+                                            request_id: req.request_id,
+                                            error: Some(e),
+                                            ..Default::default()
+                                        }));
+                                        return;
+                                    }
+                                }
+                            }
                             let mut result = executor.lock().unwrap().act(platform.as_ref(), &req);
                             if !req.media_session.is_empty() {
                                 rt.block_on(media.offload(&req.media_session, &mut result));
@@ -531,6 +546,25 @@ async fn session(
 
 /// How long the person at the Device has to answer a root prompt.
 const ROOT_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The Actions `unlock` types: the Device's own unlock password, then Enter. None set is a typed error.
+fn unlock_actions(secrets: Option<&dyn secret_store::SecretStore>) -> Result<Vec<rcli_protocol::agent::Action>, Error> {
+    let Some(secrets) = secrets else {
+        return Err(not_set("this Agent has no Secret Store, so it has no unlock password"));
+    };
+    match secrets.get(ipc::UNLOCK_PASSWORD) {
+        Ok(Some(password)) => Ok(vec![
+            rcli_protocol::agent::Action { kind: Some(rcli_protocol::agent::action::Kind::TypeText(password)) },
+            rcli_protocol::agent::Action { kind: Some(rcli_protocol::agent::action::Kind::Key("enter".into())) },
+        ]),
+        Ok(None) => Err(not_set("no unlock password is set on this Device; set one with `sudo rcli agent unlock-password set`")),
+        Err(e) => Err(Error { code: "secret_store".into(), message: format!("cannot read the unlock password: {e:#}") }),
+    }
+}
+
+fn not_set(message: &str) -> Error {
+    Error { code: "unlock_password_not_set".into(), message: message.into() }
+}
 
 /// Root granted to the current session: one Controller, for as long as the Agent's connection to the Server lasts.
 /// The person at the Device (or its GUI) gives it; it does not outlive the session.

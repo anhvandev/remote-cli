@@ -1,4 +1,4 @@
-import { api, type Device, type UnlockPassword } from "@/lib/api";
+import type { Device } from "@/lib/api";
 
 /** Rollout progress per version: Devices it was rolled out to, and how many run it / failed. */
 export function groupRollouts(devices: Device[]) {
@@ -13,7 +13,3 @@ export function groupRollouts(devices: Device[]) {
   }
   return out;
 }
-
-/** Each Device's unlock password status, in `devices` order. */
-export const unlockPasswords = (devices: Device[]) =>
-  Promise.all(devices.map((d) => api<UnlockPassword>(`/api/v1/devices/${d.id}/unlock-password`)));
