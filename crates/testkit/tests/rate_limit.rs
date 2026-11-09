@@ -1,5 +1,5 @@
-//! Wrong Device Passwords are rate-limited per (Device ID, IP): 5 failures lock the pair out for a minute, and each
-//! later lockout doubles up to an hour. Every failure and lockout is audited (tested below as the slices land).
+//! Wrong Device Passwords are rate-limited per (Device ID, IP): 5 failures lock the pair out for a minute, each
+//! later lockout doubles up to an hour, every failure and lockout is audited, and the CLI says how long to wait.
 
 use rcli_testkit::{Clock, StatusCode, TestSystem};
 
@@ -166,9 +166,13 @@ async fn parallel_guesses_still_reach_the_lockout() {
     let path = format!("/api/v1/devices/{}", agent.device_id());
     let wrong = sys.device_client(agent.device_id(), "wrongpassword");
 
-    // Ten guesses at once count as ten failures, not one: a parallel guesser still hits the lockout.
+    // Ten guesses at once count as ten failures, not one: a parallel guesser still hits the lockout. An
+    // in-flight request that arrives after the fifth may already see the lockout, so both answers are accepted.
     let all = futures::future::join_all((0..10).map(|_| wrong.get(&path))).await;
-    assert!(all.iter().all(|(status, _)| *status == StatusCode::UNAUTHORIZED));
+    assert!(
+        all.iter().all(|(status, _)| [StatusCode::UNAUTHORIZED, StatusCode::TOO_MANY_REQUESTS].contains(status)),
+        "{all:?}"
+    );
 
     let right = sys.device_client(agent.device_id(), &agent.device_password().unwrap());
     let (status, body) = right.get(&path).await;
