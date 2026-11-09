@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] After a key replacement, registered Devices stay Online and the old key no longer registers or connects
 - [x] Changing the Server Address reissues the certificate and Agents reconnect on the new name
@@ -31,3 +31,10 @@
   Online, fingerprint unchanged), change the address and see it persist, operators see no page or nav entry.
 - Not verified: "Agents reconnect on the new name" is covered as a fresh connection through the new name; a Server
   cannot force a live Agent to adopt a name it does not have, and Agent-side `server set` is ticket 06.
+- Merged into `easy-setup` (fast-forward to `0b19108`). Diff `1bff660..t/10` is only ticket 10: no Device Password,
+  IPC, login, Device actions or Connect guide code. Migration `10001` is unique and applies after ticket 02's
+  `16002`; ticket 03's `03002_device_password.sql` sorts earlier, so both apply cleanly in order. Verified on the
+  merged tree: `cargo test --workspace` 123 passed / 0 failed, `cargo clippy --workspace --all-targets` clean,
+  `tsc --noEmit` clean. Playwright run here (`DOCKER_HOST` = Colima, ports 18085/3105): `server-settings.spec.ts`
+  3 passed and `admin.spec.ts` 10 passed, 13 passed / 0 failed. Ticket 02's `GET /api/v1/server-key` and
+  `rcli server-key show` still exist and read from the new settings store.
