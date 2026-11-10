@@ -18,7 +18,6 @@ hex.workspace = true
 rcli-agent.workspace = true
 rcli-protocol.workspace = true
 reqwest.workspace = true
-sha2.workspace = true
 rmcp = { workspace = true, features = ["server"] }
 rpassword.workspace = true
 serde.workspace = true
@@ -27,3 +26,10 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 webrtc.workspace = true
+
+# Remembered Device Passwords go to the OS keychain where one is always there; Linux keeps the 0600 file fallback.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }

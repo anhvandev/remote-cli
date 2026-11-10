@@ -146,6 +146,26 @@ async fn a_session_grant_lasts_until_the_session_ends() {
     restarted.stop();
 }
 
+/// A disconnected Controller loses its root grant: reconnecting with the password does not bring root back.
+#[tokio::test]
+async fn a_session_grant_ends_when_its_controller_is_disconnected() {
+    let sys = TestSystem::start().await;
+    let (agent, dir) = online(&sys, "grant-disconnect", FakePlatform::new("lab-pc")).await;
+    let dev = agent.device_id().to_owned();
+    let socket = dir.join("agent.sock");
+    let alice = sys.create_user("alice", "operator").await;
+
+    // The GUI grants by the name it lists: "alice (Dashboard)".
+    sys.agent_rcli(&socket, &["agent", "root", "grant", "alice (Dashboard)"]).await.unwrap();
+    let (status, out) = root_whoami(&sys, &alice, &dev).await;
+    assert_eq!((status, &out["root_decision"]), (StatusCode::OK, &json!("session")), "{out}");
+
+    sys.agent_rcli(&socket, &["agent", "disconnect", "alice"]).await.unwrap();
+    let (status, out) = root_whoami(&sys, &alice, &dev).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{out}");
+    assert_eq!(agent.platform.root_prompts().len(), 1, "asked again instead of using the old grant");
+}
+
 #[tokio::test]
 async fn rcli_root_on_makes_exec_request_root_by_default() {
     let sys = TestSystem::start().await;

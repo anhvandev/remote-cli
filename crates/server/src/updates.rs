@@ -73,6 +73,15 @@ pub async fn rollout(state: &AppState, version: &str, devices: Option<&[Uuid]>) 
     .execute(&state.db)
     .await?
     .rows_affected();
+    // A rollout to every Device makes this the fleet's build: what new installs and Controller-only machines get.
+    // A rollout to some Devices (a canary) does not.
+    if devices.is_none() {
+        sqlx::query("UPDATE agent_builds SET rolled_out_at = $2 WHERE version = $1")
+            .bind(version)
+            .bind(state.clock.now())
+            .execute(&state.db)
+            .await?;
+    }
     state.rollouts.send_replace(());
     Ok(n)
 }
@@ -97,12 +106,12 @@ pub async fn agent_failed(state: &AppState, device: Uuid, failed: &UpdateFailed)
     Ok(())
 }
 
-/// The build `rcli upgrade` fetches for a target: the most recently published one. Rollout state is per Device, so
-/// a Controller-only machine has none; the newest signed build is what an Admin made current for that OS/arch.
-pub async fn latest(state: &AppState, target: &str) -> anyhow::Result<Option<(String, Vec<u8>, Vec<u8>)>> {
+/// The fleet's build for a target: the one last rolled out to every Device. New installs (`/download`) and
+/// Controller-only machines (`rcli upgrade`) get it; a newer publish or a canary rollout does not reach them.
+pub async fn fleet_build(state: &AppState, target: &str) -> anyhow::Result<Option<(String, Vec<u8>, Vec<u8>)>> {
     let row: Option<(String, Vec<u8>, Vec<u8>)> = sqlx::query_as(
-        "SELECT version, signature, build FROM agent_builds WHERE target = $1
-         ORDER BY uploaded_at DESC, version DESC LIMIT 1",
+        "SELECT version, signature, build FROM agent_builds WHERE target = $1 AND rolled_out_at IS NOT NULL
+         ORDER BY rolled_out_at DESC, uploaded_at DESC LIMIT 1",
     )
     .bind(target)
     .fetch_optional(&state.db)
@@ -112,7 +121,7 @@ pub async fn latest(state: &AppState, target: &str) -> anyhow::Result<Option<(St
 
 /// The build `rcli upgrade` fetches when it names its Device: the one rolled out to it (`update_version`), so an
 /// unpublished or not-yet-rolled-out build never reaches a Device. No Device row (a Controller-only machine) or no
-/// rollout yet falls back to the newest published build.
+/// rollout to it yet falls back to the fleet's build.
 pub async fn upgrade_build(state: &AppState, device: Option<&str>, target: &str) -> anyhow::Result<Option<(String, Vec<u8>, Vec<u8>)>> {
     let mut rolled_out = None;
     if let Some(key) = device {
@@ -130,7 +139,7 @@ pub async fn upgrade_build(state: &AppState, device: Option<&str>, target: &str)
     }
     match rolled_out {
         Some(row) => Ok(Some(row)),
-        None => latest(state, target).await,
+        None => fleet_build(state, target).await,
     }
 }
 

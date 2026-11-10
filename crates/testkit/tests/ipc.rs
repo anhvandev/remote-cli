@@ -68,3 +68,15 @@ async fn agent_info_shows_the_device_id_and_connection_status_to_any_local_user(
     assert_eq!(json["device_id"], agent.device_id());
     assert_eq!(json["connected"], true);
 }
+
+#[tokio::test]
+async fn the_socket_is_open_to_every_local_user() {
+    use std::os::unix::fs::PermissionsExt;
+    let sys = TestSystem::start().await;
+    let dir = temp_dir("socket-mode");
+    let _agent = sys.start_agent_with_socket("lab-pc", &dir).await;
+    let socket = dir.join("agent.sock");
+    // A root service's umask would leave the socket 0755, so other users could not even run `rcli agent info`.
+    let mode = eventually(|| async { Some(std::fs::metadata(&socket).ok()?.permissions().mode() & 0o777).filter(|m| *m == 0o666) }).await;
+    assert_eq!(mode, 0o666);
+}

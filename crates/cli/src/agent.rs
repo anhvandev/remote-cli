@@ -7,6 +7,7 @@ use rcli_agent::{
     ipc,
     platform::FakePlatform,
     secret_store::{FileSecretStore, SecretStore},
+    settings::{AcceptMode, RootAccess},
     Credentials, ServerEndpoint,
 };
 
@@ -95,7 +96,7 @@ pub struct Info {
 
 impl Info {
     pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        let reply = ipc::request(&self.socket.unwrap_or_else(ipc::default_socket), "info").await?;
+        let reply = ipc::send(&self.socket.unwrap_or_else(ipc::default_socket), &ipc::Request::Info).await?;
         if self.json {
             writeln!(out, "{}", serde_json::to_string_pretty(&reply)?)?;
         } else {
@@ -132,11 +133,7 @@ pub struct Disconnect {
 impl Disconnect {
     pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         let socket = self.socket.unwrap_or_else(ipc::default_socket);
-        let mut body = serde_json::json!({ "command": "disconnect" });
-        if let Some(who) = &self.who {
-            body["who"] = who.as_str().into();
-        }
-        let reply = ipc::send(&socket, body).await?;
+        let reply = ipc::send(&socket, &ipc::Request::Disconnect { who: self.who.unwrap_or_default() }).await?;
         writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
         Ok(())
     }
@@ -174,11 +171,11 @@ pub async fn run_password(command: PasswordCommand, socket: Option<PathBuf>, out
     let socket = socket.unwrap_or_else(ipc::default_socket);
     match command {
         PasswordCommand::Show { json: true } => {
-            let reply = ipc::request(&socket, "password.show").await?;
+            let reply = ipc::send(&socket, &ipc::Request::PasswordShow).await?;
             writeln!(out, "{}", serde_json::to_string_pretty(&reply)?)?;
         }
         PasswordCommand::Show { json: false } => {
-            let reply = ipc::request(&socket, "password.show").await?;
+            let reply = ipc::send(&socket, &ipc::Request::PasswordShow).await?;
             writeln!(out, "{}", reply["password"].as_str().unwrap_or_default())?;
         }
         PasswordCommand::Set { password } => {
@@ -190,7 +187,7 @@ pub async fn run_password(command: PasswordCommand, socket: Option<PathBuf>, out
                     line.trim_end_matches(['\n', '\r']).to_owned()
                 }
             };
-            let reply = ipc::send(&socket, serde_json::json!({ "command": "password.set", "password": password })).await?;
+            let reply = ipc::send(&socket, &ipc::Request::PasswordSet { password }).await?;
             writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
         }
     }
@@ -232,9 +229,9 @@ pub async fn run_unlock_password(command: UnlockPasswordCommand, socket: Option<
                     line.trim_end_matches(['\n', '\r']).to_owned()
                 }
             };
-            ipc::send(&socket, serde_json::json!({ "command": "unlock-password.set", "password": password })).await?
+            ipc::send(&socket, &ipc::Request::UnlockPasswordSet { password }).await?
         }
-        UnlockPasswordCommand::Clear => ipc::request(&socket, "unlock-password.clear").await?,
+        UnlockPasswordCommand::Clear => ipc::send(&socket, &ipc::Request::UnlockPasswordClear).await?,
     };
     writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
     Ok(())
@@ -259,11 +256,7 @@ pub enum IdCommand {
 pub async fn run_id(command: IdCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     let reply = match command {
         IdCommand::Set { device_id } => {
-            ipc::send(
-                &socket.unwrap_or_else(ipc::default_socket),
-                serde_json::json!({ "command": "id.set", "device_id": device_id }),
-            )
-            .await?
+            ipc::send(&socket.unwrap_or_else(ipc::default_socket), &ipc::Request::IdSet { device_id }).await?
         }
     };
     writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
@@ -289,7 +282,7 @@ pub enum NameCommand {
 pub async fn run_name(command: NameCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     let reply = match command {
         NameCommand::Set { name } => {
-            ipc::send(&socket.unwrap_or_else(ipc::default_socket), serde_json::json!({ "command": "name.set", "name": name }))
+            ipc::send(&socket.unwrap_or_else(ipc::default_socket), &ipc::Request::NameSet { name })
                 .await?
         }
     };
@@ -316,7 +309,7 @@ pub enum TerminalUserCommand {
 pub async fn run_terminal_user(command: TerminalUserCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     let reply = match command {
         TerminalUserCommand::Set { user } => {
-            ipc::send(&socket.unwrap_or_else(ipc::default_socket), serde_json::json!({ "command": "terminal-user.set", "user": user }))
+            ipc::send(&socket.unwrap_or_else(ipc::default_socket), &ipc::Request::TerminalUserSet { user })
                 .await?
         }
     };
@@ -354,18 +347,10 @@ impl Root {
     pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         let socket = self.socket.unwrap_or_else(ipc::default_socket);
         let reply = match self.command {
-            RootCommand::Grant { who } => {
-                ipc::send(&socket, serde_json::json!({ "command": "root.grant", "who": who })).await?
-            }
-            RootCommand::Never | RootCommand::Ask | RootCommand::Always => {
-                let root = match self.command {
-                    RootCommand::Never => "never",
-                    RootCommand::Ask => "ask",
-                    RootCommand::Always => "always",
-                    RootCommand::Grant { .. } => unreachable!(),
-                };
-                ipc::send(&socket, serde_json::json!({ "command": "root.set", "root": root })).await?
-            }
+            RootCommand::Grant { who } => ipc::send(&socket, &ipc::Request::RootGrant { who }).await?,
+            RootCommand::Never => ipc::send(&socket, &ipc::Request::RootSet { root: RootAccess::Never }).await?,
+            RootCommand::Ask => ipc::send(&socket, &ipc::Request::RootSet { root: RootAccess::Ask }).await?,
+            RootCommand::Always => ipc::send(&socket, &ipc::Request::RootSet { root: RootAccess::Always }).await?,
         };
         writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
         Ok(())
@@ -395,10 +380,10 @@ impl Accept {
     pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         let socket = self.socket.unwrap_or_else(ipc::default_socket);
         let accept = match self.command {
-            AcceptCommand::Password => "password",
-            AcceptCommand::PasswordAccept => "password+accept",
+            AcceptCommand::Password => AcceptMode::Password,
+            AcceptCommand::PasswordAccept => AcceptMode::PasswordAccept,
         };
-        let reply = ipc::send(&socket, serde_json::json!({ "command": "accept.set", "accept": accept })).await?;
+        let reply = ipc::send(&socket, &ipc::Request::AcceptSet { accept }).await?;
         writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
         Ok(())
     }
@@ -429,11 +414,7 @@ pub enum ServerCommand {
 pub async fn run_server(command: ServerCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     let reply = match command {
         ServerCommand::Set { address, key } => {
-            ipc::send(
-                &socket.unwrap_or_else(ipc::default_socket),
-                serde_json::json!({ "command": "server.set", "server": address, "key": key }),
-            )
-            .await?
+            ipc::send(&socket.unwrap_or_else(ipc::default_socket), &ipc::Request::ServerSet { server: address, key }).await?
         }
     };
     writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
@@ -474,7 +455,7 @@ pub struct Prompts {
 
 impl Prompts {
     pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        let reply = ipc::request(&self.socket.unwrap_or_else(ipc::default_socket), "prompts").await?;
+        let reply = ipc::send(&self.socket.unwrap_or_else(ipc::default_socket), &ipc::Request::Prompts).await?;
         if self.json {
             writeln!(out, "{}", serde_json::to_string_pretty(&reply)?)?;
         } else {
@@ -495,11 +476,8 @@ impl Prompts {
 
 pub async fn run_prompt(command: PromptCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     let PromptCommand::Answer { id, decision } = command;
-    let reply = ipc::send(
-        &socket.unwrap_or_else(ipc::default_socket),
-        serde_json::json!({ "command": "prompt.answer", "id": id, "accept": decision == "accept" }),
-    )
-    .await?;
+    let request = ipc::Request::PromptAnswer { id, accept: decision == "accept" };
+    let reply = ipc::send(&socket.unwrap_or_else(ipc::default_socket), &request).await?;
     writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
     Ok(())
 }

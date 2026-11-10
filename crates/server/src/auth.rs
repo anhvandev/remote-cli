@@ -88,10 +88,7 @@ pub async fn authenticate_controller(
     controller: &str,
     ip: &str,
 ) -> anyhow::Result<Result<User, ControllerError>> {
-    let key = state.settings.key().await;
-    let expected = crate::server_key::split(&key).map(|(_, secret)| secret).unwrap_or_default();
-    let presented = crate::server_key::split(server_key).map(|(_, secret)| secret).unwrap_or("");
-    if !crate::server_key::secret_matches(expected, presented) {
+    if !crate::server_key::admits(state, server_key).await {
         return Ok(Err(ControllerError::Unauthorized));
     }
     // A Device that exists is keyed by its UUID, so every way of naming it (Device ID, UUID, name) shares one

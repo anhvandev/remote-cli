@@ -1,4 +1,4 @@
-const BASE = process.env.RCLI_API_URL ?? "http://localhost:8080";
+import { BASE } from "@/lib/api";
 
 /** The rolled-out signed Agent build for one OS/arch (ticket 17), proxied unchanged from the Server. */
 export async function GET(_: Request, { params }: { params: Promise<{ os: string; arch: string }> }) {

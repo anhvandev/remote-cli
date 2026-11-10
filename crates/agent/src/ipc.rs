@@ -12,10 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rcli_protocol::{
-    agent::IdentityUpdate,
-    password::MIN_LENGTH,
-};
+use rcli_protocol::{agent::IdentityUpdate, password::MIN_LENGTH, server_key::ServerKey};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
@@ -39,6 +37,90 @@ pub struct Change {
     pub reply: oneshot::Sender<Result<String, String>>,
 }
 
+/// One request to the running Agent; on the wire `{"command": "<name>", ...fields}\n`, one per connection.
+/// Missing text fields read as empty, so a non-root caller is told it needs root before anything else.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "command")]
+pub enum Request {
+    /// The Device ID, connection status and connected Controllers (any user); settings and secrets for root.
+    #[serde(rename = "info")]
+    Info,
+    /// The prompts waiting for the person at the Device (any user).
+    #[serde(rename = "prompts")]
+    Prompts,
+    /// Answers a waiting prompt: anyone may refuse, only root may accept.
+    #[serde(rename = "prompt.answer")]
+    PromptAnswer {
+        #[serde(default)]
+        id: u64,
+        #[serde(default)]
+        accept: bool,
+    },
+    /// Ends the Controllers called `who`, or every Controller when it is empty (any user).
+    #[serde(rename = "disconnect")]
+    Disconnect {
+        #[serde(default)]
+        who: String,
+    },
+    #[serde(rename = "password.show")]
+    PasswordShow,
+    #[serde(rename = "password.set")]
+    PasswordSet {
+        #[serde(default)]
+        password: String,
+    },
+    #[serde(rename = "unlock-password.set")]
+    UnlockPasswordSet {
+        #[serde(default)]
+        password: String,
+    },
+    #[serde(rename = "unlock-password.clear")]
+    UnlockPasswordClear,
+    #[serde(rename = "id.set")]
+    IdSet {
+        #[serde(default)]
+        device_id: String,
+    },
+    #[serde(rename = "name.set")]
+    NameSet {
+        #[serde(default)]
+        name: String,
+    },
+    #[serde(rename = "terminal-user.set")]
+    TerminalUserSet {
+        #[serde(default)]
+        user: String,
+    },
+    #[serde(rename = "root.set")]
+    RootSet { root: settings::RootAccess },
+    #[serde(rename = "accept.set")]
+    AcceptSet { accept: settings::AcceptMode },
+    /// Root for the Controller called `who`, for this session only.
+    #[serde(rename = "root.grant")]
+    RootGrant {
+        #[serde(default)]
+        who: String,
+    },
+    /// Another Server Address (`host:port`) and Server Key; the Agent reconnects at once.
+    #[serde(rename = "server.set")]
+    ServerSet {
+        #[serde(default)]
+        server: String,
+        #[serde(default)]
+        key: String,
+    },
+}
+
+/// What a prompt asks the person at the Device.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptKind {
+    /// Root for a terminal command or shell (ticket 07).
+    Root,
+    /// Let a new Controller in, in `password+accept` mode (ticket 08).
+    Accept,
+}
+
 /// Prompts for the person at the Device (tickets 07/08), waiting for the GUI's answer over the IPC.
 #[derive(Default)]
 pub struct Prompts {
@@ -54,14 +136,14 @@ struct PromptState {
 
 struct PendingPrompt {
     id: u64,
-    kind: &'static str,
+    kind: PromptKind,
     who: String,
     deadline: Instant,
 }
 
 impl Prompts {
     /// Publishes a prompt and waits for the person's answer, for at most `timeout`; no answer rejects (30 s rule).
-    pub fn ask(&self, kind: &'static str, who: &str, timeout: Duration) -> bool {
+    pub fn ask(&self, kind: PromptKind, who: &str, timeout: Duration) -> bool {
         let (tx, rx) = std::sync::mpsc::channel();
         let id = {
             let mut state = self.state.lock().unwrap();
@@ -134,7 +216,8 @@ pub struct Status {
     next_request: AtomicU64,
     /// The Device Settings the Agent enforces; kept here so `rcli agent …` can change them live.
     settings: Arc<settings::Handle>,
-    /// Root granted to the current session, by the person at the Device. Cleared when the Agent reconnects.
+    /// Root granted to the current session, by the person at the Device. Cleared when the Agent reconnects or that
+    /// Controller is disconnected.
     grant: Arc<crate::Grant>,
     /// Controllers currently using this Device, so `rcli agent info` / `disconnect` can see and end them.
     controllers: Arc<crate::Controllers>,
@@ -333,6 +416,8 @@ async fn serve_with(
     }
     let _ = std::fs::remove_file(&path);
     let listener = tokio::net::UnixListener::bind(&path)?;
+    // Any local user may connect (info, disconnect); the peer credential, not the file mode, gates the rest.
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o666))?;
     let is_root = Arc::new(is_root);
     loop {
         let Ok((stream, _)) = listener.accept().await else { continue };
@@ -363,85 +448,78 @@ where
 
 /// The reply to one request. Any local user may read the Device ID and status; everything else is root-only.
 async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
-    let command = request["command"].as_str();
-    if command == Some("info") {
-        return status.info(is_root);
-    }
-    if command == Some("prompts") {
+    let parsed = match serde_json::from_value::<Request>(request.clone()) {
+        Ok(parsed) => parsed,
+        Err(e) => return json!({ "error": format!("bad request: {e}") }),
+    };
+    match parsed {
+        Request::Info => status.info(is_root),
         // Who is asking is status-adjacent: any local user may list the waiting prompts.
-        return status.prompts().list();
-    }
-    if command == Some("prompt.answer") {
-        // Anyone at the Device may refuse a prompt (like `disconnect`); only root may accept one,
-        // so a local process cannot grant root or let a Controller in behind the person's back.
-        let id = request["id"].as_u64().unwrap_or_default();
-        let accept = request["accept"].as_bool().unwrap_or_default();
-        if accept && !is_root {
-            return json!({ "error": "accepting a prompt requires root (run `sudo rcli agent prompt answer …`)" });
+        Request::Prompts => status.prompts().list(),
+        Request::PromptAnswer { id, accept } => {
+            // Anyone at the Device may refuse a prompt (like `disconnect`); only root may accept one,
+            // so a local process cannot grant root or let a Controller in behind the person's back.
+            if accept && !is_root {
+                return json!({ "error": "accepting a prompt requires root (run `sudo rcli agent prompt answer …`)" });
+            }
+            match status.prompts().answer(id, accept) {
+                Ok(()) => json!({ "message": format!("prompt {id} {}", if accept { "accepted" } else { "rejected" }) }),
+                Err(e) => json!({ "error": e }),
+            }
         }
-        return match status.prompts().answer(id, accept) {
-            Ok(()) => json!({ "message": format!("prompt {id} {}", if accept { "accepted" } else { "rejected" }) }),
-            Err(e) => json!({ "error": e }),
-        };
-    }
-    if command == Some("disconnect") {
-        // Any local user may end a Controller: the person at the Device has the last word, no root needed.
-        let who = request["who"].as_str().unwrap_or_default().trim();
-        let removed = if who.is_empty() { status.controllers().clear() } else { status.controllers().remove(who) };
-        for c in &removed {
-            status.request_disconnect(c);
+        Request::Disconnect { who } => {
+            // Any local user may end a Controller: the person at the Device has the last word, no root needed.
+            let who = who.trim();
+            let removed = if who.is_empty() { status.controllers().clear() } else { status.controllers().remove(who) };
+            for c in &removed {
+                status.grant().revoke(c);
+                status.request_disconnect(c);
+            }
+            let message =
+                if removed.is_empty() { "no matching Controller was connected".to_owned() } else { format!("disconnected {}", removed.join(", ")) };
+            json!({ "disconnected": removed, "message": message })
         }
-        let message =
-            if removed.is_empty() { "no matching Controller was connected".to_owned() } else { format!("disconnected {}", removed.join(", ")) };
-        return json!({ "disconnected": removed, "message": message });
-    }
-    if !is_root {
-        let command = command.unwrap_or_default().replace('.', " ");
-        return json!({ "error": format!("this requires root (run `sudo rcli agent {command}`)") });
-    }
-    match command {
-        Some("password.show") => match status.secrets.get(DEVICE_PASSWORD) {
+        _ if !is_root => {
+            let command = request["command"].as_str().unwrap_or_default().replace('.', " ");
+            json!({ "error": format!("this requires root (run `sudo rcli agent {command}`)") })
+        }
+        Request::PasswordShow => match status.secrets.get(DEVICE_PASSWORD) {
             Ok(Some(password)) => json!({ "password": password }),
             Ok(None) => json!({ "error": "no Device Password is stored" }),
             Err(e) => json!({ "error": format!("{e:#}") }),
         },
-        Some("unlock-password.set") => {
-            let password = request["password"].as_str().unwrap_or_default();
+        Request::UnlockPasswordSet { password } => {
             if password.is_empty() {
                 return json!({ "error": "the unlock password must not be empty" });
             }
-            match status.secrets.set(UNLOCK_PASSWORD, password) {
+            match status.secrets.set(UNLOCK_PASSWORD, &password) {
                 Ok(()) => json!({ "message": "the unlock password was set" }),
                 Err(e) => json!({ "error": format!("cannot store the unlock password: {e:#}") }),
             }
         }
-        Some("unlock-password.clear") => match status.secrets.remove(UNLOCK_PASSWORD) {
+        Request::UnlockPasswordClear => match status.secrets.remove(UNLOCK_PASSWORD) {
             Ok(()) => json!({ "message": "the unlock password was cleared" }),
             Err(e) => json!({ "error": format!("cannot clear the unlock password: {e:#}") }),
         },
-        Some("password.set") => {
-            let password = request["password"].as_str().unwrap_or_default();
+        Request::PasswordSet { password } => {
             if password.chars().count() < MIN_LENGTH {
                 return json!({ "error": format!("the Device Password must be at least {MIN_LENGTH} characters") });
             }
-            match status.identity(Some(password), None, None).await {
-                Ok(_) => match status.secrets.set(DEVICE_PASSWORD, password) {
+            match status.identity(Some(&password), None, None).await {
+                Ok(_) => match status.secrets.set(DEVICE_PASSWORD, &password) {
                     Ok(()) => json!({ "message": "the Device Password was changed" }),
                     Err(e) => json!({ "error": format!("the Server changed it, but the Device could not store it: {e:#}") }),
                 },
                 Err(e) => json!({ "error": e }),
             }
         }
-        Some("id.set") => {
-            let device_id = request["device_id"].as_str().unwrap_or_default();
-            match status.identity(None, Some(device_id), None).await {
-                Ok(id) => json!({ "device_id": id, "message": format!("the Device ID is now {id}") }),
-                Err(e) => json!({ "error": e }),
-            }
-        }
-        Some("name.set") => {
+        Request::IdSet { device_id } => match status.identity(None, Some(&device_id), None).await {
+            Ok(id) => json!({ "device_id": id, "message": format!("the Device ID is now {id}") }),
+            Err(e) => json!({ "error": e }),
+        },
+        Request::NameSet { name } => {
             // Empty means "unchanged" on the wire, so a blank name is refused here.
-            let name = request["name"].as_str().unwrap_or_default().trim();
+            let name = name.trim();
             if name.is_empty() || name.len() > 255 {
                 return json!({ "error": "name must be 1-255 characters" });
             }
@@ -450,8 +528,8 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
                 Err(e) => json!({ "error": e }),
             }
         }
-        Some("terminal-user.set") => {
-            let user = request["user"].as_str().unwrap_or_default().trim().to_owned();
+        Request::TerminalUserSet { user } => {
+            let user = user.trim().to_owned();
             if user.is_empty() || user.len() > 64 || user.chars().any(|c| c.is_whitespace() || c == ':') {
                 return json!({ "error": "the Terminal User must be a local account name (1-64 characters, no spaces)" });
             }
@@ -460,56 +538,38 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
                 Err(e) => json!({ "error": format!("cannot save the Device Settings: {e:#}") }),
             }
         }
-        Some("root.set") => {
-            let root = match request["root"].as_str() {
-                Some("never") => settings::RootAccess::Never,
-                Some("ask") => settings::RootAccess::Ask,
-                Some("always") => settings::RootAccess::Always,
-                _ => return json!({ "error": "root must be one of never, ask, always" }),
-            };
-            match status.settings().update(|s| s.root = root) {
-                Ok(s) => json!({ "root": s.root.name(), "message": format!("root access is now {}", s.root.name()) }),
-                Err(e) => json!({ "error": format!("cannot save the Device Settings: {e:#}") }),
-            }
-        }
-        Some("accept.set") => {
-            let accept = match request["accept"].as_str() {
-                Some("password") => settings::AcceptMode::Password,
-                Some("password+accept") => settings::AcceptMode::PasswordAccept,
-                _ => return json!({ "error": "accept must be one of password, password+accept" }),
-            };
-            match status.settings().update(|s| s.accept = accept) {
-                Ok(s) => json!({ "accept": s.accept.name(), "message": format!("new connections now ask for {}", s.accept.name()) }),
-                Err(e) => json!({ "error": format!("cannot save the Device Settings: {e:#}") }),
-            }
-        }
-        Some("root.grant") => {
+        Request::RootSet { root } => match status.settings().update(|s| s.root = root) {
+            Ok(s) => json!({ "root": s.root.name(), "message": format!("root access is now {}", s.root.name()) }),
+            Err(e) => json!({ "error": format!("cannot save the Device Settings: {e:#}") }),
+        },
+        Request::AcceptSet { accept } => match status.settings().update(|s| s.accept = accept) {
+            Ok(s) => json!({ "accept": s.accept.name(), "message": format!("new connections now ask for {}", s.accept.name()) }),
+            Err(e) => json!({ "error": format!("cannot save the Device Settings: {e:#}") }),
+        },
+        Request::RootGrant { who } => {
             // The person at the Device: allow root for the Controller named here, for this session only.
-            let who = request["who"].as_str().unwrap_or_default().trim();
+            let who = who.trim();
             if who.is_empty() {
                 return json!({ "error": "say who the root grant is for" });
             }
             status.grant().grant(who);
             json!({ "message": format!("{who} may use root for this session") })
         }
-        Some("server.set") => {
-            let addr = request["server"].as_str().unwrap_or_default().trim();
-            let key = request["key"].as_str().unwrap_or_default().trim();
-            let parts = key.strip_prefix("rk_").and_then(|rest| rest.split_once('_'));
-            if addr.is_empty() || parts.is_none_or(|(fingerprint, secret)| fingerprint.len() != 64 || secret.is_empty()) {
+        Request::ServerSet { server, key } => {
+            let (addr, key) = (server.trim(), key.trim());
+            if addr.is_empty() || ServerKey::parse(key).is_none() {
                 return json!({ "error": "give the Server Address (host:port) and a Server Key rk_<fingerprint>_<secret>" });
             }
             status.set_endpoint(ServerEndpoint { addr: addr.into(), server_key: key.into() });
             json!({ "server": addr, "message": format!("the Agent is reconnecting to {addr}") })
         }
-        Some(other) => json!({ "error": format!("unknown command {other:?}") }),
-        None => json!({ "error": "missing command" }),
     }
 }
 
 /// Sends one request to the Agent at `path` and returns its reply (an `error` reply is returned as `Err`).
 #[cfg(unix)]
-pub async fn send(path: &Path, request: Value) -> anyhow::Result<Value> {
+pub async fn send(path: &Path, request: &Request) -> anyhow::Result<Value> {
+    let request = serde_json::to_string(request)?;
     let stream = tokio::net::UnixStream::connect(path)
         .await
         .map_err(|e| anyhow::anyhow!("cannot reach the Agent at {}: {e}", path.display()))?;
@@ -523,12 +583,6 @@ pub async fn send(path: &Path, request: Value) -> anyhow::Result<Value> {
         Some(e) => anyhow::bail!("{e}"),
         None => Ok(reply),
     }
-}
-
-/// Sends one command with no arguments.
-#[cfg(unix)]
-pub async fn request(path: &Path, command: &str) -> anyhow::Result<Value> {
-    send(path, json!({ "command": command })).await
 }
 
 #[cfg(test)]
@@ -584,11 +638,11 @@ mod tests {
                 panic!("the prompt was never listed");
             })
         };
-        assert!(prompts.ask("root", "alice", Duration::from_secs(5)));
+        assert!(prompts.ask(PromptKind::Root, "alice", Duration::from_secs(5)));
         answerer.join().unwrap();
         assert!(prompts.list().as_array().unwrap().is_empty(), "{:?}", prompts.list());
         // Nobody answers: the prompt auto-rejects when its time runs out.
-        assert!(!prompts.ask("accept", "dev-laptop (10.0.0.5)", Duration::from_millis(50)));
+        assert!(!prompts.ask(PromptKind::Accept, "dev-laptop (10.0.0.5)", Duration::from_millis(50)));
         assert!(prompts.answer(999, true).is_err());
     }
 
@@ -618,7 +672,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         };
 
-        let asker = waiting("root", "alice");
+        let asker = waiting(PromptKind::Root, "alice");
         let id = next_id(&prompts);
         let accept = block.block_on(dispatch(&status, &json!({ "command": "prompt.answer", "id": id, "accept": true }), false));
         assert!(accept["error"].as_str().unwrap().contains("root"), "{accept}");
@@ -626,7 +680,7 @@ mod tests {
         assert!(reject["message"].as_str().is_some(), "{reject}");
         assert!(!asker.join().unwrap());
 
-        let asker = waiting("accept", "dev-laptop (10.0.0.5)");
+        let asker = waiting(PromptKind::Accept, "dev-laptop (10.0.0.5)");
         let id = next_id(&prompts);
         let accept = block.block_on(dispatch(&status, &json!({ "command": "prompt.answer", "id": id, "accept": true }), true));
         assert!(accept["message"].as_str().is_some(), "{accept}");

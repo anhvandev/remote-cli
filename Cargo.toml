@@ -27,6 +27,7 @@ prost-build = "0.13"
 protoc-bin-vendored = "3"
 rcgen = { version = "0.13", features = ["x509-parser", "pem"] }
 hex = "0.4"
+keyring = { version = "3", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 ring = "0.17"
 rmcp = { version = "3.8", default-features = false }

@@ -5,7 +5,8 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 export const SESSION_COOKIE = "rcli_session";
-const BASE = process.env.RCLI_API_URL ?? "http://localhost:8080";
+/** The Controller API the Dashboard talks to (server side only). */
+export const BASE = process.env.RCLI_API_URL ?? "http://localhost:8080";
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string) {

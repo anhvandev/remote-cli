@@ -50,6 +50,10 @@ enum Command {
         /// Server Key, rk_<CA fingerprint>_<secret>.
         #[arg(long, hide_env_values = true)]
         key: String,
+        /// Accept an http:// Server Address on another machine. The Server Key and Device Passwords then travel
+        /// unencrypted; http:// to this machine itself is always accepted.
+        #[arg(long)]
+        insecure_http: bool,
     },
     /// Sign in with a Dashboard account and save the session (Admin commands need it).
     Login {
@@ -142,7 +146,7 @@ enum Command {
     /// Run a one-shot command on a Device: prints its stdout/stderr and exits with its exit code.
     Exec {
         device: String,
-        /// `root`: run as root/SYSTEM (admin only). Default: the logged-in user.
+        /// `root`: run as root/SYSTEM (the Device's root setting decides). Default: the Device's Terminal User.
         #[arg(long = "as")]
         run_as: Option<String>,
         /// Seconds before the command is killed (default 60).
@@ -168,7 +172,7 @@ enum Command {
     /// Interactive shell on a Device, like SSH. Exits with the remote shell's exit code.
     Shell {
         device: String,
-        /// `root`: run as root/SYSTEM (admin only). Default: the logged-in user.
+        /// `root`: run as root/SYSTEM (the Device's root setting decides). Default: the Device's Terminal User.
         #[arg(long = "as")]
         run_as: Option<String>,
     },
@@ -602,8 +606,8 @@ where
         };
     }
     let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);
-    if let Command::Setup { server, key } = &cli.command {
-        let text = config::setup(&dir, server, key).await?;
+    if let Command::Setup { server, key, insecure_http } = &cli.command {
+        let text = config::setup(&dir, server, key, *insecure_http).await?;
         let body = config::load_at(&dir)?.map(|c| config::json(&c)).unwrap_or(serde_json::Value::Null);
         return match cli.json {
             true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),
@@ -1263,11 +1267,7 @@ impl Api {
             anyhow::bail!("no Device Password saved for {device}; run `rcli connect {device}`");
         };
         let key = self.connection.server_key.as_deref().unwrap_or_default();
-        Ok(req
-            .header("x-rcli-server-key", key)
-            .header("x-rcli-device", &device)
-            .header("x-rcli-device-password", &remembered.password)
-            .header("x-rcli-controller", &remembered.controller))
+        Ok(config::password_connection(req, key, &device, &remembered.password, &remembered.controller))
     }
 
     /// Turns an API error response into an error naming its code and message.

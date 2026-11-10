@@ -32,6 +32,13 @@ test("the download endpoint serves the rolled-out build for an OS/arch", async (
     body: update.build,
   });
   expect(res.ok).toBeTruthy();
+  // Downloads serve the fleet's build: the one rolled out to every Device, not merely published.
+  const rollout = await fetch(`${api}/api/v1/agent-builds/1.0.0/rollout`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${admin_token}`, "content-type": "application/json" },
+    body: JSON.stringify({ all: true }),
+  });
+  expect(rollout.ok).toBeTruthy();
   const dl = await request.get("/download/linux/x86_64");
   expect(dl.ok()).toBeTruthy();
   expect(await dl.body()).toEqual(Buffer.from(update.build));

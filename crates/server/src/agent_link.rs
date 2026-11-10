@@ -28,6 +28,9 @@ use crate::{control_lock, metrics, pki, registration, registry, updates, AppStat
 
 /// How long a request to an Agent (e.g. the process list) may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a person at the Device has to answer one prompt (accept the connection, or root); the Agent rejects
+/// after that. A request that may show one waits this much longer for its reply.
+pub const PROMPT_BUDGET: Duration = Duration::from_secs(30);
 
 /// Outbound channels to connected Agents and requests waiting for their reply.
 #[derive(Default)]
@@ -52,6 +55,15 @@ impl Agents {
         build: impl FnOnce(u64) -> server_message::Msg,
     ) -> Result<agent_message::Msg, RequestError> {
         self.request_within(device, REQUEST_TIMEOUT, build).await
+    }
+
+    /// `request` for work the accept gate admits: the first one from a Controller may wait for the accept prompt.
+    pub async fn request_admitted(
+        &self,
+        device: uuid::Uuid,
+        build: impl FnOnce(u64) -> server_message::Msg,
+    ) -> Result<agent_message::Msg, RequestError> {
+        self.request_within(device, REQUEST_TIMEOUT + PROMPT_BUDGET, build).await
     }
 
     /// `request` with a custom reply timeout, for Agent work that may run long (terminal commands).
@@ -238,24 +250,12 @@ where
                         control_lock::release_if_holder(state, device, &d.controller)
                             .await
                             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-                        // Audited naming the Controller that was ended (the person at the Device has no Server User).
-                        let actor = crate::auth::User {
-                            id: uuid::Uuid::nil(),
-                            name: d.controller.clone(),
-                            role: "controller".into(),
-                            disabled_at: None,
-                            device_scope: None,
-                        };
-                        crate::audit::record(
-                            state,
-                            &actor,
-                            device,
-                            "disconnect",
-                            serde_json::json!({ "controller": d.controller }),
-                            serde_json::json!({ "error": null }),
-                        )
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+                        let params = serde_json::json!({ "controller": d.controller });
+                        audit_device_event(state, device, &d.controller, "disconnect", params, serde_json::json!({ "error": null })).await?;
+                    }
+                    Some(agent_message::Msg::ConnectDecision(d)) => {
+                        let result = serde_json::json!({ "decision": d.decision });
+                        audit_device_event(state, device, &d.controller, "connect.prompt", serde_json::json!({}), result).await?;
                     }
                     // Later tickets dispatch more replies here.
                     _ => {}
@@ -274,6 +274,25 @@ where
             }
         }
     }
+}
+
+/// Audits what the person at the Device did, naming the Controller it concerned (that person has no Server User).
+async fn audit_device_event(
+    state: &AppState,
+    device: uuid::Uuid,
+    controller: &str,
+    action: &str,
+    params: serde_json::Value,
+    result: serde_json::Value,
+) -> anyhow::Result<()> {
+    let actor = crate::auth::User {
+        id: uuid::Uuid::nil(),
+        name: controller.to_owned(),
+        role: "controller".into(),
+        disabled_at: None,
+        device_scope: None,
+    };
+    crate::audit::record(state, &actor, device, action, params, result).await.map_err(|e| anyhow::anyhow!("{e:#}"))
 }
 
 /// A change made at the Device. Each command sends one field, so a refusal leaves the Device untouched.

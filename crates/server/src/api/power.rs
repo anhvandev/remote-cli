@@ -2,7 +2,6 @@
 
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
-    http::StatusCode,
     routing::post,
     Json, Router,
 };
@@ -10,7 +9,7 @@ use rcli_protocol::agent::{self as proto, agent_message, server_message};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{bad_request, devices::resolve_for, ApiError, Caller};
+use super::{agent_error, bad_request, devices::resolve_for, ApiError, Caller};
 use crate::{audit, control_lock};
 
 pub fn routes() -> Router<super::State> {
@@ -56,10 +55,11 @@ async fn power(
         Action::Sleep => ("sleep", proto::PowerAction::Sleep),
         Action::Lock => ("lock", proto::PowerAction::LockScreen),
     };
-    let req = |request_id| server_message::Msg::Power(proto::PowerRequest { request_id, action: action as i32 });
-    let result = match state.agents.request(device, req).await {
+    let controller = user.controller_display();
+    let req = |request_id| server_message::Msg::Power(proto::PowerRequest { request_id, action: action as i32, controller });
+    let result = match state.agents.request_admitted(device, req).await {
         Ok(agent_message::Msg::PowerResult(r)) => match r.error {
-            Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
+            Some(e) => Err(agent_error(e)),
             None => Ok(json!({ "action": name })),
         },
         Ok(_) => Err(anyhow::anyhow!("unexpected reply to PowerRequest").into()),

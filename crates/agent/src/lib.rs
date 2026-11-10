@@ -26,11 +26,12 @@ use backlog::Backlog;
 use platform::Platform;
 use rcli_protocol::{
     agent::{
-        agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, DisconnectController, DisplayList,
-        Error, ExecRequest, ExecResult, Heartbeat, IdentityUpdate, IdentityUpdated, PowerResult, ProcessList,
-        RegisterRequest, ResourceSample, Resources, ServerMessage, ShellExit, ShellOpen, ShellOpened, ShellOutput,
-        UpdateFailed, WakeResult,
+        agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, ConnectDecision, DisconnectController,
+        DisplayList, Error, ExecRequest, ExecResult, Heartbeat, IdentityUpdate, IdentityUpdated, LiveAnswer,
+        PowerResult, ProcessList, RegisterRequest, ResourceSample, Resources, ServerMessage, ShellExit, ShellOpen,
+        ShellOpened, ShellOutput, UpdateFailed, WakeResult,
     },
+    server_key::ServerKey,
     Conn,
 };
 use rustls::{
@@ -78,14 +79,8 @@ pub struct Credentials {
     pub device_password: String,
 }
 
-/// `rk_<fingerprint>_<secret>` as `(fingerprint, secret)`.
-fn split_server_key(key: &str) -> anyhow::Result<(&str, &str)> {
-    let (fingerprint, secret) = key
-        .trim()
-        .strip_prefix("rk_")
-        .and_then(|rest| rest.split_once('_'))
-        .ok_or_else(|| anyhow::anyhow!("the Server Key must look like rk_<fingerprint>_<secret>"))?;
-    Ok((fingerprint, secret))
+fn parse_server_key(key: &str) -> anyhow::Result<ServerKey> {
+    ServerKey::parse(key).ok_or_else(|| anyhow::anyhow!("the Server Key must look like rk_<fingerprint>_<secret>"))
 }
 
 /// A TLS verifier that accepts only a chain containing the CA named by `fingerprint` (hex SHA-256 of its DER),
@@ -157,7 +152,7 @@ fn config(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow::Resul
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("no crypto provider"))?;
     let builder = ClientConfig::builder().dangerous().with_custom_certificate_verifier(std::sync::Arc::new(PinnedCa {
-        fingerprint: split_server_key(&server.server_key)?.0.to_owned(),
+        fingerprint: parse_server_key(&server.server_key)?.fingerprint,
         provider,
     }));
     Ok(match creds {
@@ -182,7 +177,7 @@ async fn connect(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow
 /// secret, and gets back this Device's mTLS certificate, 9-digit Device ID and update key to pin.
 /// The private key never leaves the Agent; only a CSR is sent.
 pub async fn register(server: &ServerEndpoint, platform: &dyn Platform) -> anyhow::Result<Credentials> {
-    split_server_key(&server.server_key)?;
+    let server_key = parse_server_key(&server.server_key)?;
     let key = rcgen::KeyPair::generate()?;
     let csr = rcgen::CertificateParams::new(vec![])?.serialize_request(&key)?.pem()?;
     let mut conn = connect(server, None).await?;
@@ -193,7 +188,7 @@ pub async fn register(server: &ServerEndpoint, platform: &dyn Platform) -> anyho
             // The verifier accepted the chain only because it held the pinned CA; the Server sends it here.
             let ca_der = CertificateDer::from_pem_slice(r.ca_pem.as_bytes())?.to_vec();
             anyhow::ensure!(
-                hex::encode(sha256(&ca_der)) == split_server_key(&server.server_key)?.0.to_lowercase(),
+                hex::encode(sha256(&ca_der)) == server_key.fingerprint,
                 "the Server CA's fingerprint does not match the Server Key; refusing to register"
             );
             Ok(Credentials {
@@ -216,9 +211,11 @@ pub async fn register(server: &ServerEndpoint, platform: &dyn Platform) -> anyho
 pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<dyn Platform>, status: Option<Arc<ipc::Status>>) {
     // With IPC, the Status owns the endpoint (a change reconnects) and receives the changes to forward.
     let mut endpoint = status.as_ref().map_or(server, |s| s.endpoint());
-    let mut endpoints = status.as_ref().map(|s| s.subscribe());
-    let mut changes = status.as_ref().and_then(|s| s.take_changes());
-    let mut disconnects = status.as_ref().and_then(|s| s.take_disconnects());
+    let mut inbox = Inbox {
+        endpoints: status.as_ref().map(|s| s.subscribe()),
+        changes: status.as_ref().and_then(|s| s.take_changes()),
+        disconnects: status.as_ref().and_then(|s| s.take_disconnects()),
+    };
     let backlog = Arc::new(Backlog::default());
     let sampler = tokio::spawn(sample_forever(platform.clone(), backlog.clone()));
     // Stop the sampler when `run` is dropped (e.g. aborted).
@@ -229,21 +226,27 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
         }
     }
     let _sampler = AbortOnDrop(sampler);
-    // Outlives sessions: the last acted-on display and what each Controller last saw survive a reconnect.
-    let executor = Arc::new(Mutex::new(Executor::default()));
-    // Live streams are peer-to-peer, so they survive a lost Server connection.
-    let live = live::Live::new(platform.clone());
-    let media = Arc::new(media::Media::default());
-    // Device Settings survive reconnects; with no Status (no IPC) the defaults apply.
-    let settings = status.as_ref().map_or_else(|| Arc::new(settings::Handle::new()), |s| s.settings());
-    // A root grant lasts one session (one connection to the Server) and only for the Controller it was given to.
-    let grant = status.as_ref().map_or_else(|| Arc::new(Grant::default()), |s| s.grant());
-    // Connected Controllers outlive a reconnect: they end on `disconnect`, not when the Server link blips.
-    let controllers = status.as_ref().map_or_else(|| Arc::new(Controllers::default()), |s| s.controllers());
+    let agent = AgentState {
+        // Outlives sessions: the last acted-on display and what each Controller last saw survive a reconnect.
+        executor: Arc::new(Mutex::new(Executor::default())),
+        // Live streams are peer-to-peer, so they survive a lost Server connection.
+        live: live::Live::new(platform.clone()),
+        media: Arc::new(media::Media::default()),
+        streams: Default::default(),
+        backlog,
+        // Device Settings survive reconnects; with no Status (no IPC) the defaults apply.
+        settings: status.as_ref().map_or_else(|| Arc::new(settings::Handle::new()), |s| s.settings()),
+        // A root grant lasts one session (one connection to the Server) and only for the Controller it was given to.
+        grant: status.as_ref().map_or_else(|| Arc::new(Grant::default()), |s| s.grant()),
+        // Connected Controllers outlive a reconnect: they end on `disconnect`, not when the Server link blips.
+        controllers: status.as_ref().map_or_else(|| Arc::new(Controllers::default()), |s| s.controllers()),
+        platform,
+        status,
+    };
     let mut backoff = Duration::from_secs(1);
     loop {
         // Another Server Address is one switch away; pick up whichever is current.
-        if let Some(rx) = &mut endpoints {
+        if let Some(rx) = &mut inbox.endpoints {
             endpoint = rx.borrow_and_update().clone();
         }
         let mut reconnect = false;
@@ -251,37 +254,20 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
                 // A session grant belongs to the session that ended with the last connection.
-                grant.clear();
-                if let Some(s) = &status {
+                agent.grant.clear();
+                if let Some(s) = &agent.status {
                     s.set_connected(true);
                 }
-                match session(
-                    conn,
-                    &mut creds,
-                    &platform,
-                    &executor,
-                    &live,
-                    &media,
-                    &backlog,
-                    status.as_deref(),
-                    &settings,
-                    &grant,
-                    &controllers,
-                    &mut endpoints,
-                    &mut changes,
-                    &mut disconnects,
-                )
-                .await
-                {
+                match session(conn, &mut creds, &agent, &mut inbox).await {
                     Ok(now) => reconnect = now,
                     Err(e) => tracing::warn!("connection to server lost: {e}"),
                 }
-                if let Some(s) = &status {
+                if let Some(s) = &agent.status {
                     s.set_connected(false);
                 }
             }
             Err(e) => {
-                if let Some(s) = &status {
+                if let Some(s) = &agent.status {
                     s.set_connected(false);
                 }
                 tracing::warn!("cannot connect to server: {e}");
@@ -291,7 +277,7 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
         if reconnect {
             continue;
         }
-        match &mut endpoints {
+        match &mut inbox.endpoints {
             Some(rx) => tokio::select! {
                 _ = tokio::time::sleep(backoff) => {}
                 changed = rx.changed() => if changed.is_ok() { continue },
@@ -302,6 +288,32 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
     }
 }
 
+/// What outlives one connection to the Server: every session of `run` shares it.
+struct AgentState {
+    platform: Arc<dyn Platform>,
+    executor: Arc<Mutex<Executor>>,
+    live: Arc<live::Live>,
+    media: Arc<media::Media>,
+    /// Who opened each live stream and media channel (by session), so a `disconnect` ends only theirs.
+    // shortcut: a stream that ends on its own stays listed until `disconnect` or LiveClose; closing it is a no-op.
+    streams: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    backlog: Arc<Backlog>,
+    status: Option<Arc<ipc::Status>>,
+    settings: Arc<settings::Handle>,
+    grant: Arc<Grant>,
+    controllers: Arc<Controllers>,
+}
+
+/// What the person at the Device sends the running Agent over the IPC; all `None` without a Status.
+struct Inbox {
+    /// A new Server Address or Key.
+    endpoints: Option<tokio::sync::watch::Receiver<ServerEndpoint>>,
+    /// Device identity changes to forward to the Server.
+    changes: Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>,
+    /// Controllers the person at the Device disconnected.
+    disconnects: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+}
+
 /// Waits until the Server Address changes; never, without a Status.
 async fn endpoints_changed(rx: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>) -> bool {
     match rx {
@@ -310,16 +322,8 @@ async fn endpoints_changed(rx: &mut Option<tokio::sync::watch::Receiver<ServerEn
     }
 }
 
-/// The next Device identity change to forward; never, without a Status.
-async fn next_change(rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>) -> Option<ipc::Change> {
-    match rx {
-        Some(rx) => rx.recv().await,
-        None => std::future::pending().await,
-    }
-}
-
-/// The next Controller the person at the Device disconnected; never, without a Status.
-async fn next_disconnect(rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<String>>) -> Option<String> {
+/// The next message on an IPC channel; never, without a Status.
+async fn next<T>(rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<T>>) -> Option<T> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
@@ -337,24 +341,14 @@ async fn sample_forever(platform: Arc<dyn Platform>, backlog: Arc<Backlog>) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn session(
     mut conn: Conn<TlsStream<TcpStream>>,
     creds: &mut Credentials,
-    platform_arc: &Arc<dyn Platform>,
-    executor: &Arc<Mutex<Executor>>,
-    live: &Arc<live::Live>,
-    media: &Arc<media::Media>,
-    backlog: &Backlog,
-    status: Option<&ipc::Status>,
-    settings: &settings::Handle,
-    grant: &Arc<Grant>,
-    controllers: &Arc<Controllers>,
-    endpoints: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>,
-    changes: &mut Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>,
-    disconnects: &mut Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    agent: &AgentState,
+    inbox: &mut Inbox,
 ) -> anyhow::Result<bool> {
-    let platform = platform_arc.as_ref();
+    let platform = agent.platform.as_ref();
+    let status = agent.status.as_deref();
     let hello = AgentHello { version: platform.agent_version(), target: target() };
     let send = |msg| AgentMessage { msg: Some(msg) };
     conn.send(&send(agent_message::Msg::Hello(hello))).await?;
@@ -362,11 +356,19 @@ async fn session(
     let mut sample = tokio::time::interval(SAMPLE_EVERY);
     // What the Server has seen this session; a new session starts from nothing, so it gets everything.
     let (mut inventory, mut resources) = (None, Resources::default());
-    // Replies from work that runs off this loop (Actions block on the OS for up to seconds).
+    // Replies from work that runs off this loop (Actions block on the OS for up to seconds; prompts for 30 s).
     let (replies, mut replies_rx) = tokio::sync::mpsc::unbounded_channel();
     // Device identity changes sent to the Server, awaiting its answer by request_id.
     let mut pending: std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Result<String, String>>> = Default::default();
-    let mut shells = Shells::default();
+    // Shells are opened off this loop (a prompt may wait 30 s), so the map is shared with those tasks.
+    let shells = Arc::new(Mutex::new(Shells::default()));
+    // What every request that may prompt at the Device needs, cloned into the task that serves it.
+    let gate = || Gate {
+        platform: agent.platform.clone(),
+        settings: agent.settings.get(),
+        controllers: agent.controllers.clone(),
+        replies: replies.clone(),
+    };
     loop {
         tokio::select! {
             _ = tick.tick() => {
@@ -383,10 +385,10 @@ async fn session(
                     Err(e) => tracing::warn!("cannot read inventory: {e:#}"),
                 }
             }
-            _ = backlog.ready() => {
+            _ = agent.backlog.ready() => {
                 // shortcut: samples taken from the backlog are lost if this connection dies mid-send (<= a few);
                 // re-queue them on error if that ever shows up as gaps.
-                for (at, cur) in backlog.take() {
+                for (at, cur) in agent.backlog.take() {
                     let age_ms = at.elapsed().as_millis() as u64;
                     let sample = ResourceSample { resources: Some(delta(&resources, &cur)), age_ms };
                     conn.send(&send(agent_message::Msg::Sample(sample))).await?;
@@ -395,48 +397,57 @@ async fn session(
             }
             Some(reply) = replies_rx.recv() => {
                 if let agent_message::Msg::ShellExit(e) = &reply {
-                    shells.0.remove(&e.session);
+                    shells.lock().unwrap().0.remove(&e.session);
                 }
                 conn.send(&send(reply)).await?
             }
-            Some(change) = next_change(changes) => {
+            Some(change) = next(&mut inbox.changes) => {
                 pending.insert(change.update.request_id, change.reply);
                 conn.send(&send(agent_message::Msg::IdentityUpdate(change.update))).await?;
             }
-            Some(controller) = next_disconnect(disconnects) => {
-                // shortcut: ends this Device's remote sessions (shells, Live View, media), not only this
-                // Controller's; refine when sessions are tagged per Controller. The Server releases the Control Lock.
-                for (_, (_, control)) in shells.0.drain() {
-                    let _ = control.lock().unwrap().kill();
+            Some(controller) = next(&mut inbox.disconnects) => {
+                // End this Controller's shells, live streams and media channels; the Server releases its Control Lock.
+                shells.lock().unwrap().end(&controller);
+                let ended: Vec<String> = {
+                    let mut streams = agent.streams.lock().unwrap();
+                    let ended = streams.iter().filter(|(_, c)| **c == controller).map(|(s, _)| s.clone()).collect();
+                    streams.retain(|_, c| *c != controller);
+                    ended
+                };
+                for session in ended {
+                    agent.live.close(&session).await;
+                    agent.media.close(&session).await;
                 }
-                live.close_all().await;
-                media.close_all().await;
                 conn.send(&send(agent_message::Msg::DisconnectController(DisconnectController { controller }))).await?;
             }
             // A new Server Address or Key: drop this connection so `run` connects with the new values.
-            _ = endpoints_changed(endpoints) => return Ok(true),
+            _ = endpoints_changed(&mut inbox.endpoints) => return Ok(true),
             msg = conn.recv::<ServerMessage>() => {
                 match msg?.and_then(|m| m.msg) {
                     None => anyhow::bail!("server closed the connection"),
                     Some(server_message::Msg::Error(e)) => anyhow::bail!("server refused: {}: {}", e.code, e.message),
                     Some(server_message::Msg::Act(mut req)) => {
                         // The Executor's lock runs requests one at a time, in arrival order.
-                        let (platform, executor, replies) = (platform_arc.clone(), executor.clone(), replies.clone());
-                        let (media, rt) = (media.clone(), tokio::runtime::Handle::current());
+                        let (platform, executor, replies) = (agent.platform.clone(), agent.executor.clone(), replies.clone());
+                        let (media, rt) = (agent.media.clone(), tokio::runtime::Handle::current());
                         let secrets = status.map(|s| s.secrets());
+                        let gate = gate();
                         tokio::task::spawn_blocking(move || {
+                            let failed = |error| {
+                                let _ = replies.send(agent_message::Msg::ActResult(rcli_protocol::agent::ActResult {
+                                    request_id: req.request_id,
+                                    error: Some(error),
+                                    ..Default::default()
+                                }));
+                            };
+                            if let Err(e) = gate.admit(&req.controller) {
+                                return failed(e);
+                            }
                             // `unlock`: type this Device's own password; the Server never has it.
                             if req.unlock {
                                 match unlock_actions(secrets.as_deref()) {
                                     Ok(actions) => req.actions = actions,
-                                    Err(e) => {
-                                        let _ = replies.send(agent_message::Msg::ActResult(rcli_protocol::agent::ActResult {
-                                            request_id: req.request_id,
-                                            error: Some(e),
-                                            ..Default::default()
-                                        }));
-                                        return;
-                                    }
+                                    Err(e) => return failed(e),
                                 }
                             }
                             let mut result = executor.lock().unwrap().act(platform.as_ref(), &req);
@@ -447,15 +458,26 @@ async fn session(
                         });
                     }
                     Some(server_message::Msg::LiveOffer(offer)) => {
-                        // Answering waits for ICE gathering; keep the loop (heartbeats) running meanwhile.
-                        let (live, media, replies) = (live.clone(), media.clone(), replies.clone());
+                        // Answering waits for ICE gathering (and maybe an accept prompt); keep the loop running.
+                        let (live, media, streams, replies) = (agent.live.clone(), agent.media.clone(), agent.streams.clone(), replies.clone());
+                        let gate = gate();
                         tokio::spawn(async move {
-                            let answer = if offer.media { media.open(offer).await } else { live.open(offer).await };
+                            let controller = offer.controller.clone();
+                            let admitted = tokio::task::spawn_blocking(move || gate.admit(&controller)).await;
+                            let answer = match admitted {
+                                Ok(Ok(())) => {
+                                    streams.lock().unwrap().insert(offer.session.clone(), offer.controller.clone());
+                                    if offer.media { media.open(offer).await } else { live.open(offer).await }
+                                }
+                                Ok(Err(error)) => LiveAnswer { request_id: offer.request_id, error: Some(error), ..Default::default() },
+                                Err(e) => LiveAnswer { request_id: offer.request_id, error: Some(platform_error(e)), ..Default::default() },
+                            };
                             let _ = replies.send(agent_message::Msg::LiveAnswer(answer));
                         });
                     }
                     Some(server_message::Msg::LiveClose(c)) => {
-                        let (live, media) = (live.clone(), media.clone());
+                        agent.streams.lock().unwrap().remove(&c.session);
+                        let (live, media) = (agent.live.clone(), agent.media.clone());
                         tokio::spawn(async move {
                             live.close(&c.session).await;
                             media.close(&c.session).await;
@@ -463,31 +485,32 @@ async fn session(
                     }
                     Some(server_message::Msg::Exec(req)) => {
                         // Off the loop: a command may run for minutes; commands run concurrently.
-                        let (platform, replies, settings) = (platform_arc.clone(), replies.clone(), settings.get());
-                        let grant = grant.clone();
-                        let controllers = controllers.clone();
+                        let grant = agent.grant.clone();
+                        let gate = gate();
                         tokio::task::spawn_blocking(move || {
-                            let _ = replies.send(agent_message::Msg::ExecResult(exec(platform.as_ref(), &req, &settings, &grant, &controllers)));
+                            let _ = gate.replies.send(agent_message::Msg::ExecResult(exec(&gate, &req, &grant)));
                         });
                     }
                     Some(server_message::Msg::ShellOpen(req)) => {
-                        let reply = open_shell(platform, &req, &settings.get(), grant, &replies, &mut shells);
-                        conn.send(&send(agent_message::Msg::ShellOpened(reply))).await?;
+                        // Off the loop: the accept and root prompts may each wait 30 s.
+                        let (grant, shells) = (agent.grant.clone(), shells.clone());
+                        let gate = gate();
+                        tokio::task::spawn_blocking(move || open_shell(&gate, &req, &grant, &shells));
                     }
                     Some(server_message::Msg::ShellInput(i)) => {
                         // shortcut: written inline; a PTY whose buffer is full (shell not reading) would stall this loop.
-                        if let Some((input, _)) = shells.0.get_mut(&i.session) {
-                            let _ = std::io::Write::write_all(input, &i.data);
+                        if let Some(shell) = shells.lock().unwrap().0.get_mut(&i.session) {
+                            let _ = std::io::Write::write_all(&mut shell.input, &i.data);
                         }
                     }
                     Some(server_message::Msg::ShellResize(r)) => {
-                        if let Some((_, control)) = shells.0.get(&r.session) {
-                            let _ = control.lock().unwrap().resize(clamp_u16(r.cols), clamp_u16(r.rows));
+                        if let Some(shell) = shells.lock().unwrap().0.get(&r.session) {
+                            let _ = shell.control.lock().unwrap().resize(clamp_u16(r.cols), clamp_u16(r.rows));
                         }
                     }
                     Some(server_message::Msg::ShellClose(c)) => {
-                        if let Some((_, control)) = shells.0.remove(&c.session) {
-                            let _ = control.lock().unwrap().kill();
+                        if let Some(shell) = shells.lock().unwrap().0.remove(&c.session) {
+                            let _ = shell.control.lock().unwrap().kill();
                         }
                     }
                     Some(server_message::Msg::ListDisplays(req)) => {
@@ -522,10 +545,13 @@ async fn session(
                             P::LockScreen => platform::PowerAction::Lock,
                         };
                         // Off the loop: adapters may take a moment to hand the request to the OS.
-                        let (platform, replies) = (platform_arc.clone(), replies.clone());
+                        let gate = gate();
                         tokio::task::spawn_blocking(move || {
-                            let error = platform.power(action).err().map(|e| Error { code: "platform".into(), message: format!("{e:#}") });
-                            let _ = replies.send(agent_message::Msg::PowerResult(PowerResult { request_id: req.request_id, error }));
+                            let done = gate.admit(&req.controller).and_then(|()| {
+                                gate.platform.power(action).map_err(|e| Error { code: "platform".into(), message: format!("{e:#}") })
+                            });
+                            let reply = PowerResult { request_id: req.request_id, error: done.err() };
+                            let _ = gate.replies.send(agent_message::Msg::PowerResult(reply));
                         });
                     }
                     Some(server_message::Msg::Update(update)) => {
@@ -541,7 +567,7 @@ async fn session(
                         }
                     }
                     Some(server_message::Msg::ControlIndicator(c)) => {
-                        live.set_lock_indicator(c.on);
+                        agent.live.set_lock_indicator(c.on);
                     }
                     Some(server_message::Msg::IdentityChange(u)) => {
                         let reply = server_identity_change(&u, status, creds);
@@ -570,6 +596,10 @@ async fn session(
     }
 }
 
+fn platform_error(e: impl std::fmt::Display) -> Error {
+    Error { code: "platform".into(), message: e.to_string() }
+}
+
 /// How long the person at the Device has to answer a root prompt.
 const ROOT_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -595,19 +625,33 @@ fn not_set(message: &str) -> Error {
     Error { code: "unlock_password_not_set".into(), message: message.into() }
 }
 
-/// Root granted to the current session: one Controller, for as long as the Agent's connection to the Server lasts.
-/// The person at the Device (or its GUI) gives it; it does not outlive the session.
+/// Whether the Controller display name `name` (e.g. "alice (Dashboard)", "dev-laptop (10.0.0.5)") is the one the
+/// person at the Device means by `who`: the full name, or the part before " (".
+fn names(name: &str, who: &str) -> bool {
+    name == who || name.strip_prefix(who).is_some_and(|rest| rest.starts_with(" ("))
+}
+
+/// Root granted to the current session: one Controller, for as long as the Agent's connection to the Server lasts
+/// or until the person at the Device disconnects that Controller. The person at the Device (or its GUI) gives it.
 #[derive(Default)]
 pub struct Grant(Mutex<Option<String>>);
 
 impl Grant {
-    /// Grants root to `requester` for this session only.
-    pub fn grant(&self, requester: &str) {
-        *self.0.lock().unwrap() = Some(requester.to_owned());
+    /// Grants root to the Controller the person calls `who` (see `names`) for this session only.
+    pub fn grant(&self, who: &str) {
+        *self.0.lock().unwrap() = Some(who.to_owned());
     }
 
-    fn holds(&self, requester: &str) -> bool {
-        self.0.lock().unwrap().as_deref() == Some(requester)
+    fn holds(&self, controller: &str) -> bool {
+        self.0.lock().unwrap().as_deref().is_some_and(|who| names(controller, who))
+    }
+
+    /// Ends the grant if `controller` holds it: a disconnected Controller does not keep root when it reconnects.
+    pub fn revoke(&self, controller: &str) {
+        let mut grant = self.0.lock().unwrap();
+        if grant.as_deref().is_some_and(|who| names(controller, who)) {
+            *grant = None;
+        }
     }
 
     /// Ends the grant, at the end of the session it was given for.
@@ -622,7 +666,7 @@ impl Grant {
 pub struct Controllers(std::sync::Mutex<std::collections::HashMap<String, bool>>);
 
 impl Controllers {
-    /// Records `name` as connected (keeping any earlier accept) and returns nothing.
+    /// Records `name` as connected (keeping any earlier accept).
     fn touch(&self, name: &str) {
         self.0.lock().unwrap().entry(name.to_owned()).or_insert(false);
     }
@@ -640,11 +684,10 @@ impl Controllers {
         self.0.lock().unwrap().keys().cloned().collect()
     }
 
-    /// Removes Controllers whose display name is `who` or starts with it (so `alice` ends `alice (Dashboard)`),
-    /// returning the display names that were ended.
+    /// Removes the Controllers the person calls `who` (see `names`), returning the display names that were ended.
     pub fn remove(&self, who: &str) -> Vec<String> {
         let mut map = self.0.lock().unwrap();
-        let removed: Vec<String> = map.keys().filter(|n| *n == who || n.starts_with(who)).cloned().collect();
+        let removed: Vec<String> = map.keys().filter(|n| names(n, who)).cloned().collect();
         for name in &removed {
             map.remove(name);
         }
@@ -657,73 +700,113 @@ impl Controllers {
     }
 }
 
+/// How a request that can prompt the person at the Device was decided, as the audit records it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Decision {
+    /// Root: the setting is `always`.
+    Always,
+    /// Root: the person granted it to this session.
+    Session,
+    Accepted,
+    Rejected,
+    /// Nobody is logged in to show the prompt to.
+    NoSession,
+    /// Root: the setting is `never`.
+    Never,
+}
+
+impl Decision {
+    fn as_str(self) -> &'static str {
+        match self {
+            Decision::Always => "always",
+            Decision::Session => "session",
+            Decision::Accepted => "accepted",
+            Decision::Rejected => "rejected",
+            Decision::NoSession => "no_session",
+            Decision::Never => "never",
+        }
+    }
+}
+
+/// The wire form of a decision: empty when nothing was decided (no prompt, root not asked for).
+fn decision_name(decision: Option<Decision>) -> String {
+    decision.map_or("", Decision::as_str).into()
+}
+
+/// Prompts appear in the logged-in session; with nobody logged in there is no session to show one in.
+fn nobody_to_ask(platform: &dyn Platform) -> bool {
+    platform.session_state().is_ok_and(|s| s != platform::SessionState::LoggedIn)
+}
+
+/// A refused request and how it was decided (for the audit entry).
+type Refusal = (Error, Option<Decision>);
+
 /// Who a terminal command or session runs as: the Device's Terminal User, or root when asked and allowed.
-/// `grant` is the current session's root grant, which the person at the Device can give and which does not outlive
-/// the session. Returns the account, whether it is root, and how root was decided (for the audit entry).
+/// `grant` is the current session's root grant, held by `controller` (a display name). `requester` is who the root
+/// prompt names. Returns the account, whether it is root, and how root was decided (for the audit entry).
 fn run_as(
     platform: &dyn Platform,
     settings: &settings::DeviceSettings,
     as_root: bool,
     requester: &str,
+    controller: &str,
     grant: &Grant,
-) -> Result<(platform::RunAs, bool, &'static str), (Error, &'static str)> {
-    let denied = |message: &str, decision: &'static str| (Error { code: "root_denied".into(), message: message.into() }, decision);
+) -> Result<(platform::RunAs, bool, Option<Decision>), Refusal> {
+    let denied = |message: &str, decision| (Error { code: "root_denied".into(), message: message.into() }, Some(decision));
     if !as_root {
-        return Ok((platform::RunAs::User(settings.terminal_user.clone()), false, ""));
+        return Ok((platform::RunAs::User(settings.terminal_user.clone()), false, None));
     }
     match settings.root {
-        settings::RootAccess::Always => return Ok((platform::RunAs::Root, true, "always")),
-        settings::RootAccess::Never => return Err(denied("root access is turned off on this Device", "never")),
+        settings::RootAccess::Always => return Ok((platform::RunAs::Root, true, Some(Decision::Always))),
+        settings::RootAccess::Never => return Err(denied("root access is turned off on this Device", Decision::Never)),
         settings::RootAccess::Ask => {}
     }
-    if grant.holds(requester) {
-        return Ok((platform::RunAs::Root, true, "session"));
+    if grant.holds(controller) {
+        return Ok((platform::RunAs::Root, true, Some(Decision::Session)));
     }
-    // Prompts appear in the logged-in session; with nobody logged in there is no session to show one in, so the
-    // request is rejected, as the spec says.
-    if platform.session_state().is_ok_and(|s| s != platform::SessionState::LoggedIn) {
-        return Err(denied("root access needs a person at the Device to accept, and nobody can be asked right now", "no_session"));
+    if nobody_to_ask(platform) {
+        return Err(denied("root access needs a person at the Device to accept, and nobody can be asked right now", Decision::NoSession));
     }
     match platform.ask_root(requester, ROOT_PROMPT_TIMEOUT) {
-        Ok(true) => Ok((platform::RunAs::Root, true, "accepted")),
-        Ok(false) => Err(denied("the person at the Device did not accept root access", "rejected")),
-        Err(e) => Err((Error { code: "platform".into(), message: format!("cannot ask at the Device: {e:#}") }, "")),
+        Ok(true) => Ok((platform::RunAs::Root, true, Some(Decision::Accepted))),
+        Ok(false) => Err(denied("the person at the Device did not accept root access", Decision::Rejected)),
+        Err(e) => Err((platform_error(format!("cannot ask at the Device: {e:#}")), None)),
     }
 }
 
-/// Gate for a Controller using the Device. In `password+accept` mode a person at the Device accepts each new
-/// Controller once (re-asked after a `disconnect`); refused when no session can show the prompt. `controller` is the
-/// display name `rcli agent info` lists and `disconnect` matches. Returns how the connection was decided (for the
-/// audit): "" when no prompt was shown, "accepted" when it was; the error carries "rejected" / "no_session".
-fn accept_connection(
-    platform: &dyn Platform,
-    settings: &settings::DeviceSettings,
-    controller: &str,
-    controllers: &Controllers,
-) -> Result<&'static str, (Error, &'static str)> {
-    controllers.touch(controller);
-    if settings.accept == settings::AcceptMode::Password || controllers.accepted(controller) {
-        return Ok("");
-    }
-    if platform.session_state().is_ok_and(|s| s != platform::SessionState::LoggedIn) {
-        return Err((
-            Error {
-                code: "connect_denied".into(),
-                message: "a person at the Device must accept this connection, and nobody can be asked right now".into(),
-            },
-            "no_session",
-        ));
-    }
-    match platform.ask_accept(controller, ACCEPT_PROMPT_TIMEOUT) {
-        Ok(true) => {
-            controllers.accept(controller);
-            Ok("accepted")
+/// What a request that may prompt the person at the Device needs, off the session loop.
+struct Gate {
+    platform: Arc<dyn Platform>,
+    settings: settings::DeviceSettings,
+    controllers: Arc<Controllers>,
+    replies: tokio::sync::mpsc::UnboundedSender<agent_message::Msg>,
+}
+
+impl Gate {
+    /// Admits `controller` (a display name) to any request on this Device and lists it as connected. In
+    /// `password+accept` mode a person at the Device accepts each new Controller once (re-asked after a
+    /// `disconnect`); refused when no session can show the prompt. A prompt's answer goes to the Server's audit.
+    fn admit(&self, controller: &str) -> Result<(), Error> {
+        self.controllers.touch(controller);
+        if self.settings.accept == settings::AcceptMode::Password || self.controllers.accepted(controller) {
+            return Ok(());
         }
-        Ok(false) => Err((
-            Error { code: "connect_denied".into(), message: "the person at the Device did not accept this connection".into() },
-            "rejected",
-        )),
-        Err(e) => Err((Error { code: "platform".into(), message: format!("cannot ask at the Device: {e:#}") }, "")),
+        let denied = |message: &str| Error { code: "connect_denied".into(), message: message.into() };
+        let (result, decision) = if nobody_to_ask(self.platform.as_ref()) {
+            (Err(denied("a person at the Device must accept this connection, and nobody can be asked right now")), Decision::NoSession)
+        } else {
+            match self.platform.ask_accept(controller, ACCEPT_PROMPT_TIMEOUT) {
+                Ok(true) => {
+                    self.controllers.accept(controller);
+                    (Ok(()), Decision::Accepted)
+                }
+                Ok(false) => (Err(denied("the person at the Device did not accept this connection")), Decision::Rejected),
+                Err(e) => return Err(platform_error(format!("cannot ask at the Device: {e:#}"))),
+            }
+        };
+        let answer = ConnectDecision { controller: controller.into(), decision: decision.as_str().into() };
+        let _ = self.replies.send(agent_message::Msg::ConnectDecision(answer));
+        result
     }
 }
 
@@ -751,29 +834,20 @@ fn server_identity_change(u: &IdentityUpdate, status: Option<&ipc::Status>, cred
 }
 
 /// Runs a one-shot command (see `run_as`).
-fn exec(platform: &dyn Platform, req: &ExecRequest, settings: &settings::DeviceSettings, grant: &Grant, controllers: &Controllers) -> ExecResult {
-    let connect_decision = match accept_connection(platform, settings, &req.controller, controllers) {
-        Ok(d) => d,
-        Err((e, d)) => {
-            return ExecResult { request_id: req.request_id, error: Some(e), connect_decision: d.into(), ..Default::default() };
-        }
-    };
-    let failed = |(error, decision): (Error, &'static str)| ExecResult {
+fn exec(gate: &Gate, req: &ExecRequest, grant: &Grant) -> ExecResult {
+    let failed = |error, decision| ExecResult {
         request_id: req.request_id,
         error: Some(error),
-        root_decision: decision.into(),
-        connect_decision: connect_decision.into(),
+        root_decision: decision_name(decision),
         ..Default::default()
     };
-    let (run_as, as_root, decision) = match run_as(
-        platform,
-        settings,
-        req.as_root,
-        &req.requester,
-        grant,
-    ) {
+    if let Err(e) = gate.admit(&req.controller) {
+        return failed(e, None);
+    }
+    let platform = gate.platform.as_ref();
+    let (run_as, as_root, decision) = match run_as(platform, &gate.settings, req.as_root, &req.requester, &req.controller, grant) {
         Ok(r) => r,
-        Err(e) => return failed(e),
+        Err((e, decision)) => return failed(e, decision),
     };
     match platform.shell(&req.command, run_as, Duration::from_millis(req.timeout_ms.into())) {
         Ok(out) => ExecResult {
@@ -784,59 +858,71 @@ fn exec(platform: &dyn Platform, req: &ExecRequest, settings: &settings::DeviceS
             timed_out: out.timed_out,
             as_root,
             error: None,
-            root_decision: decision.into(),
-            connect_decision: connect_decision.into(),
+            root_decision: decision_name(decision),
         },
-        Err(e) => ExecResult { root_decision: decision.into(), ..failed((Error { code: "platform".into(), message: format!("{e:#}") }, decision)) },
+        Err(e) => failed(platform_error(format!("{e:#}")), decision),
     }
+}
+
+/// A live PTY session and the Controller (display name) that opened it.
+struct Shell {
+    input: Box<dyn std::io::Write + Send>,
+    control: SharedControl,
+    controller: String,
 }
 
 /// Live PTY sessions of this connection, by session id. Dropping it (connection lost) kills them all.
 #[derive(Default)]
-struct Shells(std::collections::HashMap<String, (Box<dyn std::io::Write + Send>, SharedControl)>);
+struct Shells(std::collections::HashMap<String, Shell>);
 
 type SharedControl = Arc<Mutex<Box<dyn platform::PtyControl>>>;
 
+impl Shells {
+    /// Kills the sessions `controller` opened (the person at the Device disconnected it).
+    fn end(&mut self, controller: &str) {
+        self.0.retain(|_, shell| {
+            if shell.controller != controller {
+                return true;
+            }
+            let _ = shell.control.lock().unwrap().kill();
+            false
+        });
+    }
+}
+
 impl Drop for Shells {
     fn drop(&mut self) {
-        for (_, control) in self.0.values() {
-            let _ = control.lock().unwrap().kill();
+        for shell in self.0.values() {
+            let _ = shell.control.lock().unwrap().kill();
         }
     }
 }
 
-/// Starts a PTY session (see `run_as`); a thread relays its output, then its exit code, through `replies`.
-fn open_shell(
-    platform: &dyn Platform,
-    req: &ShellOpen,
-    settings: &settings::DeviceSettings,
-    grant: &Grant,
-    replies: &tokio::sync::mpsc::UnboundedSender<agent_message::Msg>,
-    shells: &mut Shells,
-) -> ShellOpened {
-    let failed = |(error, decision): (Error, &'static str)| ShellOpened {
-        request_id: req.request_id,
-        error: Some(error),
-        root_decision: decision.into(),
-        ..Default::default()
+/// Starts a PTY session (see `run_as`) and answers with ShellOpened; a thread then relays its output, then its exit
+/// code, through the gate's replies.
+fn open_shell(gate: &Gate, req: &ShellOpen, grant: &Grant, shells: &Mutex<Shells>) {
+    let opened = |as_root, error, decision| {
+        let reply = ShellOpened { request_id: req.request_id, as_root, error, root_decision: decision_name(decision) };
+        let _ = gate.replies.send(agent_message::Msg::ShellOpened(reply));
     };
-    let (run_as, as_root, decision) = match run_as(
-        platform,
-        settings,
-        req.as_root,
-        &req.requester,
-        grant,
-    ) {
+    if let Err(e) = gate.admit(&req.controller) {
+        return opened(false, Some(e), None);
+    }
+    let platform = gate.platform.as_ref();
+    let (run_as, as_root, decision) = match run_as(platform, &gate.settings, req.as_root, &req.requester, &req.controller, grant) {
         Ok(r) => r,
-        Err(e) => return failed(e),
+        Err((e, decision)) => return opened(false, Some(e), decision),
     };
     let pty = match platform.pty(run_as, clamp_u16(req.cols), clamp_u16(req.rows)) {
         Ok(p) => p,
-        Err(e) => return failed((Error { code: "platform".into(), message: format!("{e:#}") }, decision)),
+        Err(e) => return opened(false, Some(platform_error(format!("{e:#}"))), decision),
     };
     let control = Arc::new(Mutex::new(pty.control));
-    shells.0.insert(req.session.clone(), (pty.input, control.clone()));
-    let (session, replies, mut output) = (req.session.clone(), replies.clone(), pty.output);
+    let shell = Shell { input: pty.input, control: control.clone(), controller: req.controller.clone() };
+    shells.lock().unwrap().0.insert(req.session.clone(), shell);
+    // Answered before the first output, so the Server sees the session open first.
+    opened(as_root, None, decision);
+    let (session, replies, mut output) = (req.session.clone(), gate.replies.clone(), pty.output);
     std::thread::spawn(move || {
         let mut buf = vec![0; 16 * 1024];
         while let Ok(n @ 1..) = output.read(&mut buf) {
@@ -848,7 +934,6 @@ fn open_shell(
         let exit_code = control.lock().unwrap().wait().unwrap_or(-1);
         let _ = replies.send(agent_message::Msg::ShellExit(ShellExit { session, exit_code }));
     });
-    ShellOpened { request_id: req.request_id, as_root, error: None, root_decision: decision.into() }
 }
 
 fn clamp_u16(n: u32) -> u16 {

@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::{bad_request, devices::resolve_for, ApiError, Caller};
-use crate::{audit, control_lock};
+use crate::{agent_link::PROMPT_BUDGET, audit, control_lock};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -31,10 +31,7 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/shell-sessions/{id}/resize", post(resize))
 }
 
-/// How long the Agent may take to answer a shell open: ICE gathering and a 30 s root prompt.
-const ROOT_PROMPT_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// `{"as": "root" (admin only; default = logged-in user), "cols": 80, "rows": 24}`.
+/// `{"as": "root" (the Device's root setting decides; default = its Terminal User), "cols": 80, "rows": 24}`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OpenBody {
@@ -94,9 +91,9 @@ async fn open(
     let session = Uuid::new_v4();
     // Registered before the Agent starts the shell so no output is lost.
     let mut output = state.shells.open(session, device, user.id);
-    let requester = user.name.clone();
-    // The Agent may first show a root prompt for up to 30 s (ticket 07).
-    let wait = std::time::Duration::from_secs(10) + ROOT_PROMPT_BUDGET;
+    let (requester, controller) = (user.name.clone(), user.controller_display());
+    // The Agent may first show an accept prompt and a root prompt, up to 30 s each.
+    let wait = std::time::Duration::from_secs(10) + 2 * PROMPT_BUDGET;
     let req = |request_id| {
         server_message::Msg::ShellOpen(proto::ShellOpen {
             request_id,
@@ -105,6 +102,7 @@ async fn open(
             cols,
             rows,
             requester: requester.clone(),
+            controller: controller.clone(),
         })
     };
     let mut decision = String::new();
@@ -112,9 +110,7 @@ async fn open(
         Ok(agent_message::Msg::ShellOpened(r)) => {
             decision = r.root_decision.clone();
             match r.error {
-                Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
-                Some(e) if e.code == "root_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "root_denied", e.message)),
-                Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
+                Some(e) => Err(super::agent_error(e)),
                 None => Ok(if r.as_root { "root" } else { "user" }),
             }
         }

@@ -100,15 +100,13 @@ async fn signal_for(
     let id = resolve_for(user, state, key).await?;
     let session = uuid::Uuid::new_v4().to_string();
     let msg = |request_id| {
-        let ice_servers = ice(state);
-        server_message::Msg::LiveOffer(LiveOffer { request_id, session: session.clone(), sdp: offer.sdp, ice_servers, display: offer.display, media })
+        let (ice_servers, controller) = (ice(state), user.controller_display());
+        server_message::Msg::LiveOffer(LiveOffer { request_id, session: session.clone(), sdp: offer.sdp, ice_servers, display: offer.display, media, controller })
     };
-    match state.agents.request(id, msg).await? {
+    match state.agents.request_admitted(id, msg).await? {
         agent_message::Msg::LiveAnswer(a) => match a.error {
             None => Ok((StatusCode::CREATED, Json(json!({ "session": session, "sdp": a.sdp })))),
-            Some(e) if e.code == "invalid_offer" => Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_offer", e.message)),
-            Some(e) if e.code == "no_display" => Err(ApiError::new(StatusCode::CONFLICT, "no_display", e.message)),
-            Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
+            Some(e) => Err(super::agent_error(e)),
         },
         _ => Err(anyhow::anyhow!("unexpected reply to LiveOffer").into()),
     }

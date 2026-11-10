@@ -8,7 +8,7 @@ test("open a web terminal and run a command", async ({ page }) => {
   await page.getByRole("link", { name: "Terminal" }).click();
 
   const term = page.getByRole("region", { name: "Terminal" });
-  await expect(term.getByLabel("as root")).toHaveCount(0); // operators can't run as root
+  await expect(term.getByLabel("as root")).toBeVisible(); // the Device's root setting decides, not the role (ADR 0004)
   await term.getByRole("button", { name: "Mở terminal" }).click();
   await expect(term.getByText("chạy dưới: user")).toBeVisible();
   const screen = term.locator(".xterm-rows");
@@ -24,15 +24,15 @@ test("open a web terminal and run a command", async ({ page }) => {
   await expect(term.getByText("Phiên đã kết thúc (exit 3)")).toBeVisible();
 });
 
-test("admins can open the terminal as root", async ({ page }) => {
-  await signIn(page, await newUser("admin"));
+// An operator may ask for root; the Device decides (ADR 0004). alpha keeps the default `ask` and sits at its lock
+// screen, so nobody can accept and the Device refuses.
+test("the Device, not the role, decides root in the web terminal", async ({ page }) => {
+  await signIn(page, await newUser());
   await page.getByRole("link", { name: "alpha" }).click();
   await page.getByRole("link", { name: "Terminal" }).click();
 
   const term = page.getByRole("region", { name: "Terminal" });
   await term.getByLabel("as root").check();
   await term.getByRole("button", { name: "Mở terminal" }).click();
-  await expect(term.getByText("chạy dưới: root")).toBeVisible();
-  await term.getByRole("button", { name: "Đóng terminal" }).click();
-  await expect(term.getByRole("button", { name: "Mở terminal" })).toBeVisible();
+  await expect(term.getByText(/Không mở được: root access needs a person at the Device/)).toBeVisible();
 });

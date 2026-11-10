@@ -91,16 +91,16 @@ rcli agent run \
 ```
 
 `--socket` (mặc định `/run/rcli/agent.sock`, trên macOS `/var/run/rcli/agent.sock`) là socket IPC nội bộ.
-Từ máy đó: `rcli agent info` xem Device ID + trạng thái kết nối (mọi user); `sudo rcli agent password show` xem
+Trên chính Device đó: `rcli agent info` xem Device ID + trạng thái kết nối (mọi user); `sudo rcli agent password show` xem
 Device Password (chỉ root). Device Password được sinh lúc đăng ký và lưu mã hoá trong `--state-dir`.
 
 - Agent từ chối kết nối nếu CA của Server không khớp fingerprint trong Server Key (chống giả Server).
 - Agent tự đăng ký, nhận chứng chỉ mTLS, **Device ID 9 chữ số** và public key cập nhật (pin lại). Không cần tạo mã enroll.
 - Sau lần đầu, credential nằm trong `--state-dir`; các lần chạy sau chỉ cần `--server` và `--key`.
-- Cài lại máy luôn tạo Device mới. Muốn giữ lịch sử: `rcli device merge <cũ> --into <mới>` (dùng Device ID nếu hai Device trùng tên).
+- Cài lại Agent luôn tạo Device mới. Muốn giữ lịch sử: `rcli device merge <cũ> --into <mới>` (dùng Device ID nếu hai Device trùng tên).
 - Muốn Agent nhận bản cập nhật tự động (mục 7): đặt `RCLI_UPDATE_PUBLIC_KEY=<public key hex>` cho Server
 
-> Hiện `rcli agent run` dùng FakePlatform: Device hiện Online, có inventory/metrics giả, nhận Action nhưng không điều khiển máy thật.
+> Hiện `rcli agent run` dùng FakePlatform: Device hiện Online, có inventory/metrics giả, nhận Action nhưng không điều khiển Device thật.
 
 ## 6. Wake qua Wake Relay
 

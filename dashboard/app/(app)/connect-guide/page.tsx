@@ -63,7 +63,7 @@ export default async function ConnectGuidePage() {
           </div>
           <div className="grid gap-3 p-5 text-sm">
             <p className="text-muted-foreground">
-              Chạy trên máy cần quản lý: script tải <code className="font-mono text-xs">rcli</code> và cài dịch vụ nền,
+              Chạy trên Device: script tải <code className="font-mono text-xs">rcli</code> và cài dịch vụ nền,
               Device tự đăng ký vào fleet.
             </p>
             <CopyRow label="Linux / macOS (curl)" value={`curl -fsSL ${origin}/install.sh | sudo sh -s -- --key ${key}`} />
@@ -116,7 +116,7 @@ export default async function ConnectGuidePage() {
           </div>
           <div className="grid gap-3 p-5 text-sm">
             <p className="text-muted-foreground">
-              Trên máy chủ không có màn hình: tải <code className="font-mono text-xs">rcli</code> cho đúng hệ điều hành ở
+              Trên Device không có màn hình (headless): tải <code className="font-mono text-xs">rcli</code> cho đúng hệ điều hành ở
               trên, rồi chạy:
             </p>
             <CopyRow value={`sudo rcli agent install --server ${server} --key ${key}`} />
@@ -129,7 +129,7 @@ export default async function ConnectGuidePage() {
           </div>
           <div className="grid gap-3 p-5 text-sm">
             <p className="text-muted-foreground">
-              Trên máy điều khiển, chạy <code className="font-mono text-xs">rcli setup</code> một lần với URL của
+              Trên Controller, chạy <code className="font-mono text-xs">rcli setup</code> một lần với URL của
               Controller API (ví dụ https://server.example.com:8080) và Server Key ở trên:
             </p>
             <CopyRow value={`rcli setup --server <Controller API URL> --key ${key}`} />

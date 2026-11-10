@@ -1,9 +1,10 @@
 //! Server Key: `rk_<CA fingerprint>_<secret>`. The fingerprint pins the Server's CA; the secret lets a
 //! Device (or Controller) connect. Admins read it; replacing it changes only the secret.
 
+use rcli_protocol::server_key::ServerKey;
 use sqlx::PgPool;
 
-use crate::pki::Ca;
+use crate::{pki::Ca, AppState};
 
 pub const SECRET_LEN: usize = 32;
 
@@ -18,26 +19,24 @@ pub async fn load_or_create(db: &PgPool, ca: &Ca) -> anyhow::Result<String> {
             secret
         }
     };
-    Ok(format!("rk_{}_{secret}", ca.fingerprint))
+    Ok(ServerKey { fingerprint: ca.fingerprint.clone(), secret }.to_string())
 }
 
 /// Replaces only the secret; the CA (and so the fingerprint) is unchanged, so registered Devices keep working.
 pub async fn rotate(db: &PgPool, ca: &Ca) -> anyhow::Result<String> {
     let secret = random_secret()?;
     sqlx::query("UPDATE server_ca SET server_key_secret = $1").bind(&secret).execute(db).await?;
-    Ok(format!("rk_{}_{secret}", ca.fingerprint))
+    Ok(ServerKey { fingerprint: ca.fingerprint.clone(), secret }.to_string())
 }
 
-/// `rk_<fingerprint>_<secret>` as `(fingerprint, secret)`.
-pub fn split(key: &str) -> Option<(&str, &str)> {
-    let (fingerprint, secret) = key.trim().strip_prefix("rk_")?.split_once('_')?;
-    (fingerprint.len() == 64 && !secret.is_empty()).then_some((fingerprint, secret))
+/// The current Server Key.
+pub async fn current(state: &AppState) -> ServerKey {
+    ServerKey::parse(&state.settings.key().await).expect("the Server writes its own key well-formed")
 }
 
-/// Whether `presented` holds `expected`, in constant time.
-pub fn secret_matches(expected: &str, presented: &str) -> bool {
-    let (a, b) = (expected.as_bytes(), presented.as_bytes());
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+/// Whether the key `presented` carries the current Server Key's secret.
+pub async fn admits(state: &AppState, presented: &str) -> bool {
+    current(state).await.admits(presented)
 }
 
 fn random_secret() -> anyhow::Result<String> {

@@ -15,6 +15,12 @@ async fn publish(sys: &TestSystem, build: &str, version: &str, key: &str) {
     sys.rcli(&["rollout", "publish", build, "--version", version, "--target", &target, "--key", key]).await.unwrap();
 }
 
+/// Publishes `build` and rolls it out to every Device, making it the fleet's build.
+async fn publish_to_fleet(sys: &TestSystem, build: &str, version: &str, key: &str) {
+    publish(sys, build, version, key).await;
+    sys.rcli(&["rollout", version, "--all"]).await.unwrap();
+}
+
 fn http_addr(sys: &TestSystem) -> String {
     format!("http://{}", sys.server.http_addr)
 }
@@ -26,7 +32,7 @@ async fn a_controller_only_machine_upgrades_itself() {
     sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
     let build = temp_file("rcli", b"new rcli binary");
     let key = temp_file("update.key", &sys.update_signing_key);
-    publish(&sys, &build, "9.9.9", &key).await;
+    publish_to_fleet(&sys, &build, "9.9.9", &key).await;
 
     let target = temp_dir("controller-target").join("rcli");
     std::fs::write(&target, b"old rcli binary").unwrap();
@@ -72,7 +78,7 @@ async fn a_bad_signature_is_rejected_and_the_old_binary_is_kept() {
     let rogue = temp_dir("rogue").join("rogue.key");
     sys.rcli(&["rollout", "keygen", rogue.to_str().unwrap()]).await.unwrap();
     let build = temp_file("rcli", b"malicious rcli binary");
-    publish(&sys, &build, "6.6.6", rogue.to_str().unwrap()).await;
+    publish_to_fleet(&sys, &build, "6.6.6", rogue.to_str().unwrap()).await;
 
     let target = temp_dir("bad-signature-target").join("rcli");
     std::fs::write(&target, b"old rcli binary").unwrap();
@@ -85,22 +91,26 @@ async fn a_bad_signature_is_rejected_and_the_old_binary_is_kept() {
     assert_eq!(std::fs::read(&target).unwrap(), b"old rcli binary");
 }
 
+/// A Controller-only machine gets the fleet's build: the last one rolled out to every Device, not a newer publish
+/// or a canary rolled out to one Device.
 #[tokio::test]
-async fn upgrade_fetches_the_newest_published_build_for_this_target() {
+async fn upgrade_fetches_the_build_rolled_out_to_the_fleet() {
     let sys = TestSystem::start().await;
-    let dir = temp_dir("newest");
+    let dir = temp_dir("fleet");
     sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
     let key = temp_file("update.key", &sys.update_signing_key);
-    publish(&sys, &temp_file("old", b"old build"), "2.0.0", &key).await;
+    publish_to_fleet(&sys, &temp_file("fleet", b"fleet build"), "1.0.0", &key).await;
     sys.advance(60);
-    publish(&sys, &temp_file("new", b"new build"), "1.0.0", &key).await;
+    publish(&sys, &temp_file("canary", b"canary build"), "2.0.0", &key).await;
+    let agent = sys.start_agent_with_socket("canary-pc", &temp_dir("fleet-agent")).await;
+    sys.rcli(&["rollout", "2.0.0", "--device", agent.device_id()]).await.unwrap();
 
-    let target = temp_dir("newest-target").join("rcli");
+    let target = temp_dir("fleet-target").join("rcli");
     std::fs::write(&target, b"installed build").unwrap();
     let out = sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap();
 
     assert!(out.contains("1.0.0"), "{out}");
-    assert_eq!(std::fs::read(&target).unwrap(), b"new build");
+    assert_eq!(std::fs::read(&target).unwrap(), b"fleet build");
 }
 
 /// An on-path attacker can serve the real CA (so the fingerprint matches) but cannot sign another update key
@@ -143,4 +153,25 @@ async fn no_build_for_this_os_and_arch_is_a_clear_error() {
 
     assert!(err.to_string().contains(rcli_agent::target().as_str()), "{err}");
     assert_eq!(std::fs::read(&target).unwrap(), b"old rcli binary");
+}
+
+/// Which build a Device ID is on is not public: the lookup `rcli upgrade` makes needs the Server Key.
+#[tokio::test]
+async fn the_build_lookup_needs_the_server_key() {
+    let sys = TestSystem::start().await;
+    let key = temp_file("update.key", &sys.update_signing_key);
+    publish_to_fleet(&sys, &temp_file("fleet", b"fleet build"), "1.0.0", &key).await;
+    let path = format!("/api/v1/agent-builds/{}", rcli_agent::target());
+
+    let (status, _) = sys.api.with_token(None).get_bytes(&path).await;
+    assert_eq!(status, rcli_testkit::StatusCode::UNAUTHORIZED);
+    let (status, bytes) = reqwest::Client::new()
+        .get(format!("{}{path}", http_addr(&sys)))
+        .header("x-rcli-server-key", sys.server_key())
+        .send()
+        .await
+        .map(|r| (r.status(), r))
+        .unwrap();
+    assert_eq!(status, rcli_testkit::StatusCode::OK);
+    assert_eq!(bytes.bytes().await.unwrap().as_ref(), b"fleet build");
 }

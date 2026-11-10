@@ -193,10 +193,53 @@ async fn every_disconnect_and_prompt_answer_is_audited() {
 
     eventually(|| async {
         let entries = audit_entries(&sys).await;
-        let accepted = entries.iter().any(|e| e["action"] == "terminal" && e["result"]["connect_decision"] == "accepted");
-        let rejected = entries.iter().any(|e| e["action"] == "terminal" && e["result"]["connect_decision"] == "rejected");
+        let prompt = |decision: &str| {
+            entries.iter().any(|e| {
+                e["action"] == "connect.prompt" && e["user"] == "test-controller (127.0.0.1)" && e["result"]["decision"] == decision
+            })
+        };
+        let (accepted, rejected) = (prompt("accepted"), prompt("rejected"));
         let disconnected = entries.iter().any(|e| e["action"] == "disconnect" && e["user"] == "test-controller (127.0.0.1)");
         (accepted && rejected && disconnected).then_some(())
     })
     .await;
+}
+
+/// The accept gate covers every way in, not just `exec`: the screen, power and a Dashboard User's shell.
+#[tokio::test]
+async fn accept_gates_the_screen_power_and_shells_too() {
+    let sys = TestSystem::start().await;
+    let (agent, dir) = online(&sys, "accept-all", FakePlatform::new("lab-pc")).await;
+    let dev = agent.device_id().to_owned();
+    let password = agent.device_password().unwrap();
+    sys.agent_rcli(&dir.join("agent.sock"), &["agent", "accept", "password+accept"]).await.unwrap();
+    // Nobody answers: every prompt auto-rejects.
+    agent.platform.answer_accept_prompts([]);
+    let device = sys.device_client(&dev, &password);
+    let denied = |(status, out): (StatusCode, serde_json::Value)| {
+        assert_eq!((status, &out["error"]["code"]), (StatusCode::FORBIDDEN, &json!("connect_denied")), "{out}");
+    };
+
+    denied(device.post_json(&format!("/api/v1/devices/{dev}/actions"), &json!({ "actions": [] })).await);
+    denied(device.post_json(&format!("/api/v1/devices/{dev}/power"), &json!({ "action": "lock" })).await);
+    let alice = sys.create_user("alice", "operator").await;
+    denied(sys.api.with_token(Some(&alice)).post_json(&format!("/api/v1/devices/{dev}/shell"), &json!({})).await);
+
+    let asked: Vec<String> = agent.platform.accept_prompts().into_iter().map(|(who, _)| who).collect();
+    assert_eq!(asked, ["test-controller (127.0.0.1)", "test-controller (127.0.0.1)", "alice (Dashboard)"]);
+    assert!(agent.platform.power_actions().is_empty(), "nothing ran");
+}
+
+/// Every way in lists the Controller, so the person at the Device sees (and can disconnect) a screen-only user.
+#[tokio::test]
+async fn info_lists_a_controller_that_only_watched_the_screen() {
+    let sys = TestSystem::start().await;
+    let (agent, dir) = online(&sys, "info-screen", FakePlatform::new("lab-pc")).await;
+    let dev = agent.device_id().to_owned();
+    let device = sys.device_client(&dev, &agent.device_password().unwrap()).with_controller("viewer");
+    let (status, out) = device.post_json(&format!("/api/v1/devices/{dev}/actions"), &json!({ "actions": [] })).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+
+    let out = sys.agent_rcli(&dir.join("agent.sock"), &["agent", "info"]).await.unwrap();
+    assert!(out.contains("viewer (127.0.0.1)"), "{out}");
 }

@@ -231,3 +231,23 @@ async fn rcli_shell_relays_keystrokes_and_exits_with_the_remote_code() {
     let (result, _) = rcli(&sys.admin_token, &["shell", "lab-pc", "--as", "root"], &["exit\r"]).await;
     assert!(format!("{:#}", result.unwrap_err()).contains("root_denied"));
 }
+
+/// `rcli agent disconnect alice` ends alice's shell only; bob, also connected, keeps his.
+#[tokio::test]
+async fn disconnect_ends_only_that_controllers_shell() {
+    let sys = TestSystem::start().await;
+    let (agent, dir) = rcli_testkit::online(&sys, "disconnect-one", FakePlatform::new("lab-pc")).await;
+    let dev = agent.device_id().to_owned();
+    let (alice, bob) = (sys.create_user("alice", "operator").await, sys.create_user("bob", "operator").await);
+    let (mut alices, _) = Shell::open(&sys, &alice, &dev, json!({})).await.unwrap();
+    let (mut bobs, _) = Shell::open(&sys, &bob, &dev, json!({})).await.unwrap();
+    alices.expect("$ ").await;
+    bobs.expect("$ ").await;
+
+    let out = sys.agent_rcli(&dir.join("agent.sock"), &["agent", "disconnect", "alice"]).await.unwrap();
+    assert!(out.contains("alice (Dashboard)") && !out.contains("bob"), "{out}");
+
+    assert!(alices.finish().await.get("exit_code").is_some(), "alice's shell ended");
+    bobs.input("echo still-here\r").await;
+    bobs.expect("still-here").await;
+}

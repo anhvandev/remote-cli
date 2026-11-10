@@ -3,7 +3,7 @@
 
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::HeaderMap,
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -50,12 +50,13 @@ async fn install_ps1(State(state): State<super::State>, headers: HeaderMap) -> R
     ([("content-type", "text/plain; charset=utf-8"), ("cache-control", "no-store")], script).into_response()
 }
 
-/// The build bytes of the currently published (rolled-out) build for `os-arch`, signed by the update key.
+/// The build bytes of the fleet's build for `os-arch` (the one last rolled out to every Device), signed by the
+/// update key.
 async fn download(State(state): State<super::State>, Path((os, arch)): Path<(String, String)>) -> Result<Response, ApiError> {
     let target = format!("{os}-{arch}");
-    let (version, signature, build) = updates::latest(&state, &target)
+    let (version, signature, build) = updates::fleet_build(&state, &target)
         .await?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no_build", format!("no build for {target}")))?;
+        .ok_or_else(|| super::updates::no_build(&target))?;
     Ok((
         [
             ("x-rcli-version", version),
@@ -95,13 +96,16 @@ case "$arch" in
     x86_64 | amd64) arch=x86_64 ;;
     aarch64 | arm64) arch=aarch64 ;;
 esac
+# A fresh private directory: a fixed path in /tmp could be swapped by another local user before root runs it.
+dir=$(mktemp -d)
+trap 'rm -rf "$dir"' EXIT
 echo "downloading {{ORIGIN}}/download/$os/$arch"
-if ! curl -fsSL "{{ORIGIN}}/download/$os/$arch" -o /tmp/rcli; then
+if ! curl -fsSL "{{ORIGIN}}/download/$os/$arch" -o "$dir/rcli"; then
     echo "install.sh: no rcli build for $os-$arch is rolled out" >&2
     exit 1
 fi
-chmod +x /tmp/rcli
-/tmp/rcli agent install --server {{SERVER}} --key "$key"
+chmod +x "$dir/rcli"
+"$dir"/rcli agent install --server {{SERVER}} --key "$key"
 "#;
 
 // shortcut: same as install.sh — `rcli agent install` lands with ticket 22, which also finishes this script

@@ -74,9 +74,7 @@ fn remaining_secs(until: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<ch
 /// `/api/v1/server-ca` and `/api/v1/update-key` over plain HTTP cannot forge it.
 async fn update_key(axum::extract::State(state): axum::extract::State<State>) -> Json<serde_json::Value> {
     let key = state.config.update_public_key.as_deref().map(hex::encode).unwrap_or_default();
-    let mac = crate::server_key::split(&state.settings.key().await)
-        .map(|(_, secret)| hex::encode(rcli_protocol::update::pin_mac(secret, &key)))
-        .unwrap_or_default();
+    let mac = hex::encode(rcli_protocol::update::pin_mac(&crate::server_key::current(&state).await.secret, &key));
     Json(json!({ "update_key": key, "mac": mac }))
 }
 
@@ -118,6 +116,26 @@ impl From<crate::agent_link::RequestError> for ApiError {
             RequestError::Timeout => ApiError::new(StatusCode::GATEWAY_TIMEOUT, "agent_timeout", "the Agent did not answer in time"),
         }
     }
+}
+
+/// The Agent's typed refusal as an API error; any other code is the Agent's own failure (502 `agent_error`).
+pub fn agent_error(e: rcli_protocol::agent::Error) -> ApiError {
+    let (status, code) = match e.code.as_str() {
+        "invalid_action" => (StatusCode::BAD_REQUEST, "invalid_action"),
+        "stale_mark" => (StatusCode::BAD_REQUEST, "stale_mark"),
+        "ambiguous_text" => (StatusCode::BAD_REQUEST, "ambiguous_text"),
+        "text_not_found" => (StatusCode::BAD_REQUEST, "text_not_found"),
+        "invalid_offer" => (StatusCode::BAD_REQUEST, "invalid_offer"),
+        "no_display" => (StatusCode::CONFLICT, "no_display"),
+        // The password lives only on the Device; this is the Device's own report, not the Server's.
+        "unlock_password_not_set" => (StatusCode::CONFLICT, "unlock_password_not_set"),
+        // The Device's root setting refused, or asked and nobody answered.
+        "root_denied" => (StatusCode::FORBIDDEN, "root_denied"),
+        // `password+accept` refused this Controller (rejected, timed out, or no session to ask in).
+        "connect_denied" => (StatusCode::FORBIDDEN, "connect_denied"),
+        _ => (StatusCode::BAD_GATEWAY, "agent_error"),
+    };
+    ApiError::new(status, code, e.message)
 }
 
 /// 400 `bad_request`, e.g. a body that is not the expected JSON.

@@ -48,6 +48,14 @@ _Avoid_: WoL proxy, gateway
 The secret every Agent and Controller must present to be allowed to connect to the Server; together with the Server's address it is all a new install needs. Replacing it locks out new installs but not Devices already registered.
 _Avoid_: enrollment code, install key, token
 
+**Server Address**:
+The host and port Agents use to reach the Server, set by an Admin; together with the Server Key it is all a new install needs.
+_Avoid_: hostname, server URL, endpoint
+
+**Secret Store**:
+The encrypted place on a Device where its Agent keeps the Device Password and the unlock password, readable only with root/Administrator rights on that Device.
+_Avoid_: vault, keystore, credential store
+
 **Device ID**:
 The 9-digit number the Server gives a Device when it first registers, used to address it. It never changes by itself, only when deliberately changed.
 _Avoid_: device uuid, machine id

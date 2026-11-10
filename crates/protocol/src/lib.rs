@@ -5,6 +5,7 @@ pub mod agent {
 }
 
 pub mod password;
+pub mod server_key;
 pub mod update;
 
 /// `Resources.session` as "Active" | "LockScreen" | "LoginScreen" | null in JSON.

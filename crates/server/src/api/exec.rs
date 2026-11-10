@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
-    http::StatusCode,
     routing::post,
     Json, Router,
 };
@@ -12,8 +11,8 @@ use rcli_protocol::agent::{self as proto, agent_message, server_message};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{bad_request, devices::resolve_for, ApiError, Caller};
-use crate::{audit, control_lock};
+use super::{agent_error, bad_request, devices::resolve_for, ApiError, Caller};
+use crate::{agent_link::PROMPT_BUDGET, audit, control_lock};
 
 pub fn routes() -> Router<super::State> {
     Router::new().route("/api/v1/devices/{id}/exec", post(exec))
@@ -22,11 +21,9 @@ pub fn routes() -> Router<super::State> {
 const DEFAULT_TIMEOUT_SECS: u32 = 60;
 const MAX_TIMEOUT_SECS: u32 = 3600;
 /// Extra wait for the Agent's reply beyond the command's own timeout.
-/// The Agent may first show a root prompt for up to 30 s (ticket 07), so allow that on top.
 const REPLY_SLACK: Duration = Duration::from_secs(10);
-const ROOT_PROMPT_BUDGET: Duration = Duration::from_secs(30);
 
-/// `{"command": "...", "as": "root" (admin only; default = logged-in user), "timeout_secs": 60}`.
+/// `{"command": "...", "as": "root" (the Device's root setting decides; default = its Terminal User), "timeout_secs": 60}`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecBody {
@@ -73,21 +70,15 @@ async fn exec(
             controller: controller.clone(),
         })
     };
-    let wait = Duration::from_secs(timeout.into()) + REPLY_SLACK + ROOT_PROMPT_BUDGET;
-    // How root and the connection were decided matters for the audit even when the Device refused.
+    // The Agent may first show an accept prompt and a root prompt, up to 30 s each.
+    let wait = Duration::from_secs(timeout.into()) + REPLY_SLACK + 2 * PROMPT_BUDGET;
+    // How root was decided matters for the audit even when the Device refused.
     let mut decision = String::new();
-    let mut connect = String::new();
     let result = match state.agents.request_within(device, wait, req).await {
         Ok(agent_message::Msg::ExecResult(r)) => {
             decision = r.root_decision.clone();
-            connect = r.connect_decision.clone();
             match r.error {
-                Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
-                // The Device's root setting refused, or asked and nobody answered: a plain refusal to the caller.
-                Some(e) if e.code == "root_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "root_denied", e.message)),
-                // `password+accept` refused this new connection (rejected, timed out, or no session to ask in).
-                Some(e) if e.code == "connect_denied" => Err(ApiError::new(StatusCode::FORBIDDEN, "connect_denied", e.message)),
-                Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
+                Some(e) => Err(agent_error(e)),
                 None => Ok(json!({
                     "exit_code": (!r.timed_out).then_some(r.exit_code),
                     "stdout": r.stdout,
@@ -95,7 +86,6 @@ async fn exec(
                     "timed_out": r.timed_out,
                     "as": if r.as_root { "root" } else { "user" },
                     "root_decision": r.root_decision,
-                    "connect_decision": r.connect_decision,
                 })),
             }
         }
@@ -108,10 +98,9 @@ async fn exec(
             "timed_out": r["timed_out"],
             "as": r["as"],
             "root_decision": r["root_decision"],
-            "connect_decision": r["connect_decision"],
             "error": null,
         }),
-        Err(e) => json!({ "error": e.code, "root_decision": decision, "connect_decision": connect }),
+        Err(e) => json!({ "error": e.code, "root_decision": decision }),
     };
     audit::record(&state, &user, device, "terminal", params, outcome).await?;
     result.map(Json)

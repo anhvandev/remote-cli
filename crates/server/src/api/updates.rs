@@ -26,13 +26,22 @@ struct Current {
     device: Option<String>,
 }
 
-/// Public like the update key: `rcli upgrade` fetches the build rolled out to its Device (or, on a Controller-only
-/// machine, the newest build) and verifies the signature against the key it pinned at setup, so serving it needs no
-/// credentials.
-async fn current(State(state): State<super::State>, Path(target): Path<String>, Query(q): Query<Current>) -> Result<Response, ApiError> {
+/// `rcli upgrade` fetches the build rolled out to its Device (or, on a Controller-only machine, the fleet's build)
+/// and verifies the signature against the key it pinned at setup. The Server Key (header `X-Rcli-Server-Key`) is
+/// the only credential, so not just anyone can ask which build a given Device ID is on.
+async fn current(
+    State(state): State<super::State>,
+    Path(target): Path<String>,
+    Query(q): Query<Current>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, ApiError> {
+    let presented = headers.get("x-rcli-server-key").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    if !crate::server_key::admits(&state, presented).await {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or wrong Server Key"));
+    }
     let (version, signature, build) = updates::upgrade_build(&state, q.device.as_deref(), &target)
         .await?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no_build", format!("no build for {target}")))?;
+        .ok_or_else(|| no_build(&target))?;
     Ok((
         [
             ("x-rcli-version", version),
@@ -42,6 +51,15 @@ async fn current(State(state): State<super::State>, Path(target): Path<String>, 
         build,
     )
         .into_response())
+}
+
+/// 404 `no_build`: nothing for `target` has been rolled out (a newer publish alone does not count).
+pub(super) fn no_build(target: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "no_build",
+        format!("no build for {target} is rolled out yet (an Admin runs `rcli rollout <version> --all`)"),
+    )
 }
 
 impl From<UpdateError> for ApiError {

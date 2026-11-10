@@ -4,7 +4,10 @@
 use std::path::PathBuf;
 
 use eframe::egui;
-use rcli_agent::ipc;
+use rcli_agent::{
+    ipc::{self, Request},
+    settings::{AcceptMode, RootAccess},
+};
 use serde_json::{json, Value};
 
 /// Opens the GUI window. `socket` overrides the Agent's IPC socket (`RCLI_AGENT_SOCKET`).
@@ -30,8 +33,8 @@ struct App {
     secrets: Option<Value>,
     /// The Device Settings editor, seeded from `info` on the first fetch.
     terminal_user: String,
-    root: String,
-    accept: String,
+    root: RootAccess,
+    accept: AcceptMode,
     /// The new unlock password being typed.
     unlock: String,
     /// The last action's message.
@@ -44,8 +47,8 @@ impl App {
         let info = fetch(&rt, &socket);
         let settings = &info["settings"];
         let terminal_user = settings["terminal_user"].as_str().unwrap_or_default().to_owned();
-        let root = settings["root"].as_str().unwrap_or("ask").to_owned();
-        let accept = settings["accept"].as_str().unwrap_or("password").to_owned();
+        let root = serde_json::from_value(settings["root"].clone()).unwrap_or_default();
+        let accept = serde_json::from_value(settings["accept"].clone()).unwrap_or_default();
         Self {
             socket,
             rt,
@@ -63,17 +66,16 @@ impl App {
     }
 
     /// One IPC round-trip; an `error` reply comes back as `{"error": ...}`.
-    fn ipc(&self, body: Value) -> Value {
-        let socket = self.socket.clone();
-        match self.rt.block_on(ipc::send(&socket, body)) {
+    fn ipc(&self, request: &Request) -> Value {
+        match self.rt.block_on(ipc::send(&self.socket, request)) {
             Ok(reply) => reply,
             Err(e) => json!({ "error": e.to_string() }),
         }
     }
 
     /// One IPC request, run elevated when the Agent refuses only for lack of root.
-    fn ipc_elevated(&self, body: Value, args: &[&str], stdin: Option<&str>) -> Value {
-        let reply = self.ipc(body);
+    fn ipc_elevated(&self, request: &Request, args: &[&str], stdin: Option<&str>) -> Value {
+        let reply = self.ipc(request);
         if reply.get("error").is_none() || !refused_for_root(&reply) {
             return reply;
         }
@@ -85,7 +87,7 @@ impl App {
     }
 
     fn reveal(&mut self) {
-        let reply = self.ipc(json!({ "command": "password.show" }));
+        let reply = self.ipc(&Request::PasswordShow);
         self.shown = match reply["password"].as_str() {
             Some(p) => Some(p.to_owned()),
             // Refused only for lack of root: ask the OS to run the read elevated (polkit, macOS authorization).
@@ -104,7 +106,7 @@ impl App {
     }
 
     fn change(&mut self) {
-        let reply = self.ipc(json!({ "command": "password.set", "password": self.password }));
+        let reply = self.ipc(&Request::PasswordSet { password: self.password.clone() });
         self.note = if let Some(message) = reply["message"].as_str() {
             message.to_owned()
         } else if refused_for_root(&reply) {
@@ -123,31 +125,28 @@ impl App {
     fn set_settings(&mut self) {
         let calls = [
             (
-                json!({ "command": "terminal-user.set", "user": self.terminal_user }),
+                Request::TerminalUserSet { user: self.terminal_user.clone() },
                 vec!["agent", "terminal-user", "set", &self.terminal_user],
             ),
-            (json!({ "command": "root.set", "root": self.root }), vec!["agent", "root", &self.root]),
-            (json!({ "command": "accept.set", "accept": self.accept }), vec!["agent", "accept", &self.accept]),
+            (Request::RootSet { root: self.root }, vec!["agent", "root", self.root.name()]),
+            (Request::AcceptSet { accept: self.accept }, vec!["agent", "accept", self.accept.name()]),
         ];
-        for (body, args) in calls {
-            let reply = self.ipc_elevated(body, &args, None);
+        for (request, args) in calls {
+            let reply = self.ipc_elevated(&request, &args, None);
             self.note = note(&reply);
         }
     }
 
     /// Stores a new unlock password (root; over stdin, never on a command line).
     fn set_unlock(&mut self) {
-        let reply = self.ipc_elevated(
-            json!({ "command": "unlock-password.set", "password": self.unlock }),
-            &["agent", "unlock-password", "set"],
-            Some(&self.unlock),
-        );
+        let request = Request::UnlockPasswordSet { password: self.unlock.clone() };
+        let reply = self.ipc_elevated(&request, &["agent", "unlock-password", "set"], Some(&self.unlock));
         self.note = note(&reply);
         self.unlock.clear();
     }
 
     fn clear_unlock(&mut self) {
-        let reply = self.ipc_elevated(json!({ "command": "unlock-password.clear" }), &["agent", "unlock-password", "clear"], None);
+        let reply = self.ipc_elevated(&Request::UnlockPasswordClear, &["agent", "unlock-password", "clear"], None);
         self.note = note(&reply);
     }
 
@@ -166,19 +165,19 @@ impl App {
 
     /// Grants root to one Controller for this session only (root).
     fn grant_root(&mut self, who: &str) {
-        let reply = self.ipc_elevated(json!({ "command": "root.grant", "who": who }), &["agent", "root", "grant", who], None);
+        let reply = self.ipc_elevated(&Request::RootGrant { who: who.to_owned() }, &["agent", "root", "grant", who], None);
         self.note = note(&reply);
     }
 
     /// The person at the Device's answer to a waiting prompt. Accepting needs root (the OS prompt);
     /// refusing is open to anyone and goes straight over the IPC.
     fn answer_prompt(&mut self, id: u64, accept: bool) {
-        let body = json!({ "command": "prompt.answer", "id": id, "accept": accept });
+        let request = Request::PromptAnswer { id, accept };
         let reply = if accept {
             let id = id.to_string();
-            self.ipc_elevated(body, &["agent", "prompt", "answer", &id, "accept"], None)
+            self.ipc_elevated(&request, &["agent", "prompt", "answer", &id, "accept"], None)
         } else {
-            self.ipc(body)
+            self.ipc(&request)
         };
         self.note = note(&reply);
     }
@@ -195,7 +194,7 @@ fn note(reply: &Value) -> String {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.info = fetch(&self.rt, &self.socket);
-        self.prompts = self.ipc(json!({ "command": "prompts" }));
+        self.prompts = self.ipc(&Request::Prompts);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("rcli");
             if !self.note.is_empty() {
@@ -228,14 +227,14 @@ impl eframe::App for App {
                 });
                 ui.horizontal(|ui| {
                     ui.label("Root:");
-                    for level in ["never", "ask", "always"] {
-                        ui.selectable_value(&mut self.root, level.to_owned(), level);
+                    for level in [RootAccess::Never, RootAccess::Ask, RootAccess::Always] {
+                        ui.selectable_value(&mut self.root, level, level.name());
                     }
                 });
                 ui.horizontal(|ui| {
                     ui.label("Accept:");
-                    for mode in ["password", "password+accept"] {
-                        ui.selectable_value(&mut self.accept, mode.to_owned(), mode);
+                    for mode in [AcceptMode::Password, AcceptMode::PasswordAccept] {
+                        ui.selectable_value(&mut self.accept, mode, mode.name());
                     }
                 });
                 if ui.button("Apply Device Settings").clicked() {
@@ -316,7 +315,7 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         ui.label(&who);
                         if ui.button("Disconnect").clicked() {
-                            let reply = self.ipc(json!({ "command": "disconnect", "who": who }));
+                            let reply = self.ipc(&Request::Disconnect { who: who.clone() });
                             self.note = reply["message"].as_str().unwrap_or_default().to_owned();
                         }
                         if ui.button("Grant root to this session").clicked() {
@@ -338,7 +337,7 @@ impl eframe::App for App {
 }
 
 fn fetch(rt: &tokio::runtime::Runtime, socket: &std::path::Path) -> Value {
-    rt.block_on(ipc::request(socket, "info")).unwrap_or_else(|e| json!({ "error": e.to_string() }))
+    rt.block_on(ipc::send(socket, &Request::Info)).unwrap_or_else(|e| json!({ "error": e.to_string() }))
 }
 
 /// Whether the Agent refused only because the caller is not root (then an elevation prompt can fix it).
@@ -425,12 +424,16 @@ pub fn wrap(
     prompts: Arc<ipc::Prompts>,
     socket: PathBuf,
 ) -> Arc<dyn rcli_agent::platform::Platform> {
-    Arc::new(WindowPlatform { inner, prompts, open: opener(socket) })
+    let open = opener(socket, inner.clone());
+    Arc::new(WindowPlatform { inner, prompts, open })
 }
 
-/// Opens the GUI window in a child `rcli` (no arguments), once; reopens it if the person closed it.
-fn opener(socket: PathBuf) -> Box<dyn Fn() + Send + Sync> {
+/// Opens the GUI window in a child `rcli` (no arguments), once; reopens it if the person closed it. A root service
+/// opens it as the logged-in user, never as root: as root its password reveal would skip the elevation prompt.
+/// With nobody logged in there is nobody to show it to.
+fn opener(socket: PathBuf, platform: Arc<dyn rcli_agent::platform::Platform>) -> Box<dyn Fn() + Send + Sync> {
     let child: Arc<Mutex<Option<std::process::Child>>> = Default::default();
+    let service_is_root = crate::upgrade::is_root();
     Box::new(move || {
         let mut child = child.lock().unwrap();
         if let Some(running) = child.as_mut() {
@@ -438,8 +441,20 @@ fn opener(socket: PathBuf) -> Box<dyn Fn() + Send + Sync> {
                 return;
             }
         }
-        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "rcli".into()));
-        cmd.env("RCLI_AGENT_SOCKET", &socket);
+        let exe = std::env::current_exe().unwrap_or_else(|_| "rcli".into());
+        let mut cmd = if service_is_root {
+            let user = platform.metrics().ok().and_then(|r| r.logged_in_user).filter(|u| !u.is_empty() && u != "root");
+            let Some(user) = user else { return };
+            // shortcut: plain `sudo -u`; the session's display environment (DISPLAY / WAYLAND_DISPLAY, macOS
+            // `launchctl asuser`) comes with the service installers of tickets 16 and 24.
+            let mut cmd = std::process::Command::new("sudo");
+            cmd.args(["-n", "-u", &user, "--", "env"]).arg(format!("RCLI_AGENT_SOCKET={}", socket.display())).arg(exe);
+            cmd
+        } else {
+            let mut cmd = std::process::Command::new(exe);
+            cmd.env("RCLI_AGENT_SOCKET", &socket);
+            cmd
+        };
         *child = cmd.spawn().ok();
     })
 }
@@ -504,11 +519,11 @@ impl rcli_agent::platform::Platform for WindowPlatform {
     /// The GUI window shows the prompt and answers over the IPC; no answer in time rejects (the 30 s rule).
     fn ask_root(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
         (self.open)();
-        Ok(self.prompts.ask("root", requester, timeout))
+        Ok(self.prompts.ask(ipc::PromptKind::Root, requester, timeout))
     }
     fn ask_accept(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
         (self.open)();
-        Ok(self.prompts.ask("accept", requester, timeout))
+        Ok(self.prompts.ask(ipc::PromptKind::Accept, requester, timeout))
     }
 }
 

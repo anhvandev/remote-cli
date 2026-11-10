@@ -1,5 +1,5 @@
 //! Controller configuration: the per-user config directory holds the Server Address, the Server Key and the pinned
-//! update key; remembered Device Passwords live in the OS keychain, with a `0600` file fallback.
+//! update key; remembered Device Passwords live in the OS keychain (macOS, Windows), with a `0600` file fallback.
 
 use std::path::{Path, PathBuf};
 
@@ -25,6 +25,11 @@ pub fn dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("RCLI_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return dir.into();
     }
+    platform_dir()
+}
+
+/// The platform's standard per-user config directory.
+fn platform_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     return std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_default().join("rcli");
     #[cfg(target_os = "macos")]
@@ -79,28 +84,40 @@ pub fn hostname() -> String {
         .unwrap_or_else(|| "controller".into())
 }
 
+/// The Server Key's secret and Device Passwords travel in request headers, so the Controller API must be reached over
+/// https; plain http only to this machine itself, or when asked for with `--insecure-http`.
+fn check_transport(base: &str, insecure_http: bool) -> anyhow::Result<()> {
+    let url = reqwest::Url::parse(base).map_err(|e| anyhow::anyhow!("bad Server Address {base}: {e}"))?;
+    let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']);
+    let loopback = host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if loopback || insecure_http => Ok(()),
+        "http" => anyhow::bail!(
+            "{base} is plain http: the Server Key and Device Passwords would travel unencrypted. Use the https:// \
+             address of your TLS reverse proxy, or pass --insecure-http to accept that"
+        ),
+        other => anyhow::bail!("the Server Address must start with https:// (not {other}://)"),
+    }
+}
+
 /// `rcli setup`: saves the Server Address, Server Key and the pinned update key.
-pub async fn setup(dir: &Path, server: &str, key: &str) -> anyhow::Result<String> {
-    let fingerprint = key
-        .trim()
-        .strip_prefix("rk_")
-        .and_then(|rest| rest.split_once('_'))
-        .map(|(fingerprint, secret)| (fingerprint.to_owned(), secret.to_owned()))
-        .filter(|(fingerprint, secret)| fingerprint.len() == 64 && !secret.is_empty())
+pub async fn setup(dir: &Path, server: &str, key: &str, insecure_http: bool) -> anyhow::Result<String> {
+    let server_key = rcli_protocol::server_key::ServerKey::parse(key)
         .ok_or_else(|| anyhow::anyhow!("the Server Key must look like rk_<fingerprint>_<secret>"))?;
     let base = server.trim().trim_end_matches('/');
+    check_transport(base, insecure_http)?;
     let http = reqwest::Client::new();
-    // The Server Key's fingerprint authenticates the Server: the update key is only pinned when the CA matches.
+    // A key for another Server is caught here. The CA is public, so this proves nothing about who answers: the
+    // update key's HMAC under the secret does that, and https protects the secret on the way (see ADR 0003).
     let ca = http.get(format!("{base}/api/v1/server-ca")).send().await?.error_for_status()?.text().await?;
-    let ca_der = ca_der(&ca)?;
-    use sha2::Digest;
     anyhow::ensure!(
-        hex::encode(sha2::Sha256::digest(&ca_der)) == fingerprint.0.to_lowercase(),
+        rcli_agent::ca_fingerprint(&ca)? == server_key.fingerprint,
         "the Server's CA fingerprint does not match the Server Key"
     );
     let update: serde_json::Value = http.get(format!("{base}/api/v1/update-key")).send().await?.error_for_status()?.json().await?;
     let update_key = update["update_key"].as_str().unwrap_or_default().to_owned();
-    check_pin(&fingerprint.1, &update_key, update["mac"].as_str())?;
+    check_pin(&server_key.secret, &update_key, update["mac"].as_str())?;
     let config = Config {
         server: base.to_owned(),
         server_key: key.trim().to_owned(),
@@ -120,12 +137,6 @@ fn check_pin(server_key_secret: &str, update_key_hex: &str, mac: Option<&str>) -
     Ok(())
 }
 
-fn ca_der(pem: &str) -> anyhow::Result<Vec<u8>> {
-    use base64::Engine;
-    let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
-    Ok(base64::engine::general_purpose::STANDARD.decode(body.trim())?)
-}
-
 /// A remembered Device Password and the Controller machine name it was saved with.
 #[derive(Serialize, Deserialize)]
 pub struct Remembered {
@@ -133,9 +144,52 @@ pub struct Remembered {
     pub controller: String,
 }
 
-/// The encrypted-file fallback of the Secret Store, under `<config dir>/passwords`.
+/// Remembered Device Passwords by Device ID, under `<config dir>/passwords` (0600 files). Each holds the password
+/// itself, or `IN_KEYCHAIN` when the OS keychain took it, so the Device IDs stay listable either way.
 fn password_store(dir: &Path) -> rcli_agent::secret_store::FileSecretStore {
     rcli_agent::secret_store::FileSecretStore::new(dir.join("passwords"))
+}
+
+const IN_KEYCHAIN: &str = "keychain";
+
+/// The OS keychain (macOS Keychain, Windows Credential Manager), used for the platform's own config directory. A
+/// config directory chosen with `--config-dir` / `RCLI_CONFIG_DIR` (tests, portable setups) keeps everything in it.
+// shortcut: Linux uses the file fallback only; Secret Service needs D-Bus and a desktop session, which headless
+// Controllers lack. Add it behind the same functions if desktop Linux Controllers ask for it.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod keychain {
+    fn entry(device: &str) -> keyring::Result<keyring::Entry> {
+        keyring::Entry::new("rcli", device)
+    }
+
+    pub fn set(device: &str, value: &str) -> anyhow::Result<()> {
+        Ok(entry(device)?.set_password(value)?)
+    }
+
+    pub fn get(device: &str) -> anyhow::Result<Option<String>> {
+        match entry(device)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn remove(device: &str) {
+        let _ = entry(device).and_then(|e| e.delete_credential());
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+mod keychain {
+    pub fn set(_device: &str, _value: &str) -> anyhow::Result<()> {
+        anyhow::bail!("no OS keychain here")
+    }
+
+    pub fn get(_device: &str) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+
+    pub fn remove(_device: &str) {}
 }
 
 /// A plaintext password file from before the passwords were encrypted; `remember`/`forget` delete it.
@@ -143,11 +197,13 @@ fn legacy_password_path(dir: &Path, device: &str) -> PathBuf {
     dir.join("passwords").join(format!("{device}.json"))
 }
 
-/// shortcut: the encrypted-file fallback only; a later ticket can put this in the OS keychain without changing callers.
+/// Remembers a Device Password: in the OS keychain for the platform's config directory when it takes it, else in
+/// the 0600 file.
 pub fn remember(dir: &Path, device: &str, password: &str, controller: &str) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(legacy_password_path(dir, device));
-    let remembered = Remembered { password: password.into(), controller: controller.into() };
-    password_store(dir).set(device, &serde_json::to_string(&remembered)?)
+    let remembered = serde_json::to_string(&Remembered { password: password.into(), controller: controller.into() })?;
+    let in_keychain = dir == platform_dir() && keychain::set(device, &remembered).is_ok();
+    password_store(dir).set(device, if in_keychain { IN_KEYCHAIN } else { &remembered })
 }
 
 fn root_path(dir: &Path, device: &str) -> PathBuf {
@@ -166,10 +222,11 @@ pub fn set_root(dir: &Path, device: &str, on: bool) -> anyhow::Result<()> {
 }
 
 pub fn remembered(dir: &Path, device: &str) -> anyhow::Result<Option<Remembered>> {
-    match password_store(dir).get(device)? {
-        Some(stored) => Ok(Some(serde_json::from_str(&stored)?)),
-        None => Ok(None),
-    }
+    let stored = match password_store(dir).get(device)? {
+        Some(stored) if stored == IN_KEYCHAIN => keychain::get(device)?,
+        stored => stored,
+    };
+    stored.map(|s| serde_json::from_str(&s)).transpose().map_err(Into::into)
 }
 
 /// Any Device ID with a remembered password (cheapest is fine: the Server scopes the answer anyway).
@@ -183,6 +240,9 @@ pub fn some_remembered(dir: &Path) -> Option<String> {
 
 pub fn forget(dir: &Path, device: &str) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(legacy_password_path(dir, device));
+    if password_store(dir).get(device)?.as_deref() == Some(IN_KEYCHAIN) {
+        keychain::remove(device);
+    }
     password_store(dir).remove(device)
 }
 
@@ -196,16 +256,25 @@ fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `GET .../devices/{id}` with the password headers: the check `rcli connect` makes before saving.
-pub async fn verify(server: &str, key: &str, device: &str, password: &str, controller: &str) -> anyhow::Result<()> {
-    let resp = reqwest::Client::new()
-        .get(format!("{}/api/v1/devices/{}", server.trim_end_matches('/'), device))
-        .header("x-rcli-server-key", key)
+/// Authenticates `req` as a password connection: the Server Key, the Device ID and its Device Password, and the
+/// Controller machine's name.
+pub fn password_connection(
+    req: reqwest::RequestBuilder,
+    key: &str,
+    device: &str,
+    password: &str,
+    controller: &str,
+) -> reqwest::RequestBuilder {
+    req.header("x-rcli-server-key", key)
         .header("x-rcli-device", device)
         .header("x-rcli-device-password", password)
         .header("x-rcli-controller", controller)
-        .send()
-        .await?;
+}
+
+/// `GET .../devices/{id}` with the password headers: the check `rcli connect` makes before saving.
+pub async fn verify(server: &str, key: &str, device: &str, password: &str, controller: &str) -> anyhow::Result<()> {
+    let req = reqwest::Client::new().get(format!("{}/api/v1/devices/{}", server.trim_end_matches('/'), device));
+    let resp = password_connection(req, key, device, password, controller).send().await?;
     let status = resp.status();
     if status.is_success() {
         return Ok(());
@@ -226,6 +295,19 @@ pub fn json(config: &Config) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_server_address_must_be_https_unless_it_is_this_machine() {
+        use super::check_transport as ok;
+        assert!(ok("https://server.example.com:8080", false).is_ok());
+        for local in ["http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"] {
+            assert!(ok(local, false).is_ok(), "{local}");
+        }
+        let err = ok("http://server.example.com:8080", false).unwrap_err().to_string();
+        assert!(err.contains("--insecure-http"), "{err}");
+        assert!(ok("http://server.example.com:8080", true).is_ok());
+        assert!(ok("ftp://server.example.com", true).is_err());
+    }
+
     #[test]
     fn a_remembered_password_is_encrypted_at_rest_and_round_trips() {
         let dir = std::env::temp_dir().join(format!("rcli-remembered-{}", std::process::id()));

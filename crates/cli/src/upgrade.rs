@@ -25,7 +25,7 @@ pub async fn run(config: &Config, path: &Path, socket: Option<PathBuf>) -> anyho
         Some(device) => format!("{url}?device={device}"),
         None => url,
     };
-    let resp = reqwest::Client::new().get(url).send().await?;
+    let resp = reqwest::Client::new().get(url).header("x-rcli-server-key", &config.server_key).send().await?;
     let status = resp.status();
     let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
     let version = header("x-rcli-version").unwrap_or_default();
@@ -65,14 +65,14 @@ fn replace(path: &Path, build: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn is_root() -> bool {
+pub(crate) fn is_root() -> bool {
     std::process::Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
 }
 
 /// This machine's Device ID when its Agent is running: `rcli upgrade` then fetches the build rolled out to it.
 #[cfg(unix)]
 async fn local_device(socket: &Path) -> Option<String> {
-    let info = rcli_agent::ipc::request(socket, "info").await.ok()?;
+    let info = rcli_agent::ipc::send(socket, &rcli_agent::ipc::Request::Info).await.ok()?;
     Some(info["device_id"].as_str()?.to_owned())
 }
 

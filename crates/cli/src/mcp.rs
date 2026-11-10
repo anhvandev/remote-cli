@@ -86,7 +86,7 @@ fn tools() -> Vec<Tool> {
             json!({
                 "device": device,
                 "command": { "type": "string" },
-                "as": { "type": "string", "enum": ["root"], "description": "Run as root/SYSTEM (admin only); default: the logged-in user" },
+                "as": { "type": "string", "enum": ["root"], "description": "Run as root/SYSTEM (the Device's root setting decides); default: the Device's Terminal User" },
                 "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "description": "default 60" },
             }),
             vec!["device", "command"],

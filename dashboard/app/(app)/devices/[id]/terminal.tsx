@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 
 type Line = { session?: string; as?: string; output?: string; exit_code?: number; error?: { code: string; message: string } };
 
-export function Terminal({ device, admin }: { device: string; admin: boolean }) {
+export function Terminal({ device }: { device: string }) {
   const [state, setState] = useState<"idle" | "connecting" | "open" | "ended">("idle");
   const [runAs, setRunAs] = useState<string>();
   const [asRoot, setAsRoot] = useState(false);
@@ -65,11 +65,7 @@ export function Terminal({ device, admin }: { device: string; admin: boolean }) 
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         term.dispose();
-        return ended(
-          body?.error?.code === "no_logged_in_user"
-            ? "Không ai đăng nhập trên Device; nhờ admin mở dưới quyền root."
-            : `Không mở được: ${body?.error?.message ?? res.statusText}`,
-        );
+        return ended(`Không mở được: ${body?.error?.message ?? res.statusText}`);
       }
       let session = "";
       let sent = Promise.resolve(); // keystrokes must arrive in order
@@ -123,14 +119,12 @@ export function Terminal({ device, admin }: { device: string; admin: boolean }) 
             </Button>
           ) : (
             <>
-              {admin && (
-                <div className="flex items-center gap-1.5">
-                  <Checkbox id="as-root" aria-label="as root" checked={asRoot} onCheckedChange={(v) => setAsRoot(v === true)} />
-                  <Label htmlFor="as-root" className="text-xs font-normal text-muted-foreground">
-                    as root
-                  </Label>
-                </div>
-              )}
+              <div className="flex items-center gap-1.5">
+                <Checkbox id="as-root" aria-label="as root" checked={asRoot} onCheckedChange={(v) => setAsRoot(v === true)} />
+                <Label htmlFor="as-root" className="text-xs font-normal text-muted-foreground">
+                  as root
+                </Label>
+              </div>
               <Button size="sm" onClick={open}>
                 Mở terminal
               </Button>

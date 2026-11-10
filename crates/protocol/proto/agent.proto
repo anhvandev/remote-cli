@@ -27,6 +27,8 @@ message AgentMessage {
     IdentityUpdated identity_updated = 22;
     // The person at the Device disconnected a Controller (`rcli agent disconnect`).
     DisconnectController disconnect_controller = 23;
+    // How the person at the Device answered an accept prompt, for the audit.
+    ConnectDecision connect_decision = 24;
   }
   reserved 30; // was a bare Resources delta; now ResourceSample
 }
@@ -205,7 +207,8 @@ message ActRequest {
   // Which display to observe: unset = the display last acted on.
   optional uint32 display = 4;
   bool all_displays = 5;
-  // Who asks; "unchanged" is relative to the last image this Controller got.
+  // Who asks, as in ExecRequest.controller: the accept gate admits it, and "unchanged" is relative to the last
+  // image this Controller got.
   string controller = 6;
   // `frames`: at most this many frames per display (the last one is always the final screen).
   uint32 max_frames = 8;
@@ -371,9 +374,7 @@ message ExecResult {
   // How root was decided, so the Server can audit the prompt answer: "always", "session", "accepted",
   // "rejected", "no_session", "never"; empty when root was not asked for.
   string root_decision = 8;
-  // How the connection was decided in `password+accept` mode, for the audit: "accepted", "rejected",
-  // "no_session"; empty when no accept prompt was shown.
-  string connect_decision = 9;
+  reserved 9; // was connect_decision; accept prompts are audited from ConnectDecision for every request kind
 }
 
 // --- Interactive shell (ticket 12) ---
@@ -389,6 +390,8 @@ message ShellOpen {
   uint32 rows = 6;
   // As in ExecRequest: who asks, named in a root prompt.
   string requester = 7;
+  // As in ExecRequest.controller: admitted by the accept gate, holds a root grant, ended by `disconnect`.
+  string controller = 8;
 }
 
 // `error` set = no session was started (code "no_logged_in_user", "root_denied", or a Platform failure).
@@ -452,6 +455,13 @@ message ControlIndicator {
   bool on = 1;
 }
 
+// A person at the Device answered (or could not be asked) whether `controller` may connect in `password+accept`
+// mode. `decision` is "accepted", "rejected" or "no_session". Sent whichever request kind showed the prompt.
+message ConnectDecision {
+  string controller = 1;
+  string decision = 2;
+}
+
 // The person at the Device disconnected a Controller (`rcli agent disconnect`). `controller` is the display name
 // `rcli agent info` lists (e.g. "dev-laptop (10.0.0.5)" or "alice (Dashboard)"). The Server releases that
 // Controller's Control Lock and ends its Live View and shells; the Controller may reconnect with the password.
@@ -486,6 +496,8 @@ enum PowerAction {
 message PowerRequest {
   uint64 request_id = 1;
   PowerAction action = 2;
+  // As in ExecRequest.controller: admitted by the accept gate.
+  string controller = 3;
 }
 
 // `error` set = the OS refused or the adapter failed.
@@ -516,6 +528,8 @@ message LiveOffer {
   optional uint32 display = 5;
   // A media channel (one data channel, no video) for ActRequest.media_session instead of a live stream.
   bool media = 26;
+  // As in ExecRequest.controller: admitted by the accept gate, and its streams end on `disconnect`.
+  string controller = 27;
 }
 
 // The Agent's SDP answer, or `error` (code "invalid_offer" for a bad offer).

@@ -62,14 +62,6 @@ impl Media {
         }
     }
 
-    /// Closes every media channel (e.g. when the person at the Device disconnects a Controller).
-    pub async fn close_all(&self) {
-        let channels: Vec<Channel> = self.channels.lock().unwrap().drain().map(|(_, c)| c).collect();
-        for c in channels {
-            let _ = c.pc.close().await;
-        }
-    }
-
     async fn start(self: &Arc<Self>, offer: LiveOffer) -> Result<String, Error> {
         fn fail(code: &'static str) -> impl Fn(webrtc::Error) -> Error {
             move |e| Error { code: code.into(), message: e.to_string() }
