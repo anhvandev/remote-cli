@@ -5,7 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 use clap::Args;
 use rcli_agent::{
     ipc,
-    secret_store::{FileSecretStore, SecretStore},
+    secret_store::SecretStore,
     settings::{AcceptMode, RootAccess},
     Credentials, ServerEndpoint,
 };
@@ -18,6 +18,68 @@ pub async fn serve(
     status: Option<Arc<ipc::Status>>,
 ) {
     rcli_agent::run(server, creds, platform, status).await;
+}
+
+/// Everything an Agent needs from an install: `rcli agent run` builds it from its arguments, the Windows service
+/// host (`windows_service.rs`) from the protected install config.
+pub struct DeviceConfig {
+    pub server: String,
+    pub key: String,
+    pub state_dir: PathBuf,
+    pub name: String,
+    /// Local IPC endpoint the GUI and `rcli agent …` use.
+    pub socket: PathBuf,
+    /// macOS: the socket the GUI session helpers connect to.
+    pub macos_session_socket: Option<PathBuf>,
+    /// Windows: the pipe the SYSTEM service accepts session helpers on.
+    pub session_pipe: Option<String>,
+}
+
+/// Starts the Agent: registers on first start, serves the local IPC and the Server connection.
+pub async fn serve_device(config: DeviceConfig) -> anyhow::Result<()> {
+    let server = ServerEndpoint { addr: config.server, server_key: config.key };
+    #[cfg(target_os = "linux")]
+    let platform = Arc::new(rcli_agent::linux::LinuxPlatform::new(config.name.clone())?);
+    #[cfg(target_os = "macos")]
+    let platform = Arc::new(rcli_agent::macos::MacPlatform::new(config.name.clone())?);
+    #[cfg(windows)]
+    let platform = Arc::new(rcli_agent::windows_platform::WindowsPlatform::new(config.name.clone())?);
+    // shortcut: no adapter for other OSes, so the binary runs on the FakePlatform there.
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    let platform = Arc::new(rcli_agent::platform::FakePlatform::new(config.name.clone()));
+    // The installed root daemon cannot reach the window server: session helpers do the screen work (ticket 24).
+    #[cfg(target_os = "macos")]
+    let platform: Arc<dyn rcli_agent::platform::Platform> = match &config.macos_session_socket {
+        Some(socket) => rcli_agent::macos_session::SessionPlatform::listen(platform, socket)?,
+        None => platform,
+    };
+    // The SYSTEM service is in session 0: a helper in the console session does the screen work (ticket 22).
+    #[cfg(windows)]
+    let platform: Arc<dyn rcli_agent::platform::Platform> = match &config.session_pipe {
+        Some(pipe) => rcli_agent::windows_session::SessionPlatform::listen_pipe(platform, pipe)?,
+        None => platform,
+    };
+    let path = config.state_dir.join("credentials.json");
+    let secrets = secret_store(&config.state_dir);
+    let creds = load_or_register(&server, platform.as_ref(), &config.state_dir, secrets.as_ref()).await?;
+    tracing::info!("Device {} connecting to {}", creds.device_id, server.addr);
+    let status = Arc::new(ipc::Status::new(&creds.device_id, server.clone(), secrets));
+    // Device Settings live beside the credentials, so `rcli agent …` changes survive a restart.
+    status.set_settings_dir(config.state_dir.clone());
+    // A new Device ID set at the Device must survive a restart.
+    status.set_credentials_path(path);
+    // Desktop build: prompts and control events open the GUI window (ticket 14).
+    #[cfg(feature = "gui")]
+    let platform = crate::gui::wrap(platform, status.prompts(), config.socket.clone());
+    let serve_status = status.clone();
+    let socket = config.socket;
+    tokio::spawn(async move {
+        if let Err(e) = ipc::serve(socket, serve_status).await {
+            tracing::error!("local IPC stopped: {e:#}");
+        }
+    });
+    serve(server, creds, platform, Some(status)).await;
+    Ok(())
 }
 
 #[derive(Args)]
@@ -64,56 +126,36 @@ pub async fn load_or_register(
     Ok(creds)
 }
 
-/// The Secret Store: the System Keychain for the root Agent on macOS; otherwise the encrypted-file fallback.
-// shortcut: tickets 16/22 add systemd-creds and DPAPI here.
+/// The Secret Store: DPAPI machine scope on Windows, the System Keychain for the root Agent on macOS; otherwise the
+/// encrypted-file fallback.
+// shortcut: `systemd-creds` (ticket 16) is not wired here yet; Linux keeps the file fallback.
 pub fn secret_store(state_dir: &std::path::Path) -> Arc<dyn SecretStore> {
     #[cfg(target_os = "macos")]
     if crate::upgrade::is_root() {
         return Arc::new(rcli_agent::secret_store::KeychainSecretStore::system());
     }
-    Arc::new(FileSecretStore::new(state_dir))
+    #[cfg(windows)]
+    return Arc::new(rcli_agent::secret_store::DpapiSecretStore::new(state_dir.join("secrets")));
+    #[cfg(not(windows))]
+    Arc::new(rcli_agent::secret_store::FileSecretStore::new(state_dir))
 }
 
 impl Run {
     pub async fn run(self) -> anyhow::Result<()> {
         let _ = tracing_subscriber::fmt().try_init();
-        let server = ServerEndpoint { addr: self.server, server_key: self.key };
-        #[cfg(target_os = "linux")]
-        let platform = Arc::new(rcli_agent::linux::LinuxPlatform::new(self.name)?);
-        #[cfg(target_os = "macos")]
-        let platform = Arc::new(rcli_agent::macos::MacPlatform::new(self.name)?);
-        #[cfg(windows)]
-        let platform = Arc::new(rcli_agent::windows_platform::WindowsPlatform::new(self.name)?);
-        // shortcut: no adapter for other OSes, so the binary runs on the FakePlatform there.
-        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-        let platform = Arc::new(rcli_agent::platform::FakePlatform::new(self.name));
-        // The installed root daemon cannot reach the window server: session helpers do the screen work (ticket 24).
-        #[cfg(target_os = "macos")]
-        let platform: Arc<dyn rcli_agent::platform::Platform> = match &self.session_socket {
-            Some(socket) => rcli_agent::macos_session::SessionPlatform::listen(platform, socket)?,
-            None => platform,
+        let config = DeviceConfig {
+            server: self.server,
+            key: self.key,
+            state_dir: self.state_dir,
+            name: self.name,
+            socket: self.socket.unwrap_or_else(ipc::default_socket),
+            #[cfg(target_os = "macos")]
+            macos_session_socket: self.session_socket,
+            #[cfg(not(target_os = "macos"))]
+            macos_session_socket: None,
+            session_pipe: None,
         };
-        let path = self.state_dir.join("credentials.json");
-        let secrets = secret_store(&self.state_dir);
-        let creds = load_or_register(&server, platform.as_ref(), &self.state_dir, secrets.as_ref()).await?;
-        tracing::info!("Device {} connecting to {}", creds.device_id, server.addr);
-        let status = Arc::new(ipc::Status::new(&creds.device_id, server.clone(), secrets));
-        // Device Settings live beside the credentials, so `rcli agent …` changes survive a restart.
-        status.set_settings_dir(self.state_dir.clone());
-        // A new Device ID set at the Device must survive a restart.
-        status.set_credentials_path(path);
-        let socket = self.socket.unwrap_or_else(ipc::default_socket);
-        // Desktop build: prompts and control events open the GUI window (ticket 14).
-        #[cfg(feature = "gui")]
-        let platform = crate::gui::wrap(platform, status.prompts(), socket.clone());
-        let serve_status = status.clone();
-        tokio::spawn(async move {
-            if let Err(e) = ipc::serve(socket, serve_status).await {
-                tracing::error!("local IPC stopped: {e:#}");
-            }
-        });
-        serve(server, creds, platform, Some(status)).await;
-        Ok(())
+        serve_device(config).await
     }
 }
 
@@ -251,7 +293,11 @@ pub enum UnlockPasswordCommand {
     Clear,
 }
 
-pub async fn run_unlock_password(command: UnlockPasswordCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+pub async fn run_unlock_password(
+    command: UnlockPasswordCommand,
+    socket: Option<PathBuf>,
+    out: &mut dyn std::io::Write,
+) -> anyhow::Result<()> {
     let socket = socket.unwrap_or_else(ipc::default_socket);
     let reply = match command {
         UnlockPasswordCommand::Set { password } => {
@@ -289,9 +335,7 @@ pub enum IdCommand {
 
 pub async fn run_id(command: IdCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     let reply = match command {
-        IdCommand::Set { device_id } => {
-            ipc::send(&socket.unwrap_or_else(ipc::default_socket), &ipc::Request::IdSet { device_id }).await?
-        }
+        IdCommand::Set { device_id } => ipc::send(&socket.unwrap_or_else(ipc::default_socket), &ipc::Request::IdSet { device_id }).await?,
     };
     writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
     Ok(())
@@ -315,10 +359,7 @@ pub enum NameCommand {
 
 pub async fn run_name(command: NameCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     let reply = match command {
-        NameCommand::Set { name } => {
-            ipc::send(&socket.unwrap_or_else(ipc::default_socket), &ipc::Request::NameSet { name })
-                .await?
-        }
+        NameCommand::Set { name } => ipc::send(&socket.unwrap_or_else(ipc::default_socket), &ipc::Request::NameSet { name }).await?,
     };
     writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
     Ok(())
@@ -343,8 +384,7 @@ pub enum TerminalUserCommand {
 pub async fn run_terminal_user(command: TerminalUserCommand, socket: Option<PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     let reply = match command {
         TerminalUserCommand::Set { user } => {
-            ipc::send(&socket.unwrap_or_else(ipc::default_socket), &ipc::Request::TerminalUserSet { user })
-                .await?
+            ipc::send(&socket.unwrap_or_else(ipc::default_socket), &ipc::Request::TerminalUserSet { user }).await?
         }
     };
     writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
@@ -553,10 +593,34 @@ impl Install {
         crate::macos_install::install(opts, out).await
     }
 
-    #[cfg(not(target_os = "macos"))]
+    /// Windows: copy the binary to `%ProgramFiles%\rcli`, register the Device and install the SYSTEM service.
+    #[cfg(windows)]
+    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        let terminal_user = self.terminal_user.unwrap_or_else(terminal_user);
+        let opts = crate::windows_install::Options {
+            server: self.server,
+            key: self.key,
+            name: self.name.unwrap_or_else(crate::windows_install::machine_name),
+            terminal_user,
+            allow_root: self.allow_root,
+        };
+        crate::windows_install::install(opts, out).await
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn run(self, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         anyhow::bail!("`rcli agent install` is not available on this OS yet")
     }
+}
+
+/// The logged-in interactive user: the person at the machine, not the elevated administrator account that may have
+/// been used for "Run as different user". Falls back to this process's account.
+#[cfg(windows)]
+fn terminal_user() -> String {
+    rcli_agent::windows_platform::active_user()
+        .or_else(|| std::env::var("USERNAME").ok())
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| "SYSTEM".into())
 }
 
 /// `sudo rcli agent uninstall`: remove the service and the Device's local data.
@@ -569,33 +633,71 @@ impl Uninstall {
         crate::macos_install::uninstall(out).await
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        crate::windows_install::uninstall(out).await
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn run(self, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         anyhow::bail!("`rcli agent uninstall` is not available on this OS yet")
     }
 }
 
-/// `rcli agent session` (macOS, started by the LaunchAgent): does the root daemon's screen work in this GUI session.
+/// `rcli agent session` (started by the service): does the daemon's screen work in this session.
 #[derive(Args)]
 pub struct Session {
-    /// The daemon's session socket.
+    /// macOS: the daemon's session socket.
     #[arg(long)]
-    socket: PathBuf,
+    socket: Option<PathBuf>,
+    /// Windows: the service's session pipe.
+    #[arg(long)]
+    pipe: Option<String>,
 }
 
 impl Session {
     #[cfg(target_os = "macos")]
     pub async fn run(self) -> anyhow::Result<()> {
         let _ = tracing_subscriber::fmt().try_init();
+        let socket = self.socket.ok_or_else(|| anyhow::anyhow!("--socket is required on macOS"))?;
         let platform = rcli_agent::macos::MacPlatform::new("session")?;
+        tokio::task::spawn_blocking(move || rcli_agent::macos_session::run_helper(&socket, &platform, &rcli_agent::macos::on_console))
+            .await?
+    }
+
+    #[cfg(windows)]
+    pub async fn run(self) -> anyhow::Result<()> {
+        let _ = tracing_subscriber::fmt().try_init();
+        let pipe = self.pipe.ok_or_else(|| anyhow::anyhow!("--pipe is required on Windows"))?;
+        let platform = rcli_agent::windows_platform::WindowsPlatform::new("session")?;
         tokio::task::spawn_blocking(move || {
-            rcli_agent::macos_session::run_helper(&self.socket, &platform, &rcli_agent::macos::on_console)
+            rcli_agent::windows_session::run_helper(&pipe, &platform, &rcli_agent::windows_session::on_console)
         })
         .await?
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     pub async fn run(self) -> anyhow::Result<()> {
-        anyhow::bail!("`rcli agent session` is macOS only")
+        anyhow::bail!("`rcli agent session` is macOS and Windows only")
+    }
+}
+
+/// `rcli agent service` (Windows, started by the SCM, hidden): hosts the Agent as a service.
+#[derive(Args)]
+pub struct Service {
+    /// The protected file `rcli agent install` wrote (Server Address, Server Key, Device name).
+    #[arg(long)]
+    config: PathBuf,
+}
+
+impl Service {
+    #[cfg(windows)]
+    pub fn run(self) -> anyhow::Result<()> {
+        crate::windows_service::run(&self.config)
+    }
+
+    #[cfg(not(windows))]
+    pub fn run(self) -> anyhow::Result<()> {
+        anyhow::bail!("`rcli agent service` is Windows only")
     }
 }

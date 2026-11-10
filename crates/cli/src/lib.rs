@@ -14,6 +14,12 @@ pub mod gui;
 #[cfg(target_os = "macos")]
 mod macos_install;
 pub mod media;
+// The layout, service definition and install/uninstall flow are portable through the `Run` seam, so their tests
+// also run off Windows; the real install is Windows-only.
+#[cfg(any(windows, test))]
+mod windows_install;
+#[cfg(windows)]
+mod windows_service;
 pub mod upgrade;
 
 use base64::Engine;
@@ -245,9 +251,12 @@ enum AgentCommand {
     Install(agent::Install),
     /// Remove the background service and this Device's local data (root).
     Uninstall(agent::Uninstall),
-    /// macOS: the GUI-session helper the LaunchAgent starts.
+    /// The session helper the service starts (macOS LaunchAgent, Windows service).
     #[command(hide = true)]
     Session(agent::Session),
+    /// Windows: the Agent hosted as a service, started by the Service Manager.
+    #[command(hide = true)]
+    Service(agent::Service),
     /// Show the Device ID and connection status (any local user).
     Info(agent::Info),
     /// The Device Password: show or change it (root only).
@@ -603,6 +612,7 @@ where
             AgentCommand::Install(install) => install.run(out).await,
             AgentCommand::Uninstall(uninstall) => uninstall.run(out).await,
             AgentCommand::Session(session) => session.run().await,
+            AgentCommand::Service(service) => service.run(),
             AgentCommand::Info(info) => info.run(out).await,
             AgentCommand::Password { command, socket } => agent::run_password(command, socket, out).await,
             AgentCommand::Id { command, socket } => agent::run_id(command, socket, out).await,
