@@ -145,7 +145,19 @@ pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, run: Run) -> a
     }
     let same = std::fs::canonicalize(exe).ok().is_some_and(|e| std::fs::canonicalize(&installed).ok().is_some_and(|i| i == e));
     if !same {
-        std::fs::copy(exe, &installed)?;
+        // A reinstall runs while the service still runs the installed exe: Windows refuses to overwrite a running
+        // image but allows renaming it, so move it aside, write the new one, and put the old one back on failure.
+        if installed.exists() {
+            let old = installed.with_extension("old.exe");
+            let _ = std::fs::remove_file(&old);
+            std::fs::rename(&installed, &old)?;
+            if let Err(e) = std::fs::copy(exe, &installed) {
+                let _ = std::fs::rename(&old, &installed);
+                return Err(e.into());
+            }
+        } else {
+            std::fs::copy(exe, &installed)?;
+        }
     }
 
     let state = layout.state_dir();
@@ -259,6 +271,8 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
         "run it from an elevated shell (Run as administrator): rcli agent install --server … --key …"
     );
     let layout = Layout::real();
+    // A reinstall must not destroy a working install when the new Server Key is wrong.
+    let reinstall = layout.config().exists();
     install_files(&layout, &opts, &std::env::current_exe()?, &mut system)?;
     // Register now, so the Device ID and password exist before the service starts and a wrong key is caught here.
     let server = rcli_agent::ServerEndpoint { addr: opts.server.clone(), server_key: opts.key.clone() };
@@ -267,13 +281,17 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     let creds = match crate::agent::load_or_register(&server, &platform, &layout.state_dir(), secrets.as_ref()).await {
         Ok(creds) => creds,
         Err(e) => {
-            // Leave no half-installed Device behind.
-            let _ = uninstall_files(&layout, &mut system);
+            // Leave no half-installed Device behind; on a reinstall keep the existing one and its credentials.
+            if !reinstall {
+                let _ = uninstall_files(&layout, &mut system);
+            }
             return Err(e.context("cannot register this Device; is the Server Address and Server Key right?"));
         }
     };
     if let Err(e) = install_service(&layout, &mut system) {
-        let _ = uninstall_files(&layout, &mut system);
+        if !reinstall {
+            let _ = uninstall_files(&layout, &mut system);
+        }
         return Err(e.context("cannot install the rcli-agent service"));
     }
     let password = secrets.get(rcli_agent::ipc::DEVICE_PASSWORD)?.unwrap_or_default();
@@ -435,6 +453,21 @@ mod tests {
         let config = ServiceConfig::new(&layout, &opts());
         std::fs::write(layout.config(), config.to_json().unwrap()).unwrap();
         assert_eq!(ServiceConfig::load(&layout.config()).unwrap(), config);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_reinstall_moves_the_running_binary_aside_before_writing_the_new_one() {
+        let (layout, root) = temp_layout("replace");
+        std::fs::create_dir_all(layout.exe().parent().unwrap()).unwrap();
+        std::fs::write(layout.exe(), b"running build").unwrap();
+        let download = root.join("download").join("rcli.exe");
+        std::fs::create_dir_all(download.parent().unwrap()).unwrap();
+        std::fs::write(&download, b"new build").unwrap();
+        let mut run = |_program: &str, _args: &[&str]| Ok(());
+        install_files(&layout, &opts(), &download, &mut run).unwrap();
+        assert_eq!(std::fs::read(layout.exe()).unwrap(), b"new build");
+        assert_eq!(std::fs::read(layout.exe().with_extension("old.exe")).unwrap(), b"running build");
         let _ = std::fs::remove_dir_all(root);
     }
 
