@@ -1,5 +1,6 @@
 //! Controller configuration: the per-user config directory holds the Server Address, the Server Key and the pinned
-//! update key; remembered Device Passwords live in the OS keychain (macOS, Windows), with a `0600` file fallback.
+//! update key; remembered Device Passwords live in the OS keychain (Keychain, Credential Manager, Secret Service),
+//! with a `0600` file fallback.
 
 use std::path::{Path, PathBuf};
 
@@ -85,28 +86,29 @@ pub fn hostname() -> String {
 }
 
 /// The Server Key's secret and Device Passwords travel in request headers, so the Controller API must be reached over
-/// https; plain http only to this machine itself, or when asked for with `--insecure-http`.
-fn check_transport(base: &str, insecure_http: bool) -> anyhow::Result<()> {
+/// https (it sits behind a TLS reverse proxy). The one exception is loopback, for a Server on this machine and for
+/// tests: nothing leaves the machine there. There is no flag to accept plain http to another host.
+fn check_transport(base: &str) -> anyhow::Result<()> {
     let url = reqwest::Url::parse(base).map_err(|e| anyhow::anyhow!("bad Server Address {base}: {e}"))?;
     let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']);
     let loopback = host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
     match url.scheme() {
         "https" => Ok(()),
-        "http" if loopback || insecure_http => Ok(()),
+        "http" if loopback => Ok(()),
         "http" => anyhow::bail!(
             "{base} is plain http: the Server Key and Device Passwords would travel unencrypted. Use the https:// \
-             address of your TLS reverse proxy, or pass --insecure-http to accept that"
+             address of your TLS reverse proxy"
         ),
         other => anyhow::bail!("the Server Address must start with https:// (not {other}://)"),
     }
 }
 
 /// `rcli setup`: saves the Server Address, Server Key and the pinned update key.
-pub async fn setup(dir: &Path, server: &str, key: &str, insecure_http: bool) -> anyhow::Result<String> {
+pub async fn setup(dir: &Path, server: &str, key: &str) -> anyhow::Result<String> {
     let server_key = rcli_protocol::server_key::ServerKey::parse(key)
         .ok_or_else(|| anyhow::anyhow!("the Server Key must look like rk_<fingerprint>_<secret>"))?;
     let base = server.trim().trim_end_matches('/');
-    check_transport(base, insecure_http)?;
+    check_transport(base)?;
     let http = reqwest::Client::new();
     // A key for another Server is caught here. The CA is public, so this proves nothing about who answers: the
     // update key's HMAC under the secret does that, and https protects the secret on the way (see ADR 0003).
@@ -152,11 +154,12 @@ fn password_store(dir: &Path) -> rcli_agent::secret_store::FileSecretStore {
 
 const IN_KEYCHAIN: &str = "keychain";
 
-/// The OS keychain (macOS Keychain, Windows Credential Manager), used for the platform's own config directory. A
-/// config directory chosen with `--config-dir` / `RCLI_CONFIG_DIR` (tests, portable setups) keeps everything in it.
-// shortcut: Linux uses the file fallback only; Secret Service needs D-Bus and a desktop session, which headless
-// Controllers lack. Add it behind the same functions if desktop Linux Controllers ask for it.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// The OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service), used for the platform's own
+/// config directory. A config directory chosen with `--config-dir` / `RCLI_CONFIG_DIR` (tests, portable setups)
+/// keeps everything in it.
+// The Linux Secret Service needs a D-Bus session, which a headless Controller or a cron job lacks: `remember`
+// falls back to the 0600 file when `set` fails, so such a machine keeps working without a keychain.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod keychain {
     fn entry(device: &str) -> keyring::Result<keyring::Entry> {
         keyring::Entry::new("rcli", device)
@@ -179,7 +182,7 @@ mod keychain {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 mod keychain {
     pub fn set(_device: &str, _value: &str) -> anyhow::Result<()> {
         anyhow::bail!("no OS keychain here")
@@ -298,14 +301,33 @@ mod tests {
     #[test]
     fn the_server_address_must_be_https_unless_it_is_this_machine() {
         use super::check_transport as ok;
-        assert!(ok("https://server.example.com:8080", false).is_ok());
+        assert!(ok("https://server.example.com:8080").is_ok());
+        // Loopback http is the one exception: a Server on this machine, and the tests.
         for local in ["http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"] {
-            assert!(ok(local, false).is_ok(), "{local}");
+            assert!(ok(local).is_ok(), "{local}");
         }
-        let err = ok("http://server.example.com:8080", false).unwrap_err().to_string();
-        assert!(err.contains("--insecure-http"), "{err}");
-        assert!(ok("http://server.example.com:8080", true).is_ok());
-        assert!(ok("ftp://server.example.com", true).is_err());
+        let err = ok("http://server.example.com:8080").unwrap_err().to_string();
+        assert!(err.contains("TLS reverse proxy"), "{err}");
+        assert!(!err.contains("--insecure-http"), "the flag is gone, so the error cannot offer it: {err}");
+        assert!(ok("ftp://server.example.com").is_err());
+    }
+
+    /// A headless Linux Controller has no Secret Service (no D-Bus session): the call must fail cleanly so
+    /// `remember` takes the 0600 file fallback, never panic or hang. A bogus bus address keeps this from touching a
+    /// real keychain, even when the suite runs on a desktop.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_linux_keychain_without_a_secret_service_fails_cleanly() {
+        let previous = std::env::var_os("DBUS_SESSION_BUS_ADDRESS");
+        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/rcli-test-bus");
+        let set = super::keychain::set("rcli-test-device", "value");
+        let get = super::keychain::get("rcli-test-device");
+        match previous {
+            Some(address) => std::env::set_var("DBUS_SESSION_BUS_ADDRESS", address),
+            None => std::env::remove_var("DBUS_SESSION_BUS_ADDRESS"),
+        }
+        assert!(set.is_err(), "storing must report the unreachable Secret Service: {set:?}");
+        assert!(get.as_ref().map_or(true, Option::is_none), "reading must not invent a password: {get:?}");
     }
 
     #[test]

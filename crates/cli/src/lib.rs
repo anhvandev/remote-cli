@@ -60,10 +60,6 @@ enum Command {
         /// Server Key, rk_<CA fingerprint>_<secret>.
         #[arg(long, hide_env_values = true)]
         key: String,
-        /// Accept an http:// Server Address on another machine. The Server Key and Device Passwords then travel
-        /// unencrypted; http:// to this machine itself is always accepted.
-        #[arg(long)]
-        insecure_http: bool,
     },
     /// Sign in with a Dashboard account and save the session (Admin commands need it).
     Login {
@@ -630,8 +626,8 @@ where
         };
     }
     let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);
-    if let Command::Setup { server, key, insecure_http } = &cli.command {
-        let text = config::setup(&dir, server, key, *insecure_http).await?;
+    if let Command::Setup { server, key } = &cli.command {
+        let text = config::setup(&dir, server, key).await?;
         let body = config::load_at(&dir)?.map(|c| config::json(&c)).unwrap_or(serde_json::Value::Null);
         return match cli.json {
             true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),

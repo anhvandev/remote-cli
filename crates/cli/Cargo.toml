@@ -27,9 +27,13 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 webrtc.workspace = true
 
-# Remembered Device Passwords go to the OS keychain where one is always there; Linux keeps the 0600 file fallback.
+# Remembered Device Passwords go to the OS keychain (Keychain, Credential Manager, Secret Service); when the
+# keychain is unreachable (a headless Linux Controller, a `--config-dir` test) they stay in the 0600 file fallback.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["sync-secret-service"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { workspace = true, features = ["windows-native"] }

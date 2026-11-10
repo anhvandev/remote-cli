@@ -20,10 +20,10 @@ rcli connect 123456789                                                  # hỏi 
 ```
 
 `rcli setup` lưu Server Address, Server Key và update key đã pin vào thư mục cấu hình của bạn. Server Address phải là
-`https://` (TLS ở reverse proxy); `http://` chỉ được nhận khi trỏ tới chính máy này (localhost), hoặc khi thêm
-`--insecure-http` (Server Key và Device Password khi đó đi không mã hoá). `rcli connect` kiểm tra Device ID + Device
-Password rồi nhớ mật khẩu (OS keychain trên macOS/Windows, file `0600` trên Linux hoặc khi dùng `--config-dir`), nên
-các lệnh sau chỉ cần Device ID.
+`https://` (TLS ở reverse proxy); `http://` chỉ được nhận khi trỏ tới chính máy này (localhost, cho test hoặc Server
+chạy cùng máy) — không có cờ nào cho phép http tới máy khác. `rcli connect` kiểm tra Device ID + Device Password rồi
+nhớ mật khẩu (OS keychain: Keychain trên macOS, Credential Manager trên Windows, Secret Service trên Linux; file
+`0600` khi không có keychain hoặc khi dùng `--config-dir`), nên các lệnh sau chỉ cần Device ID.
 `rcli forget <Device ID>` xoá mật khẩu đã nhớ. `RCLI_SERVER`/`RCLI_TOKEN` không còn dùng.
 
 Lệnh quản trị Server (`user`, `rollout`, `audit`, `server-key`, `server-address`, đổi tên/xoá Device, `lock force-release`)
