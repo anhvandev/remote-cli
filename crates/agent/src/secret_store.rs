@@ -82,6 +82,117 @@ impl SecretStore for FileSecretStore {
     }
 }
 
+/// Linux: Device secrets encrypted by `systemd-creds`, in files under the Agent's state directory.
+/// `--with-key=auto` uses the host key and the TPM when the machine has one, so a copied disk or backup does not
+/// reveal the secret; the credential name is bound into the key, and system-scope credentials are readable only by
+/// root (the root service's user binding). `systemd-creds` is not a link-time dependency, so a system without it
+/// falls back to `FileSecretStore` (chosen by `rcli agent install`).
+#[cfg(target_os = "linux")]
+pub struct SystemdCredsSecretStore {
+    dir: PathBuf,
+    run: std::sync::Arc<CredsRunner>,
+}
+
+#[cfg(target_os = "linux")]
+type CredsRunner = dyn Fn(&[&str], Option<&[u8]>) -> anyhow::Result<Vec<u8>> + Send + Sync;
+
+/// Whether this machine can encrypt with `systemd-creds` (systemd built with the credential support).
+pub fn systemd_creds_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("systemd-creds")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl SystemdCredsSecretStore {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self::with_runner(dir, |args, input| run_systemd_creds(args, input))
+    }
+
+    /// `new` with the command runner given (tests: no systemd, no TPM).
+    pub fn with_runner(
+        dir: impl Into<PathBuf>,
+        run: impl Fn(&[&str], Option<&[u8]>) -> anyhow::Result<Vec<u8>> + Send + Sync + 'static,
+    ) -> Self {
+        Self { dir: dir.into(), run: std::sync::Arc::new(run) }
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.dir.join(format!(".{name}.cred"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl SecretStore for SystemdCredsSecretStore {
+    // The secret is already encrypted by systemd-creds; the file only needs to be root-only.
+    fn get(&self, name: &str) -> anyhow::Result<Option<String>> {
+        let path = self.path(name);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let plain = (self.run)(&["decrypt", "--name", name, &path.display().to_string(), "-"], None)?;
+        Ok(Some(String::from_utf8(plain)?))
+    }
+
+    fn set(&self, name: &str, secret: &str) -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(&self.dir)?;
+        let path = self.path(name);
+        let temp = self.dir.join(format!(".{name}.new"));
+        let args = ["encrypt", "--name", name, "--with-key", "auto", "-", &temp.display().to_string()];
+        (self.run)(&args, Some(secret.as_bytes()))?;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::rename(&temp, &path)?;
+        Ok(())
+    }
+
+    fn remove(&self, name: &str) -> anyhow::Result<()> {
+        for path in [self.path(name), self.dir.join(format!(".{name}.new"))] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Runs `systemd-creds` (the real machine's runner): the ciphertext goes to the last argument, the plaintext comes
+/// from stdin when `input` is given, else stdout carries the plaintext.
+#[cfg(target_os = "linux")]
+fn run_systemd_creds(args: &[&str], input: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut command = Command::new("systemd-creds");
+    command.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
+    let mut child = command
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("systemd-creds is not available: {e}"))?;
+    if let Some(input) = input {
+        child.stdin.take().expect("piped stdin").write_all(input)?;
+    }
+    let out = child.wait_with_output()?;
+    anyhow::ensure!(
+        out.status.success(),
+        "systemd-creds {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(out.stdout)
+}
+
 /// macOS: generic passwords in a keychain file, by default the System Keychain, which only root can write.
 /// Never prompts: a call that would show a dialog fails instead (the root daemon has nobody to ask).
 // shortcut: items trust the binary that stored them, and an unsigned build is trusted by its hash, so after an
@@ -175,6 +286,39 @@ mod tests {
             assert_eq!(std::fs::metadata(dir.join(".secrets.key")).unwrap().permissions().mode() & 0o777, 0o600);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The systemd-creds store, with a runner that plays the CLI's role: it writes the ciphertext file named by
+    /// the last argument and reads it back for decrypt. The real `systemd-creds` is exercised on a real machine.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn systemd_creds_store_round_trips_with_the_name_bound_and_the_cli_never_leaks_the_secret() {
+        use std::sync::{Arc, Mutex};
+        let dir = std::env::temp_dir().join(format!("rcli-creds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let calls: Arc<Mutex<Vec<String>>> = Default::default();
+        let seen = calls.clone();
+        let store = SystemdCredsSecretStore::with_runner(&dir, move |args, input| {
+            seen.lock().unwrap().push(args.join(" "));
+            match args[0] {
+                "encrypt" => {
+                    std::fs::write(args.last().unwrap(), input.unwrap_or_default())?;
+                    Ok(vec![])
+                }
+                "decrypt" => Ok(std::fs::read(&args[args.len() - 2])?),
+                other => anyhow::bail!("unexpected systemd-creds {other}"),
+            }
+        });
+        assert!(store.get("device_password").unwrap().is_none());
+        store.set("device_password", "hunter2xyz").unwrap();
+        assert_eq!(store.get("device_password").unwrap().as_deref(), Some("hunter2xyz"));
+        store.remove("device_password").unwrap();
+        store.remove("device_password").unwrap();
+        assert!(store.get("device_password").unwrap().is_none());
+        let calls = calls.lock().unwrap();
+        assert!(calls.iter().any(|c| c.starts_with("encrypt --name device_password --with-key auto - ")), "{calls:?}");
+        assert!(calls.iter().any(|c| c.starts_with("decrypt --name device_password ")), "{calls:?}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Creates a throwaway keychain file (not the System Keychain). Ignored by default: creating a keychain adds it

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Debian: `purge` also removes the admin-written install configuration. A plain remove keeps it, like other
+# packages keep /etc files, so reinstalling does not need the Server Key again.
+set -e
+
+case "${1:-}" in
+    purge)
+        rm -f /etc/rcli/agent.conf
+        rmdir /etc/rcli 2>/dev/null || true
+        ;;
+esac

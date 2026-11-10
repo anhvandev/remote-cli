@@ -126,3 +126,41 @@ fn wait_for<T>(mut f: impl FnMut() -> Option<T>) -> T {
         std::thread::sleep(Duration::from_millis(200));
     }
 }
+
+/// Ticket 16: the installed root service cannot reach the user's or the greeter's X server, so `rcli agent
+/// session` runs in that session and answers screen calls over the daemon's socket. This runs the real Linux
+/// adapter on Xvfb and checks the peering: displays, capture and input reach the helper's X server.
+#[test]
+#[ignore = "needs an X server"]
+fn the_session_helper_forwards_screen_calls_to_the_x_server() {
+    use rcli_agent::{
+        platform::{FakePlatform, Platform},
+        session::{answer, SessionPlatform},
+    };
+    use std::sync::Arc;
+
+    let dir = std::env::temp_dir().join(format!("rcli-x11-session-{}-{}", std::process::id(), Instant::now().elapsed().as_nanos()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("session.sock");
+    let daemon = SessionPlatform::listen_with(Arc::new(FakePlatform::new("daemon")), &socket, |_| true).unwrap();
+    let screen = LinuxPlatform::new("session").unwrap();
+    let path = socket.clone();
+    std::thread::spawn(move || {
+        let stream = std::os::unix::net::UnixStream::connect(&path).unwrap();
+        let _ = answer(stream, &screen, &|| true);
+    });
+    let start = Instant::now();
+    while daemon.helper_count() == 0 {
+        assert!(start.elapsed() < Duration::from_secs(5), "the helper did not connect");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let displays = daemon.displays().unwrap();
+    assert!(!displays.is_empty(), "the helper saw no displays");
+    assert_eq!(displays.iter().filter(|d| d.primary).count(), 1, "{displays:?}");
+    let frame = daemon.capture(displays[0].index).unwrap();
+    assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
+    // XTest reaches the Xvfb screen (at the greeter too, unlike CGEvent on macOS).
+    daemon.input(Input::Key("a".into())).unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+}

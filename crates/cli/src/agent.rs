@@ -37,8 +37,8 @@ pub struct Run {
     /// Local IPC socket `rcli agent ...` clients use.
     #[arg(long, env = "RCLI_AGENT_SOCKET")]
     socket: Option<PathBuf>,
-    /// macOS root daemon: where the GUI session helpers (`rcli agent session`) connect to do the screen work.
-    #[cfg(target_os = "macos")]
+    /// Root daemon: where the console session helpers (`rcli agent session`) connect to do the screen work.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[arg(long)]
     session_socket: Option<PathBuf>,
 }
@@ -64,12 +64,16 @@ pub async fn load_or_register(
     Ok(creds)
 }
 
-/// The Secret Store: the System Keychain for the root Agent on macOS; otherwise the encrypted-file fallback.
-// shortcut: tickets 16/22 add systemd-creds and DPAPI here.
+/// The Secret Store: the System Keychain for the root Agent on macOS, `systemd-creds` for the root service on
+/// Linux (the encrypted-file fallback when it is not available); otherwise the encrypted-file fallback.
 pub fn secret_store(state_dir: &std::path::Path) -> Arc<dyn SecretStore> {
     #[cfg(target_os = "macos")]
     if crate::upgrade::is_root() {
         return Arc::new(rcli_agent::secret_store::KeychainSecretStore::system());
+    }
+    #[cfg(target_os = "linux")]
+    if crate::upgrade::is_root() && rcli_agent::secret_store::systemd_creds_available() {
+        return Arc::new(rcli_agent::secret_store::SystemdCredsSecretStore::new(state_dir));
     }
     Arc::new(FileSecretStore::new(state_dir))
 }
@@ -88,6 +92,11 @@ impl Run {
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let platform = Arc::new(rcli_agent::platform::FakePlatform::new(self.name));
         // The installed root daemon cannot reach the window server: session helpers do the screen work (ticket 24).
+        #[cfg(target_os = "linux")]
+        let platform: Arc<dyn rcli_agent::platform::Platform> = match &self.session_socket {
+            Some(socket) => rcli_agent::linux::session::console(platform, socket)?,
+            None => platform,
+        };
         #[cfg(target_os = "macos")]
         let platform: Arc<dyn rcli_agent::platform::Platform> = match &self.session_socket {
             Some(socket) => rcli_agent::macos_session::SessionPlatform::listen(platform, socket)?,
@@ -553,7 +562,26 @@ impl Install {
         crate::macos_install::install(opts, out).await
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        let name = match self.name {
+            Some(name) => name,
+            None => match std::fs::read_to_string("/proc/sys/kernel/hostname") {
+                Ok(name) if !name.trim().is_empty() => name.trim().to_owned(),
+                _ => String::from_utf8(std::process::Command::new("hostname").output()?.stdout)?.trim().to_owned(),
+            },
+        };
+        let opts = crate::linux_install::Options {
+            server: self.server,
+            key: self.key,
+            name,
+            terminal_user: self.terminal_user,
+            allow_root: self.allow_root,
+        };
+        crate::linux_install::install(opts, out).await
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub async fn run(self, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         anyhow::bail!("`rcli agent install` is not available on this OS yet")
     }
@@ -569,7 +597,12 @@ impl Uninstall {
         crate::macos_install::uninstall(out).await
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        crate::linux_install::uninstall(out).await
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub async fn run(self, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         anyhow::bail!("`rcli agent uninstall` is not available on this OS yet")
     }
@@ -594,8 +627,14 @@ impl Session {
         .await?
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     pub async fn run(self) -> anyhow::Result<()> {
-        anyhow::bail!("`rcli agent session` is macOS only")
+        let _ = tracing_subscriber::fmt().try_init();
+        tokio::task::spawn_blocking(move || rcli_agent::linux::session::run_helper(&self.socket)).await?
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub async fn run(self) -> anyhow::Result<()> {
+        anyhow::bail!("`rcli agent session` is not available on this OS yet")
     }
 }

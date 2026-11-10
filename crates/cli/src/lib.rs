@@ -11,6 +11,8 @@ pub mod agent;
 pub mod config;
 #[cfg(feature = "gui")]
 pub mod gui;
+#[cfg(target_os = "linux")]
+mod linux_install;
 #[cfg(target_os = "macos")]
 mod macos_install;
 pub mod media;
