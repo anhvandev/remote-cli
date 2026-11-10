@@ -58,6 +58,8 @@ pub fn events(input: &Input, displays: &[DisplayInfo]) -> anyhow::Result<Vec<Inp
             out.push(key(stroke.key, false));
             push_shift(&mut out, stroke.shift, false);
         }
+        // Windows-only: `SendSAS`, which has no Linux equivalent (the same as the X11 adapter).
+        Input::Sas => anyhow::bail!("Ctrl+Alt+Del is not available on Linux"),
     }
     Ok(out)
 }

@@ -113,6 +113,15 @@ impl Screen {
         }
     }
 
+    /// What the displays are without opening a portal session: inventory samples in the background and must not
+    /// trigger the one-time screen sharing dialog.
+    fn known_displays(&self) -> Vec<(String, DisplayInfo)> {
+        match self {
+            Self::X11(x11) => x11.with(|x| x.monitors()).unwrap_or_default(),
+            Self::Wayland(wayland) => wayland.known_displays().unwrap_or_default().into_iter().map(|d| (d.index.to_string(), d)).collect(),
+        }
+    }
+
     fn capture(&self, display: u32) -> anyhow::Result<Frame> {
         match self {
             Self::X11(x11) => x11.with(|x| x.capture(display)),
@@ -217,7 +226,7 @@ impl Platform for LinuxPlatform {
         s.system.refresh_memory();
         let cpus = s.system.cpus();
         let networks = Networks::new_with_refreshed_list()?;
-        let displays = self.screen.displays().unwrap_or_default();
+        let displays = self.screen.known_displays();
         Ok(Inventory {
             os: System::name().unwrap_or_else(|_| "Linux".into()),
             os_version: System::os_version().unwrap_or_default(),

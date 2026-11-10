@@ -347,6 +347,10 @@ impl ConsoleSession {
         // A helper publishes the portal's new restore token over the wire; the daemon owns the state dir.
         if let Some(store) = token.clone() {
             sessions.on_restore_token(move |token| {
+                // Every state poll carries the token; only a new one is worth a write.
+                if store.load().as_deref() == Some(token) {
+                    return;
+                }
                 if let Err(e) = store.save(token) {
                     tracing::warn!("cannot store the screen cast restore token: {e:#}");
                 }

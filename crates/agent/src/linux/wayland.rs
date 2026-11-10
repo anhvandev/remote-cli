@@ -36,6 +36,12 @@ impl Wayland {
         self.screen.lock().unwrap().as_ref().expect("just opened").displays()
     }
 
+    /// The displays only if the portal is already open: inventory runs in the background and must not pop the
+    /// one-time screen sharing dialog before a Controller asks for the screen.
+    pub fn known_displays(&self) -> Option<Vec<DisplayInfo>> {
+        self.screen.lock().unwrap().as_ref()?.displays().ok()
+    }
+
     pub fn capture(&self, display: u32) -> anyhow::Result<Frame> {
         self.ensure_screen()?;
         self.screen.lock().unwrap().as_ref().expect("just opened").capture(display)

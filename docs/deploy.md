@@ -219,6 +219,8 @@ qua XDG desktop portal (`org.freedesktop.portal.ScreenCast`) + PipeWire; input d
 - **Không có portal:** `rcli shot` trả lỗi rõ ràng ("screen capture on Wayland needs the XDG desktop portal's
   ScreenCast"). Cài `xdg-desktop-portal` + backend (`xdg-desktop-portal-gnome`, `-kde`, hoặc `-wlr` cho
   Sway/Hyprland) rồi `systemctl --user restart xdg-desktop-portal` (và service `rcli-agent.service`).
+- **Không có `/dev/uinput`:** input báo lỗi rõ ràng; nạp module một lần: `sudo modprobe uinput` và thêm
+  `uinput` vào `/etc/modules-load.d/uinput.conf` để có lại sau reboot.
 - **Nhiều màn hình:** chọn nhiều màn hình trong hộp thoại portal; mỗi màn hình là một stream. Chỉ các màn hình đã
   chọn mới chụp được (`rcli displays` liệt kê đúng chúng).
 - **Bàn phím:** gõ text theo layout US (mã phím evdev, không phụ thuộc XKB); layout khác chỉ đúng với các phím đơn
