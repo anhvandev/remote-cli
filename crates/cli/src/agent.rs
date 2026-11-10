@@ -83,7 +83,7 @@ impl Run {
         let _ = tracing_subscriber::fmt().try_init();
         let server = ServerEndpoint { addr: self.server, server_key: self.key };
         #[cfg(target_os = "linux")]
-        let platform = Arc::new(rcli_agent::linux::LinuxPlatform::new(self.name)?);
+        let platform = Arc::new(rcli_agent::linux::LinuxPlatform::with_state_dir(self.name, &self.state_dir)?);
         #[cfg(target_os = "macos")]
         let platform = Arc::new(rcli_agent::macos::MacPlatform::new(self.name)?);
         #[cfg(windows)]
@@ -94,7 +94,7 @@ impl Run {
         // The installed root daemon cannot reach the window server: session helpers do the screen work (ticket 24).
         #[cfg(target_os = "linux")]
         let platform: Arc<dyn rcli_agent::platform::Platform> = match &self.session_socket {
-            Some(socket) => rcli_agent::linux::session::console(platform, socket)?,
+            Some(socket) => rcli_agent::linux::session::console(platform, socket, Some(&self.state_dir))?,
             None => platform,
         };
         #[cfg(target_os = "macos")]

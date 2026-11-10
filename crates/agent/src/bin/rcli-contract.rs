@@ -11,11 +11,20 @@ const STEP_TIME: Duration = Duration::from_secs(20);
 fn main() {
     #[cfg(target_os = "linux")]
     let platform: std::sync::Arc<dyn rcli_agent::platform::Platform> = {
-        let linux = std::sync::Arc::new(rcli_agent::linux::LinuxPlatform::new("contract").expect("Linux adapter"));
-        // `--session-socket <path>` as root: the installed service, screen work done by the session helper.
+        use std::path::PathBuf;
         let args: Vec<String> = std::env::args().collect();
-        match args.iter().position(|a| a == "--session-socket").and_then(|i| args.get(i + 1)) {
-            Some(socket) => rcli_agent::linux::session::console(linux, socket.as_ref()).expect("session socket"),
+        let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+        // `--state-dir <path>`: where the portal restore token is kept, so a Wayland run does not ask again.
+        let state_dir: Option<PathBuf> = flag("--state-dir").map(PathBuf::from);
+        let linux = std::sync::Arc::new(match &state_dir {
+            Some(dir) => rcli_agent::linux::LinuxPlatform::with_state_dir("contract", dir),
+            None => rcli_agent::linux::LinuxPlatform::new("contract"),
+        }
+        .expect("Linux adapter"));
+        // `--session-socket <path>` as root: the installed service, screen work done by the session helper.
+        match flag("--session-socket") {
+            Some(socket) => rcli_agent::linux::session::console(linux, socket.as_ref(), state_dir.as_deref())
+                .expect("session socket"),
             None => linux,
         }
     };

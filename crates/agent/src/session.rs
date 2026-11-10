@@ -22,6 +22,9 @@ use crate::platform::{
     ShellOutput, UiElement,
 };
 
+/// Where a helper's new portal restore token goes (Linux Wayland); the daemon persists it.
+type TokenSink = dyn Fn(&str) + Send + Sync;
+
 /// What an input Action fails with at the login window: CGEvent input never reaches it (ADR 0001).
 pub const LOGIN_WINDOW_INPUT: &str = "input unavailable at macOS login window";
 
@@ -41,6 +44,8 @@ enum Request {
 pub struct SessionPlatform {
     inner: Arc<dyn Platform>,
     helpers: Arc<Mutex<Vec<Helper>>>,
+    /// Where a helper's new portal restore token goes (Linux Wayland); `None` on macOS.
+    token_sink: Mutex<Option<Arc<TokenSink>>>,
 }
 
 struct Helper {
@@ -98,7 +103,12 @@ impl SessionPlatform {
                 accepted.lock().unwrap().push(Helper { reader: BufReader::new(stream), writer });
             }
         });
-        Ok(Arc::new(Self { inner, helpers }))
+        Ok(Arc::new(Self { inner, helpers, token_sink: Mutex::new(None) }))
+    }
+
+    /// Called with every portal restore token a helper publishes, so the daemon can keep it in the state dir.
+    pub fn on_restore_token(&self, sink: impl Fn(&str) + Send + Sync + 'static) {
+        *self.token_sink.lock().unwrap() = Some(Arc::new(sink));
     }
 
     /// Forgets every connected helper: its session ended, or another session came to the console.
@@ -120,6 +130,11 @@ impl SessionPlatform {
         while i < helpers.len() {
             match helpers[i].call(&Request::State) {
                 Ok((v, _)) => {
+                    if let Some(token) = v["restore_token"].as_str().filter(|token| !token.is_empty()) {
+                        if let Some(sink) = self.token_sink.lock().unwrap().as_ref() {
+                            sink(token);
+                        }
+                    }
                     let state = serde_json::from_value(v["state"].clone()).ok();
                     if let (None, Some(state), true) = (&active, state, v["on_console"] == true) {
                         active = Some((i, state));
@@ -228,7 +243,20 @@ pub fn answer(stream: UnixStream, platform: &dyn Platform, on_console: &dyn Fn()
         let request: Request = serde_json::from_str(&line?)?;
         let mut bytes = vec![];
         let ok = match request {
-            Request::State => platform.session_state().map(|s| json!({ "state": s, "on_console": on_console() })),
+            Request::State => platform.session_state().map(|s| {
+                let reply = json!({ "state": s, "on_console": on_console() });
+                // Linux Wayland helpers publish the portal's restore token; the daemon owns the state dir.
+                #[cfg(target_os = "linux")]
+                let reply = match crate::linux::screencast::published_token() {
+                    Some(token) => {
+                        let mut reply = reply;
+                        reply["restore_token"] = json!(token);
+                        reply
+                    }
+                    None => reply,
+                };
+                reply
+            }),
             Request::Displays => platform.displays().map(|d| Value::Array(d.iter().map(display_json).collect())),
             Request::Capture { display } => platform.capture(display).map(|f| {
                 bytes = f.rgba;
@@ -336,6 +364,47 @@ mod tests {
         assert_eq!(screen.inputs(), vec![Input::Key("a".into())], "the key reached the lock screen session");
         daemon.power(PowerAction::Lock).unwrap();
         assert_eq!(screen.power_actions(), vec![PowerAction::Lock], "the session locked itself");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A helper written by hand, so the test can put a `restore_token` in its state reply.
+    fn daemon_with_raw_helper(reply: &'static str) -> (Arc<SessionPlatform>, std::path::PathBuf) {
+        // Short: a Unix socket path is limited to ~100 bytes.
+        let dir = std::path::PathBuf::from(format!("/tmp/rcli-tok-{}-{}", std::process::id(), rand_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("session.sock");
+        let daemon = SessionPlatform::listen_with(Arc::new(FakePlatform::new("mac")), &socket, |_| true).unwrap();
+        let path = socket.clone();
+        std::thread::spawn(move || {
+            let stream = UnixStream::connect(&path).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 0 {
+                writer.write_all(format!("{reply}\n").as_bytes()).unwrap();
+                line.clear();
+            }
+        });
+        for _ in 0..200 {
+            if daemon.helper_count() > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        (daemon, dir)
+    }
+
+    #[test]
+    fn a_helpers_restore_token_reaches_the_daemons_sink() {
+        let (daemon, dir) = daemon_with_raw_helper(
+            r#"{"ok":{"state":"LoggedIn","on_console":true,"restore_token":"tok-from-helper"},"len":0}"#,
+        );
+        let seen: Arc<Mutex<Vec<String>>> = Default::default();
+        let sink = seen.clone();
+        daemon.on_restore_token(move |token| sink.lock().unwrap().push(token.to_owned()));
+        // Any helper call polls the state first, which is where the token rides along.
+        assert_eq!(daemon.session_state().unwrap(), SessionState::LoggedIn);
+        assert_eq!(seen.lock().unwrap().as_slice(), ["tok-from-helper"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

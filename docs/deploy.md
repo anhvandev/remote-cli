@@ -133,13 +133,14 @@ Server không giữ private key và không tự kiểm chữ ký; chính Agent k
 
 ## 10. Cài Agent trên Linux (systemd, greeter, deb/rpm)
 
-Agent chạy như một service root `rcli-agent.service`; service tự tìm phiên X11 trên seat0 (màn hình khoá hoặc
-greeter của GDM/LightDM/SDDM) và chạy helper `rcli agent session` dưới đúng user của phiên đó. Nhờ vậy Controller
-xem và điều khiển được cả màn hình khoá lẫn màn hình đăng nhập, không chỉ phiên đã đăng nhập.
+Agent chạy như một service root `rcli-agent.service`; service tự tìm phiên đồ hoạ trên seat0 (X11 hoặc Wayland;
+màn hình khoá hoặc greeter của GDM/LightDM/SDDM) và chạy helper `rcli agent session` dưới đúng user của phiên đó.
+Nhờ vậy Controller xem và điều khiển được cả màn hình khoá lẫn màn hình đăng nhập, không chỉ phiên đã đăng nhập.
+Trên Wayland, màn hình đăng nhập của GDM không có portal nên không chụp được — xem mục "Wayland" bên dưới.
 
-**Yêu cầu:** systemd; một phiên **X11** (Xorg). Greeter chạy Wayland (mặc định của GDM trên một số bản) không
-hiển thị được — xem mục "Wayland" bên dưới. Nên cài `tesseract-ocr` (OCR) và `xauth`; `systemd-creds` có sẵn
-trong systemd hiện đại, dùng TPM nếu máy có.
+**Yêu cầu:** systemd; một phiên đồ hoạ **X11 (Xorg) hoặc Wayland** (GNOME, KDE, wlroots). X11 cần `xauth`; Wayland
+cần `xdg-desktop-portal` và một backend ScreenCast (`xdg-desktop-portal-gnome`/`-kde`/`-wlr`) đang chạy trong phiên
+người dùng. Nên cài `tesseract-ocr` (OCR); `systemd-creds` có sẵn trong systemd hiện đại, dùng TPM nếu máy có.
 
 ### 10.1. Cài trực tiếp (không cần package)
 
@@ -191,7 +192,7 @@ Các bước kiểm tra bằng mắt (chạy từ máy Controller):
 4. `rcli exec <Device ID> -- whoami` → đúng Terminal User; `rcli shell <Device ID>` mở được shell.
 5. `rcli metrics <Device ID> history` vẫn có dữ liệu (daemon tự lấy metrics, không phụ thuộc helper).
 
-Chạy contract suite trên chính máy đó (cần root và một X server X11):
+Chạy contract suite trên chính máy đó (cần root; X11 cần một X server, Wayland cần phiên có portal):
 
 ```bash
 cargo build --release -p rcli-agent --bin rcli-contract
@@ -200,17 +201,33 @@ sudo ./target/release/rcli-contract --session-socket /run/rcli/session.sock
 # → bảng markdown: mọi ô ở cột "Logged in", "Lock screen", "Login screen" phải ✅
 ```
 
-Không có `--session-socket` thì suite chạy trực tiếp trên `$DISPLAY` của người gọi (dùng để kiểm tra riêng phiên
-đăng nhập). Làm lần lượt: chạy suite ở phiên đăng nhập, ở màn hình khoá, rồi ở greeter.
+Không có `--session-socket` thì suite chạy trực tiếp trên phiên của người gọi (dùng để kiểm tra riêng phiên
+đăng nhập, ví dụ `rcli-contract --state-dir ~/.local/state/rcli-contract` trên Wayland để giữ token portal). Trên
+Wayland, cột "Login screen" sẽ ❌ vì greeter không có portal — đó là giới hạn đã biết, ghi lại kết quả vào ticket.
+Làm lần lượt: chạy suite ở phiên đăng nhập, ở màn hình khoá, rồi ở greeter.
 
 ### 10.3. Wayland
 
-Chỉ X11 được điều khiển. Nếu greeter là Wayland:
+Phiên người dùng Wayland (GNOME, KDE, Sway/Hyprland) được điều khiển, không cần chuyển sang Xorg. Chụp màn hình đi
+qua XDG desktop portal (`org.freedesktop.portal.ScreenCast`) + PipeWire; input do service root ghi vào
+`/dev/uinput` (con trỏ tuyệt đối + bàn phím ảo).
 
-- GDM: bỏ comment/đặt `WaylandEnable=false` trong `/etc/gdm3/custom.conf`, `sudo systemctl restart gdm`.
-- LightDM/SDDM: chọn phiên "Xorg" trong menu đăng nhập (hoặc cấu hình greeter chạy Xorg).
-- Phiên người dùng Wayland (GNOME Wayland): chọn "GNOME on Xorg" ở màn hình đăng nhập. Khi đó `rcli shot` trả lỗi rõ
-  ràng "no X11 session on the console" thay vì treo.
+- **Phê duyệt một lần:** lần đầu Agent chụp màn hình, một hộp thoại chia sẻ màn hình hiện ở máy đó. Chọn màn hình
+  (có thể chọn nhiều) rồi bấm **Share**. Portal trả về một *restore token*, Agent lưu ở
+  `/var/lib/rcli/screencast.restore_token` (0600, chỉ root đọc), nên các lần kết nối sau và sau khi khởi động lại
+  không hỏi lại. Token được truyền cho helper qua biến môi trường `RCLI_SCREENCAST_RESTORE_TOKEN`.
+- **Không có portal:** `rcli shot` trả lỗi rõ ràng ("screen capture on Wayland needs the XDG desktop portal's
+  ScreenCast"). Cài `xdg-desktop-portal` + backend (`xdg-desktop-portal-gnome`, `-kde`, hoặc `-wlr` cho
+  Sway/Hyprland) rồi `systemctl --user restart xdg-desktop-portal` (và service `rcli-agent.service`).
+- **Nhiều màn hình:** chọn nhiều màn hình trong hộp thoại portal; mỗi màn hình là một stream. Chỉ các màn hình đã
+  chọn mới chụp được (`rcli displays` liệt kê đúng chúng).
+- **Bàn phím:** gõ text theo layout US (mã phím evdev, không phụ thuộc XKB); layout khác chỉ đúng với các phím đơn
+  nếu compositor đang dùng layout đó. Phím tên (`enter`, `ctrl`, `f5`, …) dùng mã evdev.
+- **Màn hình khoá:** vẫn là phiên Wayland đang chạy, nên chụp/điều khiển qua cùng stream. Nếu compositor dừng
+  stream khi khoá, `rcli shot` báo "the screen cast stream sent no frame" — ghi lại hành vi của từng compositor.
+- **Greeter Wayland (GDM):** không có portal, nên `rcli shot` báo "screen capture at a Wayland login screen is not
+  available". Muốn điều khiển màn hình đăng nhập, đặt `WaylandEnable=false` trong `/etc/gdm3/custom.conf` và
+  `sudo systemctl restart gdm` như trước (khi đó greeter chạy Xorg và dùng đường X11).
 
 ### 10.4. Deb/RPM
 
