@@ -161,7 +161,10 @@ pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, run: Run) -> a
     if opts.allow_root {
         settings.root = RootAccess::Always;
     }
-    settings.save(&state)
+    settings.save(&state)?;
+    // No secret here: `uninstall` needs the Server Address to remove this Device, and the Server Key is in the
+    // root-only daemon plist.
+    write(&state.join("install.json"), &serde_json::json!({ "server": opts.server }).to_string(), 0o600)
 }
 
 /// Writes both launchd jobs and starts them: the daemon now, the session helper in the console user's session now
@@ -231,12 +234,24 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     Ok(())
 }
 
-/// `sudo rcli agent uninstall`: stops and removes both jobs, the app and the Device's local data and secrets.
-// shortcut: the Device stays on the Server (Offline) until an Admin deletes it (`rcli device delete`); the Agent has
-// no self-removal message yet (ticket 16 adds it for every OS).
+/// `sudo rcli agent uninstall`: removes the Device from the Server, then stops and removes both jobs, the app and
+/// the Device's local data and secrets. An unreachable Server is a warning, not a failure: the local install must
+/// still go away, and an Admin can delete the Device from the Dashboard.
 pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli agent uninstall");
     let layout = Layout { root: "/".into() };
+    let server = std::fs::read_to_string(layout.state_dir().join("install.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|v| v["server"].as_str().map(str::to_owned));
+    let creds = std::fs::read(layout.state_dir().join("credentials.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<rcli_agent::Credentials>(&bytes).ok());
+    if let (Some(server), Some(creds)) = (server, creds) {
+        if let Err(e) = rcli_agent::unregister_at(&server, &creds).await {
+            writeln!(out, "warning: could not remove the Device from the Server: {e:#}")?;
+        }
+    }
     let secrets = crate::agent::secret_store(&layout.state_dir());
     for name in [rcli_agent::ipc::DEVICE_PASSWORD, rcli_agent::ipc::UNLOCK_PASSWORD] {
         if let Err(e) = secrets.remove(name) {
@@ -291,6 +306,8 @@ mod tests {
         assert!(info.contains("<string>dev.remotecli.rcli</string>") && !info.contains("{{VERSION}}"));
         assert_eq!(std::fs::read_link(root.join("usr/local/bin/rcli")).unwrap(), app.join("Contents/MacOS/rcli"));
         let settings = DeviceSettings::load(&root.join("Library/Application Support/rcli"));
+        let install = std::fs::read_to_string(root.join("Library/Application Support/rcli/install.json")).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&install).unwrap()["server"], "rcli.example.com:7443");
         assert_eq!((settings.terminal_user.as_str(), settings.root), ("alice", RootAccess::Always));
 
         use std::os::unix::fs::PermissionsExt;
