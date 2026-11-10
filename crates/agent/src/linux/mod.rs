@@ -3,6 +3,7 @@
 //! root/accept prompts are the GUI window (ticket 14), which wraps this platform on a desktop build.
 
 mod atspi;
+pub mod session;
 mod shell;
 mod x11;
 

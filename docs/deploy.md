@@ -130,3 +130,138 @@ Server không giữ private key và không tự kiểm chữ ký; chính Agent k
 - Khoá đăng nhập chỉ tính theo user, chưa theo IP.
 - `rcli exec` không giới hạn kích thước output; lệnh có timeout dài giữ HTTP request mở tới 1 giờ.
 - Không có HA/cluster (ngoài phạm vi spec).
+
+## 10. Cài Agent trên Linux (systemd, greeter, deb/rpm)
+
+Agent chạy như một service root `rcli-agent.service`; service tự tìm phiên X11 trên seat0 (màn hình khoá hoặc
+greeter của GDM/LightDM/SDDM) và chạy helper `rcli agent session` dưới đúng user của phiên đó. Nhờ vậy Controller
+xem và điều khiển được cả màn hình khoá lẫn màn hình đăng nhập, không chỉ phiên đã đăng nhập.
+
+**Yêu cầu:** systemd; một phiên **X11** (Xorg). Greeter chạy Wayland (mặc định của GDM trên một số bản) không
+hiển thị được — xem mục "Wayland" bên dưới. Nên cài `tesseract-ocr` (OCR) và `xauth`; `systemd-creds` có sẵn
+trong systemd hiện đại, dùng TPM nếu máy có.
+
+### 10.1. Cài trực tiếp (không cần package)
+
+```bash
+# Trên máy Linux, với binary rcli đã build/tải về:
+sudo install -m 755 ./rcli /usr/local/bin/rcli
+sudo rcli agent install --server vps.example.com:8443 --key rk_<fingerprint>_<secret>   # thêm --allow-root nếu muốn
+```
+
+Kết quả mong đợi:
+
+```
+installed rcli-agent.service and /usr/local/lib/rcli/rcli
+Device ID: 123456789
+Device Password: abcdEFGH12
+```
+
+- Sai Server Key (sai secret hoặc sai fingerprint CA) → lệnh **thất bại ngay**, không tạo Device, không cài service.
+- Terminal User mặc định là `SUDO_USER` (người chạy `sudo`), ghi vào `/var/lib/rcli/settings.json`. Đổi bằng
+  `sudo rcli agent terminal-user set <user>` sau khi service chạy.
+- `--allow-root` đặt Device Setting `root=always`; mặc định là `ask`.
+- Server Key nằm trong `/etc/rcli/agent.env` (mode `0600`, chỉ root đọc), không nằm trên command line của service.
+
+Kiểm tra ngay:
+
+```bash
+systemctl status rcli-agent.service --no-pager   # active (running)
+rcli agent info                                  # Device ID + "connected"
+sudo journalctl -u rcli-agent.service -n 30 --no-pager
+```
+
+### 10.2. Reboot, greeter, lock screen, unlock
+
+```bash
+sudo reboot
+# sau khi máy lên:
+systemctl is-enabled rcli-agent.service && systemctl is-active rcli-agent.service   # enabled, active
+rcli agent info                                                                     # connected
+```
+
+Các bước kiểm tra bằng mắt (chạy từ máy Controller):
+
+1. Đăng nhập desktop, `rcli shot <Device ID> --out /tmp/shot` → thấy màn hình desktop.
+2. Khoá màn hình (`loginctl lock-session` tại máy đó, hoặc `rcli power <Device ID> lock`), rồi `rcli shot` → thấy
+   màn hình khoá. `rcli act <Device ID> key enter` và `rcli unlock <Device ID>` (sau `sudo rcli agent unlock-password set`
+   tại máy đó) → mở khoá được.
+3. Đăng xuất ra greeter (GDM/LightDM/SDDM), `rcli shot` → thấy màn hình đăng nhập; `rcli act` gõ được vào ô mật khẩu;
+   `rcli unlock` gõ mật khẩu + Enter để đăng nhập.
+4. `rcli exec <Device ID> -- whoami` → đúng Terminal User; `rcli shell <Device ID>` mở được shell.
+5. `rcli metrics <Device ID> history` vẫn có dữ liệu (daemon tự lấy metrics, không phụ thuộc helper).
+
+Chạy contract suite trên chính máy đó (cần root và một X server X11):
+
+```bash
+cargo build --release -p rcli-agent --bin rcli-contract
+sudo ./target/release/rcli-contract --session-socket /run/rcli/session.sock
+# làm theo hướng dẫn trên terminal (focus text field, lock, unlock, logout, login, unlock)
+# → bảng markdown: mọi ô ở cột "Logged in", "Lock screen", "Login screen" phải ✅
+```
+
+Không có `--session-socket` thì suite chạy trực tiếp trên `$DISPLAY` của người gọi (dùng để kiểm tra riêng phiên
+đăng nhập). Làm lần lượt: chạy suite ở phiên đăng nhập, ở màn hình khoá, rồi ở greeter.
+
+### 10.3. Wayland
+
+Chỉ X11 được điều khiển. Nếu greeter là Wayland:
+
+- GDM: bỏ comment/đặt `WaylandEnable=false` trong `/etc/gdm3/custom.conf`, `sudo systemctl restart gdm`.
+- LightDM/SDDM: chọn phiên "Xorg" trong menu đăng nhập (hoặc cấu hình greeter chạy Xorg).
+- Phiên người dùng Wayland (GNOME Wayland): chọn "GNOME on Xorg" ở màn hình đăng nhập. Khi đó `rcli shot` trả lỗi rõ
+  ràng "no X11 session on the console" thay vì treo.
+
+### 10.4. Deb/RPM
+
+Build trên Linux (cần `dpkg-dev` hoặc `rpm-build`):
+
+```bash
+packaging/linux/build-deb.sh     # → packaging/linux/out/rcli_0.1.0_amd64.deb
+packaging/linux/build-rpm.sh     # → packaging/linux/out/rcli-0.1.0-1.x86_64.rpm
+```
+
+Cài package (package chỉ đặt `/usr/bin/rcli`; hook `postinst` chạy đúng một lệnh `rcli agent install`):
+
+```bash
+sudo install -m 600 /dev/null /etc/rcli/agent.conf
+sudo tee /etc/rcli/agent.conf >/dev/null <<'CONF'
+RCLI_SERVER=vps.example.com:8443
+RCLI_SERVER_KEY=rk_<fingerprint>_<secret>
+# tuỳ chọn:
+# RCLI_TERMINAL_USER=alice
+# RCLI_ALLOW_ROOT=1
+CONF
+sudo apt install ./rcli_0.1.0_amd64.deb      # hoặc: sudo dnf install ./rcli-0.1.0-1.x86_64.rpm
+systemctl status rcli-agent.service --no-pager
+```
+
+Nếu chưa có `/etc/rcli/agent.conf`, package vẫn cài nhưng in hướng dẫn; sau đó chạy tay:
+
+```bash
+sudo rcli agent install --server "$(sed -n 's/^RCLI_SERVER=//p' /etc/rcli/agent.conf)" \
+     --key "$(sed -n 's/^RCLI_SERVER_KEY=//p' /etc/rcli/agent.conf)"
+```
+
+Gỡ package: hook `prerm` gọi `rcli agent uninstall` trước, nên Device bị xoá khỏi Server và dữ liệu cục bộ biến mất:
+
+```bash
+sudo apt remove rcli        # hoặc sudo dnf remove rcli
+sudo apt purge rcli         # Debian: xoá luôn /etc/rcli/agent.conf
+```
+
+### 10.5. Nâng cấp
+
+- Có package mới: `sudo apt install ./rcli_<version>_<arch>.deb` → `postinst` chép binary mới vào
+  `/usr/local/lib/rcli/rcli` và `systemctl restart rcli-agent.service` (service chạy binary mới, Device ID giữ nguyên).
+- Không dùng package: `sudo rcli upgrade` thay binary đang chạy và service (build do Server rollout, có chữ ký).
+- Sau khi nâng cấp: `systemctl is-active rcli-agent.service` = active, `rcli agent info` = connected.
+
+### 10.6. Headless server
+
+Cùng một lệnh `sudo rcli agent install --server … --key …`; không có DISPLAY cũng không sao:
+
+- service vẫn chạy và tự kết nối lại sau reboot;
+- `rcli metrics`, `rcli exec`, `rcli shell`, `rcli power` hoạt động;
+- `rcli shot`, `rcli act`, Live View trả lỗi "no X11 session on the console" (Device không có màn hình);
+- `systemctl status rcli-agent.service` và `journalctl -u rcli-agent.service` là nơi xem log.

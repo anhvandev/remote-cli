@@ -17,6 +17,8 @@ mod marks;
 mod media;
 mod observer;
 pub mod platform;
+#[cfg(unix)]
+pub mod session;
 pub mod secret_store;
 pub mod settings;
 #[cfg(windows)]
@@ -37,7 +39,7 @@ use rcli_protocol::{
         agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, ConnectDecision, DisconnectController,
         DisplayList, Error, ExecRequest, ExecResult, Heartbeat, IdentityUpdate, IdentityUpdated, LiveAnswer,
         PowerResult, ProcessList, RegisterRequest, ResourceSample, Resources, ServerMessage, ShellExit, ShellOpen,
-        ShellOpened, ShellOutput, UpdateFailed, WakeResult,
+        ShellOpened, ShellOutput, UnregisterRequest, UpdateFailed, WakeResult,
     },
     server_key::ServerKey,
     Conn,
@@ -155,12 +157,18 @@ pub fn ca_fingerprint(ca_pem: &str) -> anyhow::Result<String> {
 }
 
 fn config(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow::Result<ClientConfig> {
+    config_pinned(&parse_server_key(&server.server_key)?.fingerprint, creds)
+}
+
+/// `config` with the pinned CA fingerprint given directly: an uninstall may not have the Server Key any more, but
+/// it still has the CA the Device pinned at registration.
+fn config_pinned(fingerprint: &str, creds: Option<&Credentials>) -> anyhow::Result<ClientConfig> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let provider = rustls::crypto::CryptoProvider::get_default()
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("no crypto provider"))?;
     let builder = ClientConfig::builder().dangerous().with_custom_certificate_verifier(std::sync::Arc::new(PinnedCa {
-        fingerprint: parse_server_key(&server.server_key)?.fingerprint,
+        fingerprint: fingerprint.to_owned(),
         provider,
     }));
     Ok(match creds {
@@ -174,9 +182,13 @@ fn config(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow::Resul
 
 async fn connect(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow::Result<Conn<TlsStream<TcpStream>>> {
     let config = config(server, creds)?;
-    let host = server.addr.rsplit_once(':').map_or(server.addr.as_str(), |(h, _)| h);
+    connect_with_config(&server.addr, config).await
+}
+
+async fn connect_with_config(addr: &str, config: ClientConfig) -> anyhow::Result<Conn<TlsStream<TcpStream>>> {
+    let host = addr.rsplit_once(':').map_or(addr, |(h, _)| h);
     let name = ServerName::try_from(host.trim_matches(['[', ']']).to_owned())?;
-    let tcp = TcpStream::connect(&server.addr).await?;
+    let tcp = TcpStream::connect(addr).await?;
     let tls = TlsConnector::from(Arc::new(config)).connect(name, tcp).await?;
     Ok(Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME))
 }
@@ -211,6 +223,24 @@ pub async fn register(server: &ServerEndpoint, platform: &dyn Platform) -> anyho
         Some(server_message::Msg::Error(e)) => anyhow::bail!("registration rejected: {}: {}", e.code, e.message),
         Some(_) | None => anyhow::bail!("server closed the connection during registration"),
     }
+}
+
+/// Removes this Device from the Server, what `sudo rcli agent uninstall` does before it deletes the local
+/// credentials. It authenticates with the Device's certificate, not the Server Key: the Device may already have
+/// forgotten the key, and the Server only needs to know which Device asks.
+pub async fn unregister(server: &ServerEndpoint, creds: &Credentials) -> anyhow::Result<()> {
+    unregister_at(&server.addr, creds).await
+}
+
+/// `unregister` at a bare `host:port`, trusted through the CA the Device pinned at registration.
+pub async fn unregister_at(addr: &str, creds: &Credentials) -> anyhow::Result<()> {
+    let fingerprint = hex::encode(sha256(&creds.ca_der));
+    let config = config_pinned(&fingerprint, Some(creds))?;
+    let mut conn = connect_with_config(addr, config).await?;
+    conn.send(&AgentMessage { msg: Some(agent_message::Msg::Unregister(UnregisterRequest {})) }).await?;
+    // The Server deletes the Device and closes the connection, whether or not the row still existed.
+    let _ = tokio::time::timeout(Duration::from_secs(5), conn.recv::<ServerMessage>()).await;
+    Ok(())
 }
 
 /// Keeps a connection to the Server open forever, reconnecting with backoff.

@@ -10,8 +10,15 @@ const STEP_TIME: Duration = Duration::from_secs(20);
 
 fn main() {
     #[cfg(target_os = "linux")]
-    let platform: std::sync::Arc<dyn rcli_agent::platform::Platform> =
-        std::sync::Arc::new(rcli_agent::linux::LinuxPlatform::new("contract").expect("Linux adapter"));
+    let platform: std::sync::Arc<dyn rcli_agent::platform::Platform> = {
+        let linux = std::sync::Arc::new(rcli_agent::linux::LinuxPlatform::new("contract").expect("Linux adapter"));
+        // `--session-socket <path>` as root: the installed service, screen work done by the session helper.
+        let args: Vec<String> = std::env::args().collect();
+        match args.iter().position(|a| a == "--session-socket").and_then(|i| args.get(i + 1)) {
+            Some(socket) => rcli_agent::linux::session::console(linux, socket.as_ref()).expect("session socket"),
+            None => linux,
+        }
+    };
     #[cfg(target_os = "macos")]
     let platform: std::sync::Arc<dyn rcli_agent::platform::Platform> = {
         let mac = std::sync::Arc::new(rcli_agent::macos::MacPlatform::new("contract").expect("macOS adapter"));

@@ -257,6 +257,12 @@ where
                         let result = serde_json::json!({ "decision": d.decision });
                         audit_device_event(state, device, &d.controller, "connect.prompt", serde_json::json!({}), result).await?;
                     }
+                    // The Device is uninstalling itself: treat it as the Admin delete it would otherwise need,
+                    // then close the connection. The Agent deletes its credentials only after this message went out.
+                    Some(agent_message::Msg::Unregister(_)) => {
+                        self_unregister(state, device).await?;
+                        return Ok(());
+                    }
                     // Later tickets dispatch more replies here.
                     _ => {}
                 }
@@ -293,6 +299,25 @@ async fn audit_device_event(
         device_scope: None,
     };
     crate::audit::record(state, &actor, device, action, params, result).await.map_err(|e| anyhow::anyhow!("{e:#}"))
+}
+
+/// A Device that uninstalled itself. The Device has no Server User, so the audit names the Agent; otherwise this is
+/// exactly the Admin Device delete (`api::devices::delete`): same `device.delete` action and params, so one audit
+/// filter shows both, plus `self: true` to tell them apart.
+async fn self_unregister(state: &AppState, device: uuid::Uuid) -> anyhow::Result<()> {
+    let name = registry::get(state, device).await?.name;
+    let actor = crate::auth::User {
+        id: uuid::Uuid::nil(),
+        name: "agent (uninstall)".into(),
+        role: "admin".into(),
+        disabled_at: None,
+        device_scope: None,
+    };
+    let params = serde_json::json!({ "name": name, "self": true });
+    crate::audit::record(state, &actor, device, "device.delete", params, serde_json::json!({ "error": null }))
+        .await
+        .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+    registry::delete(state, device).await
 }
 
 /// A change made at the Device. Each command sends one field, so a refusal leaves the Device untouched.
