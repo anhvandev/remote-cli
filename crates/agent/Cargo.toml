@@ -22,3 +22,31 @@ tokio-rustls.workspace = true
 tracing.workspace = true
 bytes.workspace = true
 webrtc.workspace = true
+
+# The Windows adapter (ticket 21).
+[target.'cfg(windows)'.dependencies]
+base64.workspace = true
+enigo = "0.6"
+portable-pty = "0.9"
+sysinfo = "0.37"
+xcap = "0.9"
+windows = { version = "0.62", features = [
+  "Foundation_Collections",
+  "Graphics_Imaging",
+  "Media_Ocr",
+  "Security_Cryptography",
+  "Storage_Streams",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Com",
+  "Win32_System_Ole",
+  "Win32_System_Pipes",
+  "Win32_System_Power",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_UI_Accessibility",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }

@@ -4,13 +4,16 @@
 
 use std::time::Duration;
 
-use rcli_agent::{contract, platform::FakePlatform};
+use rcli_agent::contract;
 
 const STEP_TIME: Duration = Duration::from_secs(20);
 
 fn main() {
-    // shortcut: no OS adapter exists yet (tickets 28-35); swap in this OS's adapter here when it lands.
-    let platform = FakePlatform::new("contract");
+    #[cfg(windows)]
+    let platform = rcli_agent::windows_platform::WindowsPlatform::new("contract");
+    // shortcut: no OS adapter here yet (tickets 15, 19, 23); swap in this OS's adapter here when it lands.
+    #[cfg(not(windows))]
+    let platform = rcli_agent::platform::FakePlatform::new("contract");
     eprintln!("Platform contract suite. Each step below gets {} s:", STEP_TIME.as_secs());
     use contract::Step::*;
     for step in [FocusTextField, Lock, Unlock, LogOut, LogIn, Unlock] {
