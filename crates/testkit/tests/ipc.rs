@@ -9,7 +9,7 @@ async fn the_device_password_is_ten_characters_without_look_alikes() {
     let agent = sys.start_agent_with_socket("lab-pc", &dir).await;
     let password = agent.device_password().expect("a Device Password is generated at registration");
     assert_eq!(password.chars().count(), 10, "{password}");
-    assert!(!password.chars().any(|c| "0O1lI".contains(c)), "{password}");
+    assert!(!password.chars().any(|c| "0Oo1lIL".contains(c)), "{password}");
     assert!(password.chars().all(|c| c.is_ascii_alphanumeric()), "{password}");
 }
 
