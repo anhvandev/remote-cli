@@ -61,7 +61,8 @@
 
   **Verified here (macOS, no Windows hardware)**
 
-  - `cargo test -p rcli --lib` — 10 passed (installer layout/service definition/args/ACL commands/uninstall, plus macOS).
+  - `cargo test -p rcli --lib` — 11 passed (installer layout/service definition/args/ACL commands/reinstall/
+    uninstall, plus macOS).
   - `cargo test -p rcli-agent --lib` — 28 passed, 1 ignored (session protocol on both transports, SAS key
     recognition, key names, etc.).
   - `cargo fmt --check` clean.
@@ -69,8 +70,8 @@
   - `cargo xwin clippy --target x86_64-pc-windows-msvc --workspace --all-targets -- -D warnings` clean, plus
     `--features rcli/gui`.
   - `cargo xwin build --target x86_64-pc-windows-msvc -p rcli` and `--features gui` link `rcli.exe`.
-  - `DOCKER_HOST=… cargo test --workspace`: the only failure is the pre-existing environmental
-    `macos::tests::…send_wake` (`No route to host`) noted by the orchestrator; everything else green.
+  - `DOCKER_HOST=… cargo test --workspace` — all green (the orchestrator's pre-existing environmental
+    `macos::tests::…send_wake` failure did not reproduce on this run; nothing else was red).
 
   **Shortcuts taken** (each marked `shortcut:` in the code)
 
