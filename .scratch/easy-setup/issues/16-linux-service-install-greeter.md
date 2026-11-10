@@ -163,3 +163,11 @@
   installs and reinstalls write it); ticket 24's comment about manual `rcli device delete` is stale for fresh installs.
 - The package owns only `/usr/bin/rcli`; the install path owns `/usr/local/lib/rcli/rcli` and `/usr/local/bin/rcli`.
   Removing the package with `--force-all` without its `prerm` would leave those behind.
+
+- final code-review fix (P2, S4): `rcli agent install` now also writes the app-menu entry
+  `/usr/share/applications/rcli.desktop` (source `packaging/linux/rcli.desktop`; uninstall removes it), so the window
+  opens from the app menu as the spec says. The deb/rpm postinst calls the same install, so the package path gets it
+  too without dpkg/rpm owning the file. The installer shares the new `crates/cli/src/install.rs` helpers
+  (`Options`/`Run`/`write`/`at`/`save_settings`) with macOS and Windows instead of its own copies. Human step on a
+  real desktop: after install, "rcli" appears in the app menu and opens the window; the desktop-entry install/removal
+  is covered by the Linux container test (`cargo test -p rcli --lib linux_install`).

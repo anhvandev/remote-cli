@@ -108,3 +108,15 @@
   tickets 16/22/24.
 - Invented: `prompts`/`prompt.answer` IPC with root-required for Accept but anyone for Reject (anti-escalation);
   `server_key`/`unlock_password` shown in `info` only to root; `WindowPlatform` decorator + `RCLI_AGENT_SOCKET` spawn.
+
+- final code-review fix (P6): the Device Settings pane could silently downgrade the owner's rules. `gui.rs` rendered
+  the root-only `info["settings"]` (so "-") over editors seeded with defaults (`root=ask`, `accept=password`, empty
+  Terminal User), and Apply sent all three fields, turning `always`/`never` into `ask` and `password+accept` into
+  `password` in one click. Now "Load Device Settings" reads them through the same OS-authorization path as Reveal
+  (`rcli agent info --json` via `pkexec`/UAC/`osascript`, or the ordinary IPC when the window itself runs as root),
+  the editors and Apply stay unavailable until that reply arrives, and Apply sends only the fields that differ
+  (`settings::Change::between`) and reports each field's error, not just the last reply. A cancelled prompt now shows
+  a message instead of an empty one. New unit tests: `crates/agent/src/settings.rs` (root-only reply parsing,
+  only-changed-fields, `name()` == serde value). Not verified visually; still for the manual checklist: load once
+  (one OS prompt), edit one field and confirm the other two are unchanged in `sudo rcli agent info --json`, cancel
+  the prompt and confirm nothing changed.

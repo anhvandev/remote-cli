@@ -69,3 +69,14 @@
   path; (2) `replace` over a running `.exe` fails on Windows — ticket 22 must move the file aside first.
 
 - code-review fix: `rcli upgrade` no longer ignores the rollout. It asks the running Agent over its local IPC for the Device ID (`--socket`/`RCLI_AGENT_SOCKET`, default socket) and requests `GET /api/v1/agent-builds/{target}?device=<id>`; the Server serves the build rolled out to that Device (`devices.update_version`), falling back to the newest published build only when there is no Device row (Controller-only machine) or no rollout yet (`updates::upgrade_build`, test `an_installed_device_upgrades_to_the_build_rolled_out_to_it`). Also "normal user" → "a non-root account" in `service_to_restart`'s comment (glossary: Operator).
+
+- final code-review fix (P3, S6): a root/Administrator upgrade on an installed Device now restarts the Agent service on
+  macOS and Windows too. macOS checks `/Library/LaunchDaemons/dev.remotecli.agent.plist` before the swap and runs
+  `launchctl kickstart -k system/dev.remotecli.agent`; Windows checks `sc query rcli-agent`, stops the service through
+  the SCM API and waits for STOPPED, replaces the binary, then starts it again. Linux uses `linux_install::UNIT`
+  instead of a second hard-coded unit name. Windows replacement moves the running image aside before writing the new
+  one (rename-over-a-running-.exe fails) and restores it on failure; a service stopped for a swap is restarted if the
+  swap fails. Tests: atomic replace and the non-root path on the host; the root paths need real hardware. shortcut:
+  an already-running macOS session helper keeps the old binary until launchd restarts it (next login/helper relaunch);
+  only the daemon is restarted. Human step on each OS: root upgrade on an installed Device → service active on the
+  new build, `rcli agent info` connected.

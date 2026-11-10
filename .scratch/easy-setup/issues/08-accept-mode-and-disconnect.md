@@ -76,3 +76,8 @@
   a Controller by display-name prefix.
 
 - code-review fix: glossary wording in `rcli agent disconnect`'s doc comment ("on their machine" → "on their Device"; avoid "machine").
+
+- final code-review fix (P5): the waiting-prompt list stays open to any local user on purpose; a `shortcut:` comment
+  on `Request::Prompts` in `crates/agent/src/ipc.rs` records why (story 27 needs the person at the Device — not
+  necessarily root — to see who asks; accepting stays root-only and refusing is like `disconnect`) and the tension
+  with the spec's IPC split. No protocol or enforcement change.
