@@ -18,7 +18,8 @@ async fn rcli_agent_run_registers_and_connects_a_device() {
     let online = async {
         eventually(|| async {
             let (_, devices) = sys.api.get("/api/v1/devices").await;
-            devices.as_array()?.iter().find(|d| d["name"] == "lab-pc" && d["status"] == "Online").cloned()
+            // The version lands with the Agent's hello, a moment after Online (later on a real OS adapter).
+            devices.as_array()?.iter().find(|d| d["name"] == "lab-pc" && d["status"] == "Online" && !d["agent_version"].is_null()).cloned()
         })
         .await
     };

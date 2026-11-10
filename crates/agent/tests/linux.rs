@@ -20,14 +20,14 @@ fn me() -> RunAs {
 
 #[test]
 fn shell_returns_exit_code_stdout_and_stderr() {
-    let out = LinuxPlatform::new("pc").shell("echo out; echo err >&2; exit 3", me(), Duration::from_secs(5)).unwrap();
+    let out = LinuxPlatform::new("pc").unwrap().shell("echo out; echo err >&2; exit 3", me(), Duration::from_secs(5)).unwrap();
     assert_eq!((out.exit_code, out.stdout.as_str(), out.stderr.as_str(), out.timed_out), (3, "out\n", "err\n", false));
 }
 
 #[test]
 fn shell_timeout_kills_the_command_and_keeps_its_output() {
     let start = Instant::now();
-    let out = LinuxPlatform::new("pc").shell("echo started; sleep 30", me(), Duration::from_secs(1)).unwrap();
+    let out = LinuxPlatform::new("pc").unwrap().shell("echo started; sleep 30", me(), Duration::from_secs(1)).unwrap();
     assert!(out.timed_out, "{out:?}");
     assert_eq!(out.stdout, "started\n");
     assert!(start.elapsed() < Duration::from_secs(3), "took {:?}", start.elapsed());
@@ -35,7 +35,7 @@ fn shell_timeout_kills_the_command_and_keeps_its_output() {
 
 #[test]
 fn pty_is_a_resizable_terminal_that_reports_the_exit_code() {
-    let mut pty = LinuxPlatform::new("pc").pty(me(), 80, 24).unwrap();
+    let mut pty = LinuxPlatform::new("pc").unwrap().pty(me(), 80, 24).unwrap();
     pty.control.resize(100, 30).unwrap();
     pty.input.write_all(b"stty size\rexit 3\r").unwrap();
     let mut text = String::new();
@@ -46,7 +46,7 @@ fn pty_is_a_resizable_terminal_that_reports_the_exit_code() {
 
 #[test]
 fn metrics_inventory_and_processes_describe_this_machine() {
-    let p = LinuxPlatform::new("pc");
+    let p = LinuxPlatform::new("pc").unwrap();
     let m = p.metrics().unwrap();
     assert!((0.0..=100.0).contains(&m.cpu_percent.unwrap()), "{m:?}");
     assert!(m.ram_used_bytes.unwrap() > 0 && m.uptime_secs.is_some(), "{m:?}");
@@ -58,13 +58,13 @@ fn metrics_inventory_and_processes_describe_this_machine() {
 
 #[test]
 fn wake_send_broadcasts() {
-    LinuxPlatform::new("pc").send_wake(rcli_agent::contract::WAKE_TEST_MAC).unwrap();
+    LinuxPlatform::new("pc").unwrap().send_wake(rcli_agent::contract::WAKE_TEST_MAC).unwrap();
 }
 
 #[test]
 #[ignore = "needs an X server"]
 fn displays_have_one_primary_and_capture_at_their_size() {
-    let p = LinuxPlatform::new("pc");
+    let p = LinuxPlatform::new("pc").unwrap();
     let displays = p.displays().unwrap();
     assert_eq!(displays.iter().filter(|d| d.primary).count(), 1, "{displays:?}");
     for d in displays {
@@ -78,7 +78,7 @@ fn displays_have_one_primary_and_capture_at_their_size() {
 #[test]
 #[ignore = "needs an X server, AT-SPI, zenity and tesseract"]
 fn click_and_type_into_a_dialog_found_through_the_accessibility_tree() {
-    let p = LinuxPlatform::new("pc");
+    let p = LinuxPlatform::new("pc").unwrap();
     // Starts the accessibility bus on a bare test session, so the dialog finds it (a desktop always has one).
     let _ = p.accessibility(0);
     let mut dialog = KillOnDrop(Command::new("zenity").args(["--entry", "--text=Remote check"]).stdout(Stdio::piped()).spawn().unwrap());

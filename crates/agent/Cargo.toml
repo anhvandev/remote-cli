@@ -23,10 +23,22 @@ tracing.workspace = true
 bytes.workspace = true
 webrtc.workspace = true
 
-# The Linux X11 adapter (ticket 15): capture and RandR over x11rb, input over XTest (enigo), AT-SPI over D-Bus.
+# The macOS adapter (`macos.rs`): capture, AX tree, session state and OCR through the system frameworks.
+[target.'cfg(target_os = "macos")'.dependencies]
+enigo = { version = "0.6", default-features = false }
+libc = "0.2"
+objc2 = "0.6"
+objc2-application-services = { version = "0.3", default-features = false, features = ["std", "libc", "HIServices", "AXError", "AXUIElement", "AXValue"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFBase", "CFCGTypes", "CFData", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGColorSpace", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGImage", "CGSession"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSString"] }
+objc2-vision = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "VNObservation", "VNRecognizeTextRequest", "VNRequest", "VNRequestHandler", "VNTypes"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "user"] }
+
+# The Linux X11 adapter (`linux/`): capture and RandR over x11rb, input over XTest (enigo), AT-SPI over D-Bus.
 [target.'cfg(target_os = "linux")'.dependencies]
-enigo.workspace = true
-libc.workspace = true
-sysinfo.workspace = true
-x11rb.workspace = true
-zbus.workspace = true
+enigo = "0.6"
+libc = "0.2"
+sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "user", "component"] }
+x11rb = { version = "0.13", features = ["randr"] }
+zbus = "5"

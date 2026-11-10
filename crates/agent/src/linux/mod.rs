@@ -37,11 +37,11 @@ struct Sampler {
 
 impl LinuxPlatform {
     /// `name` is the Device name sent at registration.
-    pub fn new(name: impl Into<String>) -> Self {
-        let mut system = System::new();
+    pub fn new(name: impl Into<String>) -> anyhow::Result<Self> {
+        let mut system = System::new()?;
         system.refresh_cpu_all();
-        let sampler = Sampler { system, disks: Disks::new_with_refreshed_list(), networks: Networks::new_with_refreshed_list(), at: Instant::now() };
-        Self { name: name.into(), x: Mutex::new(None), input: Mutex::new(None), sys: Mutex::new(sampler) }
+        let sampler = Sampler { system, disks: Disks::new_with_refreshed_list()?, networks: Networks::new_with_refreshed_list()?, at: Instant::now() };
+        Ok(Self { name: name.into(), x: Mutex::new(None), input: Mutex::new(None), sys: Mutex::new(sampler) })
     }
 
     fn with_x<T>(&self, f: impl FnOnce(&x11::X) -> anyhow::Result<T>) -> anyhow::Result<T> {
@@ -123,10 +123,10 @@ impl Platform for LinuxPlatform {
         let mut s = self.sys.lock().unwrap();
         s.system.refresh_memory();
         let cpus = s.system.cpus();
-        let networks = Networks::new_with_refreshed_list();
+        let networks = Networks::new_with_refreshed_list()?;
         let displays = self.with_x(|x| x.monitors()).unwrap_or_default();
         Ok(Inventory {
-            os: System::name().unwrap_or_else(|| "Linux".into()),
+            os: System::name().unwrap_or_else(|_| "Linux".into()),
             os_version: System::os_version().unwrap_or_default(),
             hostname: System::host_name().unwrap_or_default(),
             cpu_model: cpus.first().map(|c| c.brand().trim().to_owned()).unwrap_or_default(),
@@ -142,7 +142,7 @@ impl Platform for LinuxPlatform {
                 .iter()
                 .filter(|(name, _)| *name != "lo")
                 .map(|(name, n)| NetworkInterface {
-                    name: name.clone(),
+                    name: name.to_string_lossy().into(),
                     mac: n.mac_address().to_string(),
                     ips: n.ip_networks().iter().map(|ip| format!("{}/{}", ip.addr, ip.prefix)).collect(),
                 })
@@ -164,11 +164,13 @@ impl Platform for LinuxPlatform {
         let per_sec = |bytes: u64| Some((bytes as f64 / secs) as u64);
         let (read, written) = s.disks.iter().fold((0, 0), |(r, w), d| (r + d.usage().read_bytes, w + d.usage().written_bytes));
         let (up, down) = s.networks.iter().filter(|(name, _)| *name != "lo").fold((0, 0), |(u, d), (_, n)| (u + n.transmitted(), d + n.received()));
-        let cpu_temp = Components::new_with_refreshed_list()
-            .iter()
-            .filter(|c| ["coretemp", "k10temp", "package", "tctl", "cpu"].iter().any(|k| c.label().to_lowercase().contains(k)))
-            .filter_map(|c| c.temperature())
-            .fold(None, |max: Option<f32>, t| Some(max.map_or(t, |m| m.max(t))));
+        let cpu_temp = Components::new_with_refreshed_list().ok().and_then(|components| {
+            components
+                .iter()
+                .filter(|c| ["coretemp", "k10temp", "package", "tctl", "cpu"].iter().any(|k| c.label().to_lowercase().contains(k)))
+                .filter_map(|c| c.temperature())
+                .reduce(f32::max)
+        });
         let battery = std::fs::read_dir("/sys/class/power_supply").ok().and_then(|dir| {
             dir.flatten().map(|e| e.path()).find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("BAT")))
         });
@@ -187,7 +189,7 @@ impl Platform for LinuxPlatform {
             net_up_bytes_per_sec: per_sec(up),
             net_down_bytes_per_sec: per_sec(down),
             gpu_percent: None,
-            uptime_secs: Some(System::uptime()),
+            uptime_secs: System::uptime().ok(),
             logged_in_user: Some(session_property("Name").unwrap_or_else(shell::current_user)),
             session: None,
             cpu_temp_celsius: cpu_temp.map(f64::from),
@@ -199,7 +201,7 @@ impl Platform for LinuxPlatform {
     fn processes(&self) -> anyhow::Result<Vec<Process>> {
         let mut s = self.sys.lock().unwrap();
         s.system.refresh_processes(ProcessesToUpdate::All, true);
-        let users = Users::new_with_refreshed_list();
+        let users = Users::new_with_refreshed_list()?;
         Ok(s.system
             .processes()
             .values()

@@ -19,7 +19,7 @@
   `systemctl reboot|poweroff|suspend`. Wake: UDP broadcast to port 9. Update: atomic swap then `exec` in place.
 - Verified in Docker (Debian bookworm, Xvfb, dbus-run-session): `crates/agent/tests/linux.rs` 7/7 pass, including an
   end-to-end test that finds a zenity dialog's field and OK button through AT-SPI, clicks and types into it, and
-  OCRs its label. macOS `cargo test --workspace` and clippy unchanged.
+  OCRs its label; Linux clippy clean. macOS `cargo test --workspace` and clippy pass (after merging the macOS adapter).
 - Run on a real X11 desktop (logged in, from a terminal in the session, as your normal user):
 
   ```sh

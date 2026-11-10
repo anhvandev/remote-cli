@@ -10,9 +10,11 @@ const STEP_TIME: Duration = Duration::from_secs(20);
 
 fn main() {
     #[cfg(target_os = "linux")]
-    let platform = rcli_agent::linux::LinuxPlatform::new("contract");
-    // shortcut: no adapter for this OS yet (tickets 21, 23); swap it in here when it lands.
-    #[cfg(not(target_os = "linux"))]
+    let platform = rcli_agent::linux::LinuxPlatform::new("contract").expect("Linux adapter");
+    #[cfg(target_os = "macos")]
+    let platform = rcli_agent::macos::MacPlatform::new("contract").expect("macOS adapter");
+    // shortcut: no adapter for this OS yet (ticket 21); swap in this OS's adapter here when it lands.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let platform = rcli_agent::platform::FakePlatform::new("contract");
     eprintln!("Platform contract suite. Each step below gets {} s:", STEP_TIME.as_secs());
     use contract::Step::*;
