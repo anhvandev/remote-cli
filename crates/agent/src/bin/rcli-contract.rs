@@ -20,8 +20,10 @@ fn main() {
             None => mac,
         }
     };
-    // shortcut: no adapter for this OS yet (tickets 15/21); swap in this OS's adapter here when it lands.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    let platform = std::sync::Arc::new(rcli_agent::windows_platform::WindowsPlatform::new("contract").expect("Windows adapter"));
+    // shortcut: no adapter for this OS yet (tickets 15, 19); swap in this OS's adapter here when it lands.
+    #[cfg(not(any(target_os = "macos", windows)))]
     let platform = std::sync::Arc::new(rcli_agent::platform::FakePlatform::new("contract"));
     eprintln!("Platform contract suite. Each step below gets {} s:", STEP_TIME.as_secs());
     use contract::Step::*;

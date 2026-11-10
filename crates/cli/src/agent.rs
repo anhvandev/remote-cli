@@ -80,8 +80,10 @@ impl Run {
         let server = ServerEndpoint { addr: self.server, server_key: self.key };
         #[cfg(target_os = "macos")]
         let platform = Arc::new(rcli_agent::macos::MacPlatform::new(self.name)?);
-        // shortcut: no adapter for this OS yet (tickets 15/21), so the binary runs on the FakePlatform.
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        let platform = Arc::new(rcli_agent::windows_platform::WindowsPlatform::new(self.name)?);
+        // shortcut: no adapter for this OS yet (tickets 15, 19), so the binary runs on the FakePlatform.
+        #[cfg(not(any(target_os = "macos", windows)))]
         let platform = Arc::new(rcli_agent::platform::FakePlatform::new(self.name));
         // The installed root daemon cannot reach the window server: session helpers do the screen work (ticket 24).
         #[cfg(target_os = "macos")]
