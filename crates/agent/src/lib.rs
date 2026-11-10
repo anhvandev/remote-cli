@@ -18,9 +18,12 @@ mod media;
 mod observer;
 pub mod platform;
 pub mod secret_store;
+pub mod session;
 pub mod settings;
 #[cfg(windows)]
 pub mod windows_platform;
+#[cfg(windows)]
+pub mod windows_session;
 
 use std::{
     io::Read,

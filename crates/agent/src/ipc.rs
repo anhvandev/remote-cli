@@ -436,11 +436,22 @@ async fn serve_with(
 // shortcut: a busy pipe is not retried by `send`; one request per connection keeps that rare.
 #[cfg(windows)]
 pub async fn serve(path: PathBuf, status: Arc<Status>) -> anyhow::Result<()> {
+    serve_windows(path, status, false).await
+}
+
+/// Tests run unprivileged: this stands in for "the caller is root", nothing else.
+#[cfg(windows)]
+pub async fn serve_trusting_all(path: PathBuf, status: Arc<Status>) -> anyhow::Result<()> {
+    serve_windows(path, status, true).await
+}
+
+#[cfg(windows)]
+async fn serve_windows(path: PathBuf, status: Arc<Status>, trust_all: bool) -> anyhow::Result<()> {
     let mut server = pipe_server(&path, true)?;
     loop {
         server.connect().await?;
         let client = std::mem::replace(&mut server, pipe_server(&path, false)?);
-        let is_root = client_is_elevated(&client);
+        let is_root = trust_all || client_is_elevated(&client);
         let status = status.clone();
         tokio::spawn(async move {
             if let Err(e) = handle(client, status, is_root).await {
@@ -480,8 +491,8 @@ fn pipe_server(path: &Path, first: bool) -> anyhow::Result<tokio::net::windows::
 }
 
 /// Whether the process at the other end of `pipe` runs elevated (an Administrator shell or SYSTEM).
-// shortcut: a user-session Agent cannot open an elevated caller's token, so there nobody counts as root;
-// ticket 22's SYSTEM service can.
+// shortcut: a user-session Agent cannot open an elevated caller's token, so there nobody counts as root; the
+// installed SYSTEM service (ticket 22) can.
 #[cfg(windows)]
 fn client_is_elevated(pipe: &tokio::net::windows::named_pipe::NamedPipeServer) -> bool {
     use std::os::windows::io::AsRawHandle;
