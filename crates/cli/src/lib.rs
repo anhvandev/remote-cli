@@ -11,6 +11,8 @@ pub mod agent;
 pub mod config;
 #[cfg(feature = "gui")]
 pub mod gui;
+#[cfg(target_os = "macos")]
+mod macos_install;
 pub mod media;
 pub mod upgrade;
 
@@ -239,6 +241,13 @@ enum Command {
 enum AgentCommand {
     /// Register on first start, then keep the Agent connected to the Server.
     Run(agent::Run),
+    /// Install the Agent as a background service and register this Device (root).
+    Install(agent::Install),
+    /// Remove the background service and this Device's local data (root).
+    Uninstall(agent::Uninstall),
+    /// macOS: the GUI-session helper the LaunchAgent starts.
+    #[command(hide = true)]
+    Session(agent::Session),
     /// Show the Device ID and connection status (any local user).
     Info(agent::Info),
     /// The Device Password: show or change it (root only).
@@ -591,6 +600,9 @@ where
     if let Command::Agent(command) = cli.command {
         return match command {
             AgentCommand::Run(run) => run.run().await,
+            AgentCommand::Install(install) => install.run(out).await,
+            AgentCommand::Uninstall(uninstall) => uninstall.run(out).await,
+            AgentCommand::Session(session) => session.run().await,
             AgentCommand::Info(info) => info.run(out).await,
             AgentCommand::Password { command, socket } => agent::run_password(command, socket, out).await,
             AgentCommand::Id { command, socket } => agent::run_id(command, socket, out).await,

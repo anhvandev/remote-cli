@@ -62,7 +62,7 @@ pub struct Frame {
 }
 
 /// An on-screen element a Mark is made from. Box in real pixels of its display.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UiElement {
     pub role: String,
     pub text: String,
@@ -73,7 +73,7 @@ pub struct UiElement {
 }
 
 /// One input primitive. The Executor builds clicks, drags and key combinations from these.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Input {
     /// Pointer to real pixel (x, y) of `display`.
     Move { display: u32, x: u32, y: u32 },
@@ -88,14 +88,14 @@ pub enum Input {
     KeyUp(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Button {
     Left,
     Right,
     Middle,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SessionState {
     LoggedIn,
     Locked,

@@ -37,6 +37,41 @@ pub struct Run {
     /// Local IPC socket `rcli agent ...` clients use.
     #[arg(long, env = "RCLI_AGENT_SOCKET")]
     socket: Option<PathBuf>,
+    /// macOS root daemon: where the GUI session helpers (`rcli agent session`) connect to do the screen work.
+    #[cfg(target_os = "macos")]
+    #[arg(long)]
+    session_socket: Option<PathBuf>,
+}
+
+/// The Device's credentials from `state_dir`, or a new registration saved there. The Device Password goes to
+/// `secrets`, never into `credentials.json`.
+pub async fn load_or_register(
+    server: &ServerEndpoint,
+    platform: &dyn rcli_agent::platform::Platform,
+    state_dir: &std::path::Path,
+    secrets: &dyn SecretStore,
+) -> anyhow::Result<Credentials> {
+    let path = state_dir.join("credentials.json");
+    if let Ok(bytes) = std::fs::read(&path) {
+        return Ok(serde_json::from_slice(&bytes)?);
+    }
+    let creds = rcli_agent::register(server, platform).await?;
+    std::fs::create_dir_all(state_dir)?;
+    secrets.set(ipc::DEVICE_PASSWORD, &creds.device_password)?;
+    std::fs::write(&path, serde_json::to_vec(&creds)?)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    Ok(creds)
+}
+
+/// The Secret Store: the System Keychain for the root Agent on macOS; otherwise the encrypted-file fallback.
+// shortcut: tickets 16/22 add systemd-creds and DPAPI here.
+pub fn secret_store(state_dir: &std::path::Path) -> Arc<dyn SecretStore> {
+    #[cfg(target_os = "macos")]
+    if crate::upgrade::is_root() {
+        return Arc::new(rcli_agent::secret_store::KeychainSecretStore::system());
+    }
+    Arc::new(FileSecretStore::new(state_dir))
 }
 
 impl Run {
@@ -52,24 +87,17 @@ impl Run {
         // shortcut: no adapter for other OSes, so the binary runs on the FakePlatform there.
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let platform = Arc::new(rcli_agent::platform::FakePlatform::new(self.name));
-        let path = self.state_dir.join("credentials.json");
-        // shortcut: the encrypted-file fallback only; tickets 16/22/24 add DPAPI, Keychain and systemd-creds here.
-        let secrets = FileSecretStore::new(&self.state_dir);
-        let creds: Credentials = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)?,
-            Err(_) => {
-                let creds = rcli_agent::register(&server, platform.as_ref()).await?;
-                std::fs::create_dir_all(&self.state_dir)?;
-                // The password never goes into credentials.json; it lives only in the Secret Store.
-                secrets.set(ipc::DEVICE_PASSWORD, &creds.device_password)?;
-                std::fs::write(&path, serde_json::to_vec(&creds)?)?;
-                #[cfg(unix)]
-                std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-                creds
-            }
+        // The installed root daemon cannot reach the window server: session helpers do the screen work (ticket 24).
+        #[cfg(target_os = "macos")]
+        let platform: Arc<dyn rcli_agent::platform::Platform> = match &self.session_socket {
+            Some(socket) => rcli_agent::macos_session::SessionPlatform::listen(platform, socket)?,
+            None => platform,
         };
+        let path = self.state_dir.join("credentials.json");
+        let secrets = secret_store(&self.state_dir);
+        let creds = load_or_register(&server, platform.as_ref(), &self.state_dir, secrets.as_ref()).await?;
         tracing::info!("Device {} connecting to {}", creds.device_id, server.addr);
-        let status = Arc::new(ipc::Status::new(&creds.device_id, server.clone(), Arc::new(secrets)));
+        let status = Arc::new(ipc::Status::new(&creds.device_id, server.clone(), secrets));
         // Device Settings live beside the credentials, so `rcli agent …` changes survive a restart.
         status.set_settings_dir(self.state_dir.clone());
         // A new Device ID set at the Device must survive a restart.
@@ -486,4 +514,88 @@ pub async fn run_prompt(command: PromptCommand, socket: Option<PathBuf>, out: &m
     let reply = ipc::send(&socket.unwrap_or_else(ipc::default_socket), &request).await?;
     writeln!(out, "{}", reply["message"].as_str().unwrap_or_default())?;
     Ok(())
+}
+
+/// `sudo rcli agent install`: install the Agent as a background service and register the Device.
+#[derive(Args)]
+pub struct Install {
+    /// Server Agent port, host:port.
+    #[arg(long)]
+    server: String,
+    /// Server Key, rk_<CA fingerprint>_<secret>.
+    #[arg(long, env = "RCLI_SERVER_KEY", hide_env_values = true)]
+    key: String,
+    /// Device name; default: this machine's host name.
+    #[arg(long)]
+    name: Option<String>,
+    /// The account terminal commands run as; default: the installing account (`SUDO_USER`).
+    #[arg(long)]
+    terminal_user: Option<String>,
+    /// Always allow `--as root` (Device Setting root = always) instead of asking at the Device.
+    #[arg(long)]
+    allow_root: bool,
+}
+
+impl Install {
+    #[cfg(target_os = "macos")]
+    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        let name = match self.name {
+            Some(name) => name,
+            None => String::from_utf8(std::process::Command::new("/bin/hostname").arg("-s").output()?.stdout)?.trim().to_owned(),
+        };
+        let opts = crate::macos_install::Options {
+            server: self.server,
+            key: self.key,
+            name,
+            terminal_user: self.terminal_user,
+            allow_root: self.allow_root,
+        };
+        crate::macos_install::install(opts, out).await
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub async fn run(self, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        anyhow::bail!("`rcli agent install` is not available on this OS yet")
+    }
+}
+
+/// `sudo rcli agent uninstall`: remove the service and the Device's local data.
+#[derive(Args)]
+pub struct Uninstall {}
+
+impl Uninstall {
+    #[cfg(target_os = "macos")]
+    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        crate::macos_install::uninstall(out).await
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub async fn run(self, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        anyhow::bail!("`rcli agent uninstall` is not available on this OS yet")
+    }
+}
+
+/// `rcli agent session` (macOS, started by the LaunchAgent): does the root daemon's screen work in this GUI session.
+#[derive(Args)]
+pub struct Session {
+    /// The daemon's session socket.
+    #[arg(long)]
+    socket: PathBuf,
+}
+
+impl Session {
+    #[cfg(target_os = "macos")]
+    pub async fn run(self) -> anyhow::Result<()> {
+        let _ = tracing_subscriber::fmt().try_init();
+        let platform = rcli_agent::macos::MacPlatform::new("session")?;
+        tokio::task::spawn_blocking(move || {
+            rcli_agent::macos_session::run_helper(&self.socket, &platform, &rcli_agent::macos::on_console)
+        })
+        .await?
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub async fn run(self) -> anyhow::Result<()> {
+        anyhow::bail!("`rcli agent session` is macOS only")
+    }
 }

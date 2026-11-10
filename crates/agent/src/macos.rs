@@ -15,7 +15,7 @@ use std::{
 
 use enigo::{Axis, Coordinate, Direction, Keyboard, Mouse};
 use objc2_application_services::{AXError, AXUIElement, AXValue, AXValueType};
-use objc2_core_foundation::{CFArray, CFBoolean, CFData, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize};
+use objc2_core_foundation::{CFArray, CFBoolean, CFData, CFNumber, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGDirectDisplayID, CGDisplayBounds,
     CGDisplayCopyDisplayMode, CGDisplayMode, CGError, CGGetActiveDisplayList, CGImage, CGImageAlphaInfo,
@@ -440,14 +440,15 @@ impl Platform for MacPlatform {
         })
     }
 
-    /// From the session this process runs in: no GUI session = the login window.
+    /// From the session this process runs in: no GUI session, or one not logged in yet (the LoginWindow
+    /// LaunchAgent's), = the login window.
     fn session_state(&self) -> anyhow::Result<SessionState> {
-        let Some(dict) = CGSessionCopyCurrentDictionary() else { return Ok(SessionState::LoginScreen) };
-        let dict: CFRetained<objc2_core_foundation::CFDictionary<CFString, CFType>> = unsafe { CFRetained::cast_unchecked(dict) };
-        let flag = |key: &str| {
-            dict.get(&CFString::from_str(key)).and_then(|v| v.downcast_ref::<CFBoolean>().map(|b| b.as_bool())).unwrap_or(false)
-        };
-        Ok(if flag("CGSSessionScreenIsLocked") { SessionState::Locked } else { SessionState::LoggedIn })
+        Ok(match session_flags() {
+            None => SessionState::LoginScreen,
+            Some(flag) if !flag("kCGSessionLoginDoneKey") => SessionState::LoginScreen,
+            Some(flag) if flag("CGSSessionScreenIsLocked") => SessionState::Locked,
+            Some(_) => SessionState::LoggedIn,
+        })
     }
 
     // shortcut: no GPU list (system_profiler takes seconds); add it if Controllers ask for GPUs.
@@ -659,6 +660,40 @@ impl Platform for MacPlatform {
     fn ask_accept(&self, _requester: &str, _timeout: Duration) -> anyhow::Result<bool> {
         Ok(false)
     }
+}
+
+/// The current GUI session's boolean flags (`None` = no GUI session); values may be CFBoolean or CFNumber.
+fn session_flags() -> Option<impl Fn(&str) -> bool> {
+    let dict = CGSessionCopyCurrentDictionary()?;
+    let dict: CFRetained<objc2_core_foundation::CFDictionary<CFString, CFType>> = unsafe { CFRetained::cast_unchecked(dict) };
+    Some(move |key: &str| {
+        dict.get(&CFString::from_str(key)).is_some_and(|v| {
+            v.downcast_ref::<CFBoolean>().map(|b| b.as_bool())
+                .or_else(|| v.downcast_ref::<CFNumber>().and_then(|n| n.as_i64()).map(|n| n != 0))
+                .unwrap_or(false)
+        })
+    })
+}
+
+/// Whether this process's GUI session is the one on the console (not a fast-user-switched one in the background).
+/// The login window has no session dictionary and is always on the console.
+pub fn on_console() -> bool {
+    session_flags().is_none_or(|flag| flag("kCGSSessionOnConsoleKey"))
+}
+
+/// Shows the Screen Recording and Accessibility prompts for this app (the GUI's permission guide); grants already
+/// given are kept. Returns whether both are granted now.
+pub fn request_grants() -> bool {
+    let screen = objc2_core_graphics::CGPreflightScreenCaptureAccess() || objc2_core_graphics::CGRequestScreenCaptureAccess();
+    let prompt: &CFString = unsafe { objc2_application_services::kAXTrustedCheckOptionPrompt };
+    let options = objc2_core_foundation::CFDictionary::from_slices(&[prompt], &[CFBoolean::new(true)]);
+    let ax = unsafe { objc2_application_services::AXIsProcessTrustedWithOptions(Some(options.as_opaque())) };
+    screen && ax
+}
+
+/// Whether Screen Recording and Accessibility are granted to this app, without prompting.
+pub fn grants() -> (bool, bool) {
+    (objc2_core_graphics::CGPreflightScreenCaptureAccess(), unsafe { objc2_application_services::AXIsProcessTrusted() })
 }
 
 /// Locks the screen as Control-Command-Q does, through the private login framework (no keystroke, no grant).
