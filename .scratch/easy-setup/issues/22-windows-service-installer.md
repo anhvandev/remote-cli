@@ -159,9 +159,12 @@
   # Expect "stopped and deleted the service rcli-agent; removed C:\Program Files\rcli\rcli.exe ...".
   Get-Service rcli-agent      # fails: the service is gone
   Test-Path "$env:ProgramData\rcli"   # False
-  # The Device stays in the Dashboard as Offline until an Admin deletes it (ticket 16 adds self-removal).
+  # The Device is removed from the Server by the uninstall itself (ticket 16's self-removal; an unreachable
+  # Server is a warning and the local uninstall still finishes). An Admin can still delete it with `rcli device delete`.
   ```
 
-  **Ticket-16 deregistration:** not wired. Ticket 16 is not on `easy-setup` yet; the Windows uninstall has one
-  clearly marked `HOOK (ticket 16)` in `windows_install::uninstall` next to the macOS/Linux one. When its helper
-  lands, call it there before `uninstall_files`.
+  **Ticket-16 deregistration (wired by the merge of `t/16`):** `windows_install::uninstall` now reads the Server
+  Address from `service.json` plus `credentials.json` and calls `rcli_agent::unregister_at` before removing files,
+  exactly like `macos_install::uninstall` and `linux_install::uninstall`. The Server audits it as an Admin
+  `device.delete` with `self: true` and closes the connection; an unreachable Server is a warning, not a failure.
+  The `HOOK (ticket 16)` comment is gone.
