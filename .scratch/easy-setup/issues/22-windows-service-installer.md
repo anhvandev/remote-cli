@@ -4,7 +4,7 @@
 
 **Blocked by:** 21, 14, 17
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] GUI install, the PowerShell one-liner and `rcli agent install` all install the service and register the Device
 - [ ] The service survives reboot; uninstall removes it
@@ -175,3 +175,5 @@
   It starts the installed exe with no arguments, so it assumes the distributed build has `--features gui` (the GUI
   install form does too). The installer shares the new `crates/cli/src/install.rs` helpers with Linux/macOS. Human
   step on real Windows: Start menu → rcli opens the window; after `rcli agent uninstall` the shortcut is gone.
+
+- 2026-11-11: Resolved after the final merge. The code is on the integration branch `easy-setup` (tip 63398c2) and the automated gates pass: `cargo test --workspace` 238 passed (the one failure is the environmental macOS display/wake test on this host), clippy, Windows `cargo xwin` clippy/build, Linux container 79 passed, Dashboard Playwright 42 passed. Real-hardware acceptance (see the steps above) remains for the user; the checkboxes stay unticked until that run.

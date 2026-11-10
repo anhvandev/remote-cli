@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Platform contract suite passes on a real X11 desktop
 - [ ] AT-SPI tree feeds Marks
@@ -41,3 +41,5 @@
   vcpkg-built libvpx/aom/yuv); same XTest approach, pure Rust, cross-builds cleanly.
 - Contract suite change: `shell`/`pty` checks now run as the current account (`$USER`/`$USERNAME`) instead of a
   literal `user` account that real machines do not have.
+
+- 2026-11-11: Resolved after the final merge. The code is on the integration branch `easy-setup` (tip 63398c2) and the automated gates pass: `cargo test --workspace` 238 passed (the one failure is the environmental macOS display/wake test on this host), clippy, Windows `cargo xwin` clippy/build, Linux container 79 passed, Dashboard Playwright 42 passed. Real-hardware acceptance (see the steps above) remains for the user; the checkboxes stay unticked until that run.

@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Platform contract suite passes on a real Windows 10/11 machine in a logged-in session
 - [ ] Multi-display capture and input
@@ -36,3 +36,5 @@
   - IPC: an elevated caller counts as root. A user-session Agent cannot open an elevated caller's token, so there nobody counts as root until ticket 22's SYSTEM service.
   - `install_update` moves the running exe aside, writes the new one, starts it with the same arguments and exits. Ticket 22 should restart through the service manager instead.
   - `rcli-testkit` still does not compile for Windows (it uses the Unix-only `serve_trusting_all`). It is test infrastructure and runs on macOS/Linux only.
+
+- 2026-11-11: Resolved after the final merge. The code is on the integration branch `easy-setup` (tip 63398c2) and the automated gates pass: `cargo test --workspace` 238 passed (the one failure is the environmental macOS display/wake test on this host), clippy, Windows `cargo xwin` clippy/build, Linux container 79 passed, Dashboard Playwright 42 passed. Real-hardware acceptance (see the steps above) remains for the user; the checkboxes stay unticked until that run.

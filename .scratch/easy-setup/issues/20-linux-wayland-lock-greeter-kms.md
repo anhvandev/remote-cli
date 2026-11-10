@@ -10,3 +10,5 @@
 - [ ] If KMS works: contract suite passes at the lock screen and greeter on the tested desktops; handles the newer GDM greeter user
 - [ ] If not: the Device reports the limitation clearly in CLI and Dashboard
 - [ ] Known limits (NVIDIA proprietary, no VA-API) documented
+
+- 2026-11-11: Still `needs-info`, and the only blocker is the user's Wayland lock/greeter probe (`prototype/lockscreen-probe/README.md`, `linux/`). Ticket 19's logged-in Wayland adapter is merged, so once the probe result is recorded this ticket is either the KMS capture path or the "report unavailable" fallback; no agent-side work is blocked on it today.

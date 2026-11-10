@@ -4,7 +4,7 @@
 
 **Blocked by:** 15, 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Install, reboot (service comes back) and uninstall verified on a real desktop and a headless server
 - [ ] Contract suite passes at the lock screen and at the GDM/LightDM/SDDM greeter
@@ -171,3 +171,5 @@
   (`Options`/`Run`/`write`/`at`/`save_settings`) with macOS and Windows instead of its own copies. Human step on a
   real desktop: after install, "rcli" appears in the app menu and opens the window; the desktop-entry install/removal
   is covered by the Linux container test (`cargo test -p rcli --lib linux_install`).
+
+- 2026-11-11: Resolved after the final merge. The code is on the integration branch `easy-setup` (tip 63398c2) and the automated gates pass: `cargo test --workspace` 238 passed (the one failure is the environmental macOS display/wake test on this host), clippy, Windows `cargo xwin` clippy/build, Linux container 79 passed, Dashboard Playwright 42 passed. Real-hardware acceptance (see the steps above) remains for the user; the checkboxes stay unticked until that run.

@@ -4,7 +4,7 @@
 
 **Blocked by:** 16
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Contract suite passes logged in on GNOME and KDE; wlroots (Sway/Hyprland) result recorded
 - [ ] The restore token persists across Agent restarts, so no repeated approval is needed
@@ -129,3 +129,5 @@
   screen.
 - `capture`/`displays` wait 10 s for the first frame of each stream and 5 s for a later frame; the portal request
   itself has 60 s for the person to approve.
+
+- 2026-11-11: Resolved after the final merge. The code is on the integration branch `easy-setup` (tip 63398c2) and the automated gates pass: `cargo test --workspace` 238 passed (the one failure is the environmental macOS display/wake test on this host), clippy, Windows `cargo xwin` clippy/build, Linux container 79 passed, Dashboard Playwright 42 passed. Real-hardware acceptance (see the steps above) remains for the user; the checkboxes stay unticked until that run.

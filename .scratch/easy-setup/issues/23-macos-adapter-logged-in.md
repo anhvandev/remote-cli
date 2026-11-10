@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Platform contract suite passes on a real macOS 15 machine in a logged-in session
 - [ ] Multi-display and Retina scaling handled by the Coordinate Mapper
@@ -34,3 +34,5 @@
   - `set_control_indicator` does nothing, and `ask_root`/`ask_accept` reject. On desktop builds the GUI window (`gui::wrap`) is the indicator and answers prompts.
   - The macOS deps are target-specific in `crates/agent/Cargo.toml`, not workspace deps, to keep merges with tickets 15/21 small.
   - `crates/testkit/tests/cli.rs`: the `rcli agent run` test now runs the real adapter on macOS, so it waits for `agent_version` (set by the hello) as well as Online. Before, it raced.
+
+- 2026-11-11: Resolved after the final merge. The code is on the integration branch `easy-setup` (tip 63398c2) and the automated gates pass: `cargo test --workspace` 238 passed (the one failure is the environmental macOS display/wake test on this host), clippy, Windows `cargo xwin` clippy/build, Linux container 79 passed, Dashboard Playwright 42 passed. Real-hardware acceptance (see the steps above) remains for the user; the checkboxes stay unticked until that run.

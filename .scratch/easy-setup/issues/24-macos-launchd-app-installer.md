@@ -4,7 +4,7 @@
 
 **Blocked by:** 23, 14, 17
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `.dmg` install, the curl one-liner and `rcli agent install` all install both launchd jobs and register the Device; the GUI guides the permission grants
 - [ ] Contract suite passes at the lock screen (capture + key)
@@ -46,3 +46,5 @@
   - `--name` defaults to `hostname -s`. The Linux cross-check could not be run here (no Linux C toolchain for `ring`); the non-macOS branches are cfg-gated stubs that bail.
 
 - final code-review fix (S4): macOS install now records the Terminal User through the shared `install.rs` helper: `--terminal-user`, else the account that ran `sudo` (the same rule Linux used). Before, a reinstall without the flag left whatever `settings.json` already had. The GUI install form always passes the flag, so it is unchanged; plists and launchd calls are untouched.
+
+- 2026-11-11: Resolved after the final merge. The code is on the integration branch `easy-setup` (tip 63398c2) and the automated gates pass: `cargo test --workspace` 238 passed (the one failure is the environmental macOS display/wake test on this host), clippy, Windows `cargo xwin` clippy/build, Linux container 79 passed, Dashboard Playwright 42 passed. Real-hardware acceptance (see the steps above) remains for the user; the checkboxes stay unticked until that run.
