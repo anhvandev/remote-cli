@@ -1,13 +1,19 @@
-//! Linux adapter for a logged-in X11 session (ticket 15): the Agent runs as the session's user with `DISPLAY` set.
-//! The lock screen and the greeter come with the root service (ticket 16). The control indicator and the
-//! root/accept prompts are the GUI window (ticket 14), which wraps this platform on a desktop build.
+//! Linux adapters for a logged-in session: X11 (ticket 15) and Wayland (ticket 19). Which one a process gets is
+//! decided by the session it runs in (`SessionKind`), so the Agent core sees one `Platform` either way. The lock
+//! screen and the greeter come with the root service (ticket 16); on Wayland its console-session helper is the only
+//! place the desktop portal can be reached. The control indicator and the root/accept prompts are the GUI window
+//! (ticket 14), which wraps this platform on a desktop build.
 
 mod atspi;
+pub mod screencast;
 pub mod session;
 mod shell;
+mod uinput;
+mod wayland;
 mod x11;
 
 use std::{
+    path::Path,
     process::Command,
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
@@ -20,12 +26,106 @@ use crate::platform::{
     Resources, RunAs, SessionState, ShellOutput, UiElement,
 };
 
+/// Which screen adapter a session needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionKind {
+    X11,
+    Wayland,
+}
+
+impl SessionKind {
+    /// Wayland when `XDG_SESSION_TYPE=wayland` (an X11 session can also have `DISPLAY` through Xwayland), or when
+    /// there is no `DISPLAY` but a `WAYLAND_DISPLAY`. Everything else is X11, including a bare terminal.
+    pub fn detect(vars: impl Fn(&str) -> Option<String>) -> Self {
+        let var = |name: &str| vars(name).map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
+        match var("XDG_SESSION_TYPE") {
+            Some(kind) if kind.eq_ignore_ascii_case("wayland") => Self::Wayland,
+            // An explicit other type is authoritative: a nested compositor's WAYLAND_DISPLAY does not make the
+            // X11 session it runs in a Wayland one.
+            Some(_) => Self::X11,
+            None if var("DISPLAY").is_none() && var("WAYLAND_DISPLAY").is_some() => Self::Wayland,
+            None => Self::X11,
+        }
+    }
+
+    pub fn current() -> Self {
+        Self::detect(|name| std::env::var(name).ok())
+    }
+}
+
 pub struct LinuxPlatform {
     name: String,
-    /// Reconnected on the next call after an error, so an X server restart does not need an Agent restart.
+    /// X11 or Wayland, chosen once from the session this process runs in.
+    screen: Screen,
+    sys: Mutex<Sampler>,
+}
+
+/// The screen work: RandR/GetImage/XTest on X11, portal/pipewire/uinput on Wayland.
+enum Screen {
+    X11(Box<X11>),
+    Wayland(wayland::Wayland),
+}
+
+/// An X11 session. The server is reconnected on the next call after an error, so a restart does not need an
+/// Agent restart.
+#[derive(Default)]
+struct X11 {
     x: Mutex<Option<x11::X>>,
     input: Mutex<Option<enigo::Enigo>>,
-    sys: Mutex<Sampler>,
+}
+
+impl X11 {
+    fn with<T>(&self, f: impl FnOnce(&x11::X) -> anyhow::Result<T>) -> anyhow::Result<T> {
+        let mut x = self.x.lock().unwrap();
+        if x.is_none() {
+            *x = Some(x11::X::connect()?);
+        }
+        let out = f(x.as_ref().unwrap());
+        if out.is_err() {
+            *x = None;
+        }
+        out
+    }
+
+    fn input(&self, input: Input) -> anyhow::Result<()> {
+        let displays = match input {
+            Input::Move { .. } => self.with(|x| x.monitors())?.into_iter().map(|(_, d)| d).collect(),
+            _ => vec![],
+        };
+        let mut enigo = self.input.lock().unwrap();
+        if enigo.is_none() {
+            *enigo = Some(enigo::Enigo::new(&enigo::Settings::default())?);
+        }
+        let out = x11::input(enigo.as_mut().unwrap(), &displays, input);
+        if out.is_err() {
+            *enigo = None;
+        }
+        out
+    }
+}
+
+impl Screen {
+    fn displays(&self) -> anyhow::Result<Vec<(String, DisplayInfo)>> {
+        match self {
+            Self::X11(x11) => x11.with(|x| x.monitors()),
+            // The portal exposes no monitor names; the stream index is what `capture` and `Input::Move` take.
+            Self::Wayland(wayland) => Ok(wayland.displays()?.into_iter().map(|d| (d.index.to_string(), d)).collect()),
+        }
+    }
+
+    fn capture(&self, display: u32) -> anyhow::Result<Frame> {
+        match self {
+            Self::X11(x11) => x11.with(|x| x.capture(display)),
+            Self::Wayland(wayland) => wayland.capture(display),
+        }
+    }
+
+    fn input(&self, input: Input) -> anyhow::Result<()> {
+        match self {
+            Self::X11(x11) => x11.input(input),
+            Self::Wayland(wayland) => wayland.input(input),
+        }
+    }
 }
 
 /// Counters kept between samples, for CPU % and the per-second rates.
@@ -39,22 +139,25 @@ struct Sampler {
 impl LinuxPlatform {
     /// `name` is the Device name sent at registration.
     pub fn new(name: impl Into<String>) -> anyhow::Result<Self> {
-        let mut system = System::new()?;
-        system.refresh_cpu_all();
-        let sampler = Sampler { system, disks: Disks::new_with_refreshed_list()?, networks: Networks::new_with_refreshed_list()?, at: Instant::now() };
-        Ok(Self { name: name.into(), x: Mutex::new(None), input: Mutex::new(None), sys: Mutex::new(sampler) })
+        Self::build(name.into(), None)
     }
 
-    fn with_x<T>(&self, f: impl FnOnce(&x11::X) -> anyhow::Result<T>) -> anyhow::Result<T> {
-        let mut x = self.x.lock().unwrap();
-        if x.is_none() {
-            *x = Some(x11::X::connect()?);
-        }
-        let out = f(x.as_ref().unwrap());
-        if out.is_err() {
-            *x = None;
-        }
-        out
+    /// Like `new`, but this process keeps the screen cast restore token in `state_dir` (a `rcli agent run` with a
+    /// session of its own; the installed service passes the token to its helper instead).
+    pub fn with_state_dir(name: impl Into<String>, state_dir: &Path) -> anyhow::Result<Self> {
+        Self::build(name.into(), Some(state_dir.join(screencast::TOKEN_FILE)))
+    }
+
+    fn build(name: String, token_file: Option<std::path::PathBuf>) -> anyhow::Result<Self> {
+        let screen = match SessionKind::current() {
+            SessionKind::X11 => Screen::X11(Box::default()),
+            SessionKind::Wayland => Screen::Wayland(wayland::Wayland::new(token_file)),
+        };
+        let mut system = System::new()?;
+        system.refresh_cpu_all();
+        let sampler =
+            Sampler { system, disks: Disks::new_with_refreshed_list()?, networks: Networks::new_with_refreshed_list()?, at: Instant::now() };
+        Ok(Self { name, screen, sys: Mutex::new(sampler) })
     }
 }
 
@@ -64,32 +167,21 @@ impl Platform for LinuxPlatform {
     }
 
     fn displays(&self) -> anyhow::Result<Vec<DisplayInfo>> {
-        Ok(self.with_x(|x| x.monitors())?.into_iter().map(|(_, d)| d).collect())
+        Ok(self.screen.displays()?.into_iter().map(|(_, d)| d).collect())
     }
 
     fn capture(&self, display: u32) -> anyhow::Result<Frame> {
-        self.with_x(|x| x.capture(display))
+        self.screen.capture(display)
     }
 
     fn input(&self, input: Input) -> anyhow::Result<()> {
-        let displays = match input {
-            Input::Move { .. } => self.displays()?,
-            _ => vec![],
-        };
-        let mut enigo = self.input.lock().unwrap();
-        if enigo.is_none() {
-            *enigo = Some(enigo::Enigo::new(&enigo::Settings::default())?);
-        }
-        let out = x11::input(enigo.as_mut().unwrap(), &displays, input);
-        if out.is_err() {
-            *enigo = None;
-        }
-        out
+        self.screen.input(input)
     }
 
     fn accessibility(&self, display: u32) -> anyhow::Result<Option<Vec<UiElement>>> {
         let displays = self.displays()?;
         let d = displays.iter().find(|d| d.index == display).ok_or_else(|| anyhow::anyhow!("no display {display}"))?;
+        // AT-SPI is compositor-agnostic: the same walk serves X11 and Wayland (GNOME, KDE and wlroots apps).
         atspi::elements(d)
     }
 
@@ -125,7 +217,7 @@ impl Platform for LinuxPlatform {
         s.system.refresh_memory();
         let cpus = s.system.cpus();
         let networks = Networks::new_with_refreshed_list()?;
-        let displays = self.with_x(|x| x.monitors()).unwrap_or_default();
+        let displays = self.screen.displays().unwrap_or_default();
         Ok(Inventory {
             os: System::name().unwrap_or_else(|_| "Linux".into()),
             os_version: System::os_version().unwrap_or_default(),
@@ -317,6 +409,35 @@ fn ocr_lines(tsv: &str) -> Vec<UiElement> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| vars.iter().find(|(key, _)| *key == name).map(|(_, value)| (*value).to_owned())
+    }
+
+    #[test]
+    fn a_wayland_session_picks_the_wayland_adapter_even_with_xwayland() {
+        // A Wayland desktop exports DISPLAY for Xwayland; XDG_SESSION_TYPE is what decides.
+        assert_eq!(SessionKind::detect(env(&[("XDG_SESSION_TYPE", "wayland"), ("DISPLAY", ":0")])), SessionKind::Wayland);
+        assert_eq!(
+            SessionKind::detect(env(&[("XDG_SESSION_TYPE", "wayland"), ("WAYLAND_DISPLAY", "wayland-0")])),
+            SessionKind::Wayland
+        );
+    }
+
+    #[test]
+    fn no_display_but_a_wayland_socket_is_a_wayland_session() {
+        assert_eq!(SessionKind::detect(env(&[("WAYLAND_DISPLAY", "wayland-0")])), SessionKind::Wayland);
+        assert_eq!(SessionKind::detect(env(&[("WAYLAND_DISPLAY", "wayland-1"), ("XDG_SESSION_TYPE", "x11")])), SessionKind::X11);
+    }
+
+    #[test]
+    fn x11_sessions_and_bare_terminals_keep_the_x11_adapter() {
+        assert_eq!(SessionKind::detect(env(&[("XDG_SESSION_TYPE", "x11"), ("DISPLAY", ":1")])), SessionKind::X11);
+        assert_eq!(SessionKind::detect(env(&[("DISPLAY", ":0")])), SessionKind::X11);
+        // A root service or a bare ssh/tty terminal: no session at all, the X11 adapter reports the error.
+        assert_eq!(SessionKind::detect(env(&[])), SessionKind::X11);
+        assert_eq!(SessionKind::detect(env(&[("XDG_SESSION_TYPE", " "), ("DISPLAY", "")])), SessionKind::X11);
+    }
 
     #[test]
     fn ocr_words_on_one_line_become_one_element() {
