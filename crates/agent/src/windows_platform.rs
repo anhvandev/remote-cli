@@ -5,6 +5,7 @@
 // libvpx/aom/libyuv plus the hbb_common submodule. Switch when ticket 22 brings the SYSTEM service and a Windows build host.
 
 use std::{
+    cell::RefCell,
     io::Read,
     os::windows::process::CommandExt,
     process::{Command, Stdio},
@@ -19,13 +20,18 @@ use windows::{
     Media::Ocr::OcrEngine,
     Security::Cryptography::CryptographicBuffer,
     Win32::{
-        Foundation::{HWND, POINT, RECT},
+        Foundation::{HANDLE, HWND, POINT, RECT},
+        Security::Authentication::Identity::SendSAS,
         System::{
             Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED},
             Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
             RemoteDesktop::{
                 WTSFreeMemory, WTSGetActiveConsoleSessionId, WTSQuerySessionInformationW, WTSSessionInfoEx, WTSINFOEXW,
                 WTS_CURRENT_SERVER_HANDLE,
+            },
+            StationsAndDesktops::{
+                CloseDesktop, GetUserObjectInformationW, OpenInputDesktop, SetThreadDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_ENUMERATE,
+                DESKTOP_READOBJECTS, DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS, DF_ALLOWOTHERACCOUNTHOOK, HDESK, UOI_NAME,
             },
             Variant::VARIANT,
         },
@@ -109,12 +115,22 @@ impl Platform for WindowsPlatform {
     }
 
     fn capture(&self, display: u32) -> anyhow::Result<Frame> {
+        // The input desktop changes on lock, login and a UAC prompt; GDI captures whatever desktop this thread is
+        // on, so follow the input desktop first (the session helper runs as SYSTEM in the console session).
+        switch_to_input_desktop()?;
         let monitor = xcap::Monitor::all()?.into_iter().nth(display as usize).ok_or_else(|| anyhow::anyhow!("no display {display}"))?;
         let image = monitor.capture_image()?;
         Ok(Frame { width: image.width(), height: image.height(), rgba: image.into_raw() })
     }
 
     fn input(&self, input: Input) -> anyhow::Result<()> {
+        // Ctrl+Alt+Del is the secure attention sequence: Windows produces it only through SendSAS, from the SYSTEM
+        // helper in the console session (`asuser = false`), and only when the software-SAS policy allows it.
+        if input == Input::Sas {
+            unsafe { SendSAS(false) };
+            return Ok(());
+        }
+        switch_to_input_desktop()?;
         // A fresh Enigo per primitive: held keys must stay down between KeyDown and KeyUp calls.
         let mut enigo = Enigo::new(&Settings { release_keys_when_dropped: false, ..Default::default() })?;
         match input {
@@ -142,6 +158,7 @@ impl Platform for WindowsPlatform {
             Input::Key(name) => enigo.key(key(&name)?, Direction::Click)?,
             Input::KeyDown(name) => enigo.key(key(&name)?, Direction::Press)?,
             Input::KeyUp(name) => enigo.key(key(&name)?, Direction::Release)?,
+            Input::Sas => unreachable!("handled before the input desktop switch"),
         }
         Ok(())
     }
@@ -149,6 +166,7 @@ impl Platform for WindowsPlatform {
     // shortcut: only the foreground window (or, if it is not on `display`, the window at the display's centre);
     // other windows on the display are not walked. Walk all top-level windows if Marks miss things there.
     fn accessibility(&self, display: u32) -> anyhow::Result<Option<Vec<UiElement>>> {
+        switch_to_input_desktop()?;
         let d = self.display(display)?;
         com_init();
         unsafe {
@@ -283,7 +301,8 @@ impl Platform for WindowsPlatform {
         let (user, _) = console_session().unwrap_or_default();
         let mut power = SYSTEM_POWER_STATUS::default();
         // BatteryFlag 128 = no battery; 255 = unknown percentage.
-        let battery = unsafe { GetSystemPowerStatus(&mut power) }.is_ok() && power.BatteryFlag & 128 == 0 && power.BatteryLifePercent <= 100;
+        let battery =
+            unsafe { GetSystemPowerStatus(&mut power) }.is_ok() && power.BatteryFlag & 128 == 0 && power.BatteryLifePercent <= 100;
         Ok(Resources {
             cpu_percent: Some(s.system.global_cpu_usage().into()),
             ram_used_bytes: Some(s.system.used_memory()),
@@ -517,12 +536,69 @@ fn com_init() {
     }
 }
 
+thread_local! {
+    /// The desktop this thread was last put on, kept open: a thread whose desktop handle is closed points at a
+    /// desktop nobody can use, so the handle lives as long as the helper thread does.
+    static CURRENT_DESKTOP: RefCell<Option<(HDESK, String)>> = const { RefCell::new(None) };
+}
+
+/// Puts the calling thread on the input desktop. The desktop changes on lock (`Winlogon`), login and a UAC prompt
+/// (`Secure Desktop`); capture, input and UI Automation only see the desktop the thread is on (ADR 0001, ticket 22).
+fn switch_to_input_desktop() -> anyhow::Result<()> {
+    unsafe {
+        let access = DESKTOP_ACCESS_FLAGS(DESKTOP_READOBJECTS.0 | DESKTOP_WRITEOBJECTS.0 | DESKTOP_ENUMERATE.0 | DESKTOP_SWITCHDESKTOP.0);
+        let desktop = OpenInputDesktop(DF_ALLOWOTHERACCOUNTHOOK, false, access)?;
+        let mut name = [0u16; 128];
+        let mut needed = 0u32;
+        if let Err(e) = GetUserObjectInformationW(
+            HANDLE(desktop.0),
+            UOI_NAME,
+            Some(name.as_mut_ptr() as *mut core::ffi::c_void),
+            (name.len() * 2) as u32,
+            Some(&mut needed),
+        ) {
+            let _ = CloseDesktop(desktop);
+            return Err(e.into());
+        }
+        let name = String::from_utf16_lossy(&name[..name.iter().position(|&c| c == 0).unwrap_or(name.len())]);
+        let same = CURRENT_DESKTOP.with(|slot| slot.borrow().as_ref().is_some_and(|(_, current)| *current == name));
+        if same {
+            let _ = CloseDesktop(desktop);
+            return Ok(());
+        }
+        SetThreadDesktop(desktop)?;
+        let previous = CURRENT_DESKTOP.with(|slot| slot.borrow_mut().replace((desktop, name)));
+        if let Some((old, _)) = previous {
+            let _ = CloseDesktop(old);
+        }
+    }
+    Ok(())
+}
+
+/// Whether `exe` is the installed service binary (`%ProgramFiles%\rcli\rcli.exe`), which restarts through the SCM
+/// rather than as a child of itself.
+pub fn installed_service(exe: &std::path::Path) -> bool {
+    let name = |p: &std::path::Path| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    name(exe) == "rcli.exe" && exe.parent().is_some_and(|dir| name(dir) == "rcli")
+}
+
+/// The user logged in on the console, if any: the Terminal User an install records.
+pub fn active_user() -> Option<String> {
+    console_session().ok().and_then(|(user, _)| (!user.is_empty()).then_some(user))
+}
+
 /// The console session's user ("" = nobody logged in) and whether it is locked.
 fn console_session() -> anyhow::Result<(String, bool)> {
     unsafe {
         let mut info = windows::core::PWSTR::null();
         let mut len = 0;
-        WTSQuerySessionInformationW(Some(WTS_CURRENT_SERVER_HANDLE), WTSGetActiveConsoleSessionId(), WTSSessionInfoEx, &mut info, &mut len)?;
+        WTSQuerySessionInformationW(
+            Some(WTS_CURRENT_SERVER_HANDLE),
+            WTSGetActiveConsoleSessionId(),
+            WTSSessionInfoEx,
+            &mut info,
+            &mut len,
+        )?;
         let ex = &*(info.0 as *const WTSINFOEXW);
         let level1 = &ex.Data.WTSInfoExLevel1;
         let user = String::from_utf16_lossy(&level1.UserName).trim_end_matches('\0').to_owned();
