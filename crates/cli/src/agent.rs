@@ -45,8 +45,10 @@ impl Run {
         let server = ServerEndpoint { addr: self.server, server_key: self.key };
         #[cfg(target_os = "macos")]
         let platform = Arc::new(rcli_agent::macos::MacPlatform::new(self.name)?);
-        // shortcut: no adapter for this OS yet (tickets 15/21), so the binary runs on the FakePlatform.
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        let platform = Arc::new(rcli_agent::windows_platform::WindowsPlatform::new(self.name)?);
+        // shortcut: no adapter for this OS yet (tickets 15, 19), so the binary runs on the FakePlatform.
+        #[cfg(not(any(target_os = "macos", windows)))]
         let platform = Arc::new(rcli_agent::platform::FakePlatform::new(self.name));
         let path = self.state_dir.join("credentials.json");
         // shortcut: the encrypted-file fallback only; tickets 16/22/24 add DPAPI, Keychain and systemd-creds here.

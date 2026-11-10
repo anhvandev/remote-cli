@@ -15,6 +15,8 @@ mod observer;
 pub mod platform;
 pub mod secret_store;
 pub mod settings;
+#[cfg(windows)]
+pub mod windows_platform;
 
 use std::{
     io::Read,

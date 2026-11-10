@@ -70,16 +70,9 @@ pub(crate) fn is_root() -> bool {
 }
 
 /// This machine's Device ID when its Agent is running: `rcli upgrade` then fetches the build rolled out to it.
-#[cfg(unix)]
 async fn local_device(socket: &Path) -> Option<String> {
     let info = rcli_agent::ipc::send(socket, &rcli_agent::ipc::Request::Info).await.ok()?;
     Some(info["device_id"].as_str()?.to_owned())
-}
-
-// shortcut: no Agent runs behind a named pipe yet (the Windows ticket); Windows upgrades as a Controller-only machine.
-#[cfg(not(unix))]
-async fn local_device(_socket: &Path) -> Option<String> {
-    None
 }
 
 /// Run as root on Linux, the binary being replaced is the installed Agent's: the unit to restart onto it. As a
