@@ -13,8 +13,10 @@ fn main() {
     let platform = rcli_agent::linux::LinuxPlatform::new("contract").expect("Linux adapter");
     #[cfg(target_os = "macos")]
     let platform = rcli_agent::macos::MacPlatform::new("contract").expect("macOS adapter");
-    // shortcut: no adapter for this OS yet (ticket 21); swap in this OS's adapter here when it lands.
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    let platform = rcli_agent::windows_platform::WindowsPlatform::new("contract").expect("Windows adapter");
+    // shortcut: no adapter for other OSes; they run on the FakePlatform.
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let platform = rcli_agent::platform::FakePlatform::new("contract");
     eprintln!("Platform contract suite. Each step below gets {} s:", STEP_TIME.as_secs());
     use contract::Step::*;

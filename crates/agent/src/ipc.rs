@@ -1,4 +1,4 @@
-//! Local IPC: the running Agent serves `rcli agent ...` on a Unix socket (a named pipe on Windows later).
+//! Local IPC: the running Agent serves `rcli agent ...` on a Unix socket (a named pipe on Windows).
 //! One JSON request per connection, one JSON reply, newline-terminated; only `tokio::io` traits are used, so a
 //! pipe transport can reuse `handle`.
 
@@ -388,11 +388,12 @@ impl Status {
 pub fn default_socket() -> PathBuf {
     #[cfg(target_os = "macos")]
     return PathBuf::from("/var/run/rcli/agent.sock");
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    return PathBuf::from(r"\\.\pipe\rcli-agent");
+    #[cfg(not(any(target_os = "macos", windows)))]
     PathBuf::from("/run/rcli/agent.sock")
 }
 
-// shortcut: Unix socket only; a Windows named-pipe `serve`/`request` (same `handle`) lands with the Windows ticket.
 #[cfg(unix)]
 pub async fn serve(path: PathBuf, status: Arc<Status>) -> anyhow::Result<()> {
     // Only root may read the Device Password or change the Device; `info` is for any local user.
@@ -428,6 +429,88 @@ async fn serve_with(
                 tracing::debug!("IPC client ended: {e}");
             }
         });
+    }
+}
+
+/// Windows: a named pipe any local user may open (info, disconnect); an elevated caller counts as root.
+// shortcut: a busy pipe is not retried by `send`; one request per connection keeps that rare.
+#[cfg(windows)]
+pub async fn serve(path: PathBuf, status: Arc<Status>) -> anyhow::Result<()> {
+    let mut server = pipe_server(&path, true)?;
+    loop {
+        server.connect().await?;
+        let client = std::mem::replace(&mut server, pipe_server(&path, false)?);
+        let is_root = client_is_elevated(&client);
+        let status = status.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle(client, status, is_root).await {
+                tracing::debug!("IPC client ended: {e}");
+            }
+        });
+    }
+}
+
+/// One pipe instance. The first refuses to start if another process already owns the name (pipe squatting).
+#[cfg(windows)]
+fn pipe_server(path: &Path, first: bool) -> anyhow::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    use windows::Win32::Security::{
+        Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1},
+        PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+    };
+    // SYSTEM and Administrators: full access; Everyone: read and write, so any local user can send a request.
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            windows::core::w!("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;WD)"),
+            SDDL_REVISION_1,
+            &mut sd,
+            None,
+        )?;
+    }
+    let mut attrs = SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: sd.0, bInheritHandle: false.into() };
+    let server = unsafe {
+        tokio::net::windows::named_pipe::ServerOptions::new()
+            .first_pipe_instance(first)
+            .create_with_security_attributes_raw(path, &mut attrs as *mut _ as *mut _)
+    };
+    unsafe {
+        let _ = windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(sd.0)));
+    }
+    Ok(server?)
+}
+
+/// Whether the process at the other end of `pipe` runs elevated (an Administrator shell or SYSTEM).
+// shortcut: a user-session Agent cannot open an elevated caller's token, so there nobody counts as root;
+// ticket 22's SYSTEM service can.
+#[cfg(windows)]
+fn client_is_elevated(pipe: &tokio::net::windows::named_pipe::NamedPipeServer) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY},
+        System::{
+            Pipes::GetNamedPipeClientProcessId,
+            Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION},
+        },
+    };
+    unsafe {
+        let mut pid = 0;
+        if GetNamedPipeClientProcessId(HANDLE(pipe.as_raw_handle()), &mut pid).is_err() {
+            return false;
+        }
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let mut token = HANDLE::default();
+        let opened = OpenProcessToken(process, TOKEN_QUERY, &mut token).is_ok();
+        let _ = CloseHandle(process);
+        if !opened {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut len = 0;
+        let size = size_of::<TOKEN_ELEVATION>() as u32;
+        let ok = GetTokenInformation(token, TokenElevation, Some(&mut elevation as *mut _ as *mut _), size, &mut len).is_ok();
+        let _ = CloseHandle(token);
+        ok && elevation.TokenIsElevated != 0
     }
 }
 
@@ -567,12 +650,13 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
 }
 
 /// Sends one request to the Agent at `path` and returns its reply (an `error` reply is returned as `Err`).
-#[cfg(unix)]
 pub async fn send(path: &Path, request: &Request) -> anyhow::Result<Value> {
     let request = serde_json::to_string(request)?;
-    let stream = tokio::net::UnixStream::connect(path)
-        .await
-        .map_err(|e| anyhow::anyhow!("cannot reach the Agent at {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    let stream = tokio::net::UnixStream::connect(path).await;
+    #[cfg(windows)]
+    let stream = tokio::net::windows::named_pipe::ClientOptions::new().open(path);
+    let stream = stream.map_err(|e| anyhow::anyhow!("cannot reach the Agent at {}: {e}", path.display()))?;
     let (read, mut write) = tokio::io::split(stream);
     write.write_all(format!("{request}\n").as_bytes()).await?;
     write.flush().await?;
