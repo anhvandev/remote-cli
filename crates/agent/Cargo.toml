@@ -35,6 +35,14 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-vision = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "VNObservation", "VNRecognizeTextRequest", "VNRequest", "VNRequestHandler", "VNTypes"] }
 sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "user"] }
 
+# The Linux X11 adapter (`linux/`): capture and RandR over x11rb, input over XTest (enigo), AT-SPI over D-Bus.
+[target.'cfg(target_os = "linux")'.dependencies]
+enigo = "0.6"
+libc = "0.2"
+sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "user", "component"] }
+x11rb = { version = "0.13", features = ["randr"] }
+zbus = "5"
+
 # The Windows adapter (ticket 21).
 [target.'cfg(windows)'.dependencies]
 base64.workspace = true

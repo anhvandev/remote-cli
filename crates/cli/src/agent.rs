@@ -43,12 +43,14 @@ impl Run {
     pub async fn run(self) -> anyhow::Result<()> {
         let _ = tracing_subscriber::fmt().try_init();
         let server = ServerEndpoint { addr: self.server, server_key: self.key };
+        #[cfg(target_os = "linux")]
+        let platform = Arc::new(rcli_agent::linux::LinuxPlatform::new(self.name)?);
         #[cfg(target_os = "macos")]
         let platform = Arc::new(rcli_agent::macos::MacPlatform::new(self.name)?);
         #[cfg(windows)]
         let platform = Arc::new(rcli_agent::windows_platform::WindowsPlatform::new(self.name)?);
-        // shortcut: no adapter for this OS yet (tickets 15, 19), so the binary runs on the FakePlatform.
-        #[cfg(not(any(target_os = "macos", windows)))]
+        // shortcut: no adapter for other OSes, so the binary runs on the FakePlatform there.
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let platform = Arc::new(rcli_agent::platform::FakePlatform::new(self.name));
         let path = self.state_dir.join("credentials.json");
         // shortcut: the encrypted-file fallback only; tickets 16/22/24 add DPAPI, Keychain and systemd-creds here.
