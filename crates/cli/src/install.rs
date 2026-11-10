@@ -74,8 +74,9 @@ mod tests {
             Some(user) => assert_eq!(terminal_user(None), user),
             None => assert_eq!(terminal_user(None), rcli_agent::settings::default_terminal_user()),
         }
-        // An explicit root is not a Terminal User; the fallback takes over.
-        assert_ne!(terminal_user(Some("root".into())), "root");
+        // An explicit root is not a Terminal User; the fallback decides, so it equals the no-flag answer (which is
+        // still "root" when root is the account running the install, as in a container).
+        assert_eq!(terminal_user(Some("root".into())), terminal_user(None));
     }
 
     #[test]
