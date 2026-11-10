@@ -65,7 +65,10 @@
     uninstall, plus macOS).
   - `cargo test -p rcli-agent --lib` — 28 passed, 1 ignored (session protocol on both transports, SAS key
     recognition, key names, etc.).
-  - `cargo fmt --check` clean.
+  - Formatting: the repository has no committed `rustfmt.toml` and its baseline is not clean under rustfmt 1.99
+    (the code uses the wide `use_small_heuristics = "Max"` / ~140-column style), so I ran
+    `rustfmt --config use_small_heuristics=Max,max_width=140` on the files I changed rather than reformatting the
+    tree; `cargo fmt --check` fails on untouched baseline files either way.
   - `cargo clippy --workspace --all-targets -- -D warnings` and `--features rcli/gui` clean on macOS.
   - `cargo xwin clippy --target x86_64-pc-windows-msvc --workspace --all-targets -- -D warnings` clean, plus
     `--features rcli/gui`.
