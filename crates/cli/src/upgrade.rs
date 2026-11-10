@@ -219,7 +219,7 @@ mod service {
         Win32::System::Services::{
             CloseServiceHandle, ControlService, OpenSCManagerW, OpenServiceW, QueryServiceStatus, StartServiceW,
             SC_HANDLE, SC_MANAGER_CONNECT, SERVICE_CONTROL_STOP, SERVICE_QUERY_STATUS, SERVICE_START, SERVICE_STATUS,
-            SERVICE_STOP, SERVICE_STOPPED,
+            SERVICE_STOP, SERVICE_STOP_PENDING, SERVICE_STOPPED,
         },
     };
 
@@ -227,6 +227,8 @@ mod service {
     const NAME: &str = crate::windows_install::SERVICE;
     /// How long the SCM may take to report STOPPED after a stop request (it applies the request asynchronously).
     const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+    /// `ERROR_SERVICE_ALREADY_RUNNING` (1056) as an HRESULT: the SCM restarted the service by itself after the stop.
+    const ALREADY_RUNNING: i32 = 0x8007_0420u32 as i32;
 
     pub fn installed() -> anyhow::Result<()> {
         // `sc query` succeeds only for a service that exists; its output is localized, the exit code is not.
@@ -244,7 +246,10 @@ mod service {
         unsafe {
             QueryServiceStatus(service.0, &mut status)?;
             if status.dwCurrentState != SERVICE_STOPPED {
-                ControlService(service.0, SERVICE_CONTROL_STOP, &mut status)?;
+                // A stop already in flight needs no second request (it would be refused).
+                if status.dwCurrentState != SERVICE_STOP_PENDING {
+                    ControlService(service.0, SERVICE_CONTROL_STOP, &mut status)?;
+                }
                 let deadline = std::time::Instant::now() + STOP_TIMEOUT;
                 while std::time::Instant::now() < deadline {
                     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -265,8 +270,9 @@ mod service {
         let (_manager, service) = open(SERVICE_START | SERVICE_QUERY_STATUS)?;
         match unsafe { StartServiceW(service.0, None) } {
             Ok(()) => Ok(()),
-            // ERROR_SERVICE_ALREADY_RUNNING: the stop never took effect, or the SCM restarted it by itself.
-            Err(e) if e.code().0 == 0x8007_0424u32 as i32 => Ok(()),
+            // The stop never took effect, or the SCM restarted the service by itself: it is running, which is all
+            // this upgrade needs.
+            Err(e) if e.code().0 == ALREADY_RUNNING => Ok(()),
             Err(e) => anyhow::bail!("starting the {NAME} service failed: {e}"),
         }
     }
