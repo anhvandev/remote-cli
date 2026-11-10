@@ -36,10 +36,14 @@ objc2-vision = { version = "0.3", default-features = false, features = ["std", "
 security-framework = "3"
 sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "user"] }
 
-# The Linux X11 adapter (`linux/`): capture and RandR over x11rb, input over XTest (enigo), AT-SPI over D-Bus.
+# The Linux adapter (`linux/`): X11 capture and RandR over x11rb and input over XTest (enigo); Wayland capture
+# through the desktop portal's ScreenCast (ashpd + PipeWire) and input through uinput (evdev); AT-SPI over D-Bus.
 [target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.14", features = ["screencast"] }
 enigo = "0.6"
+evdev = "0.13"
 libc = "0.2"
+pipewire = "0.10"
 sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "user", "component"] }
 x11rb = { version = "0.13", features = ["randr"] }
 zbus = "5"

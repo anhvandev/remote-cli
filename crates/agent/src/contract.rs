@@ -15,10 +15,11 @@ pub const WAKE_TEST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x27];
 const SCREEN_CHANGE_TIMEOUT: Duration = Duration::from_secs(1);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(3);
 const SHELL_TIMEOUT: Duration = Duration::from_secs(5);
-const CHECKS: [&str; 16] = [
+const CHECKS: [&str; 17] = [
     "displays",
     "capture",
     "key shows on screen",
+    "text input",
     "session state",
     "control indicator",
     "text recognition",
@@ -205,6 +206,18 @@ fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Rep
         let start = Instant::now();
         while p.capture(primary)? == before {
             anyhow::ensure!(start.elapsed() < SCREEN_CHANGE_TIMEOUT, "screen did not change after the key");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    });
+    // Typed text is a different path (a keymap with Shift on Wayland's uinput), so it gets its own check.
+    r.check("text input", env, || {
+        let primary = primary(p)?;
+        let before = p.capture(primary)?;
+        p.input(Input::Text("rcli".into()))?;
+        let start = Instant::now();
+        while p.capture(primary)? == before {
+            anyhow::ensure!(start.elapsed() < SCREEN_CHANGE_TIMEOUT, "screen did not change after the text");
             std::thread::sleep(Duration::from_millis(100));
         }
         Ok(())

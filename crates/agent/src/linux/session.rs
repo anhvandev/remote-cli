@@ -1,11 +1,15 @@
-//! The Linux console session (ticket 16): the root service must show and control the lock screen and the
-//! display-manager (greeter) login. It cannot use its own environment: the X server's cookie lives in the
-//! session's Xauthority file, and enigo (input) reads `DISPLAY`/`XAUTHORITY` from the environment. So the daemon
-//! discovers seat0's active X11 session (logind, then the X server's `-auth` argument and the display-manager run
-//! directories) and runs `rcli agent session` as that session's user with those variables set. The helper answers
-//! the same wire protocol as the macOS session helper; displays, capture, input, accessibility and session state
-//! go to it, while shell, power, metrics and inventory stay in the daemon. At the greeter XTest input works, unlike
-//! CGEvent at the macOS login window, so no input restriction applies.
+//! The Linux console session (ticket 16, Wayland added by ticket 19): the root service must show and control the
+//! lock screen and the display-manager (greeter) login. It cannot use its own environment: on X11 the server's
+//! cookie lives in the session's Xauthority file and enigo (input) reads `DISPLAY`/`XAUTHORITY` from the
+//! environment; on Wayland the desktop portal that captures the screen lives on the user's session bus. So the
+//! daemon discovers seat0's active session with logind and runs `rcli agent session` as that session's user with
+//! the right variables set. The helper answers the same wire protocol as the macOS session helper; displays,
+//! capture, accessibility and session state go to it, while shell, power, metrics and inventory stay in the
+//! daemon.
+//!
+//! Input differs by session type: X11 goes through the helper (XTest reaches the lock screen and the greeter,
+//! unlike CGEvent at the macOS login window), Wayland through a virtual device on `/dev/uinput` that only root can
+//! create, so the daemon writes it and the helper only captures.
 //!
 //! Why not talk to the X server directly? A root daemon can read the cookie, but enigo would still need the
 //! process-global environment, and that changes when the console session changes. The helper already existed for
@@ -19,6 +23,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::{
+    screencast::{TokenStore, TOKEN_ENV},
+    uinput::VirtualInput,
+    SessionKind,
+};
 use crate::{
     platform::{Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, RunAs, SessionState, ShellOutput, UiElement},
     macos_session::SessionPlatform,
@@ -27,23 +36,24 @@ use crate::{
 /// Users a display manager runs its greeter as; their X server is the login screen, not a logged-in user.
 const GREETERS: [&str; 7] = ["gdm", "gdm3", "lightdm", "sddm", "lxdm", "xdm", "kdm"];
 
-/// One X11 session a helper can serve.
+/// One graphical session a helper can serve.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
-    /// `DISPLAY`, e.g. `:0` or `:1`.
+    pub session: SessionKind,
+    /// `DISPLAY` on X11 (`:0`), `WAYLAND_DISPLAY` on Wayland (`wayland-0`).
     pub display: String,
     pub user: String,
     pub uid: Option<u32>,
-    /// The X server's authorization file, e.g. `/run/lightdm/root/:0`.
-    pub xauthority: PathBuf,
+    /// The X server's authorization file, e.g. `/run/lightdm/root/:0`; a Wayland session has none.
+    pub xauthority: Option<PathBuf>,
     /// Nobody is logged in: this is the display-manager greeter.
     pub greeter: bool,
 }
 
 impl Target {
     /// The key that tells two reconciler runs apart.
-    fn id(&self) -> (&str, &str) {
-        (&self.display, &self.user)
+    fn id(&self) -> (&SessionKind, &str, &str) {
+        (&self.session, &self.display, &self.user)
     }
 }
 
@@ -65,6 +75,9 @@ impl SessionInfo {
     }
     pub fn is_x11(&self) -> bool {
         self.session_type.starts_with("x11")
+    }
+    pub fn is_wayland(&self) -> bool {
+        self.session_type == "wayland"
     }
 }
 
@@ -179,12 +192,39 @@ pub fn target_for(root: &Path, session: &SessionInfo, display: &str) -> Option<T
         .or_else(|| if session.is_greeter() { greeter_auths(root, display).into_iter().next() } else { None })
         .or_else(|| user_auths(root, &session.user, session.uid).into_iter().next())?;
     Some(Target {
+        session: SessionKind::X11,
         display: display.to_owned(),
         user: session.user.clone(),
         uid: session.uid,
-        xauthority,
+        xauthority: Some(xauthority),
         greeter: session.is_greeter(),
     })
+}
+
+/// The Wayland target of `session`: there is no X cookie, only the compositor's socket in the user's runtime dir.
+pub fn wayland_target(session: &SessionInfo, display: String) -> Target {
+    Target {
+        session: SessionKind::Wayland,
+        display,
+        user: session.user.clone(),
+        uid: session.uid,
+        xauthority: None,
+        greeter: session.is_greeter(),
+    }
+}
+
+/// The compositor's Wayland socket for `uid`: `wayland-0` when there is one, else the first `wayland-*` entry
+/// (a nested compositor uses `wayland-1` and up; the lock files are not sockets).
+pub fn wayland_display(root: &Path, uid: Option<u32>) -> Option<String> {
+    let uid = uid?;
+    let mut found: Vec<String> = std::fs::read_dir(root.join(format!("run/user/{uid}")))
+        .ok()?
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_string_lossy().into_owned().into())
+        .filter(|name: &String| name.starts_with("wayland-") && !name.contains(".lock"))
+        .collect();
+    found.sort();
+    found.iter().find(|name| *name == "wayland-0").cloned().or_else(|| found.first().cloned())
 }
 
 /// Reads the seat0 session through `loginctl` (`run` is a seam: it returns a property value).
@@ -221,25 +261,42 @@ fn loginctl(args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// `runuser -u <user> -- env DISPLAY=… XAUTHORITY=… <exe> agent session --socket <socket>`.
-pub fn helper_args(exe: &Path, socket: &Path, target: &Target) -> Vec<String> {
-    vec![
-        "-u".into(),
-        target.user.clone(),
-        "--".into(),
-        "env".into(),
-        format!("DISPLAY={}", target.display),
-        format!("XAUTHORITY={}", target.xauthority.display()),
+/// `runuser -u <user> -- env <session variables> <exe> agent session --socket <socket>`.
+///
+/// X11 gets `DISPLAY`/`XAUTHORITY`; Wayland gets the compositor socket, the runtime dir (which also holds the
+/// session bus) and the stored portal restore token, so the helper does not prompt again.
+pub fn helper_args(exe: &Path, socket: &Path, target: &Target, restore_token: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-u".into(), target.user.clone(), "--".into(), "env".into()];
+    match target.session {
+        SessionKind::X11 => {
+            args.push(format!("DISPLAY={}", target.display));
+            args.push(format!("XAUTHORITY={}", target.xauthority.as_ref().map(|p| p.display().to_string()).unwrap_or_default()));
+        }
+        SessionKind::Wayland => {
+            args.push("XDG_SESSION_TYPE=wayland".to_owned());
+            args.push(format!("WAYLAND_DISPLAY={}", target.display));
+            if let Some(uid) = target.uid {
+                args.push(format!("XDG_RUNTIME_DIR=/run/user/{uid}"));
+                args.push(format!("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus"));
+            }
+            if let Some(token) = restore_token {
+                args.push(format!("{TOKEN_ENV}={token}"));
+            }
+        }
+    }
+    args.extend([
         exe.display().to_string(),
         "agent".into(),
         "session".into(),
         "--socket".into(),
         socket.display().to_string(),
-    ]
+    ]);
+    args
 }
 
-/// How the reconciler starts a helper; tests replace it (the root-only `runuser` cannot run in a test process).
-pub type Spawn = dyn Fn(&Target) -> anyhow::Result<Child> + Send + Sync;
+/// How the reconciler starts a helper (with the stored portal restore token); tests replace it (the root-only
+/// `runuser` cannot run in a test process).
+pub type Spawn = dyn Fn(&Target, Option<&str>) -> anyhow::Result<Child> + Send + Sync;
 type Loginctl = dyn Fn(&[&str]) -> Option<String> + Send + Sync;
 
 /// The daemon's Platform: screen calls go to the helper for seat0, everything else to `inner`.
@@ -253,13 +310,17 @@ pub struct ConsoleSession {
     root: PathBuf,
     loginctl: Arc<Loginctl>,
     spawn: Arc<Spawn>,
+    /// The portal restore token in the Device state dir; the helper gets it at spawn and publishes new ones.
+    token: Option<TokenStore>,
+    /// Wayland input: a virtual device only root can create, written here and not in the helper.
+    uinput: Mutex<Option<VirtualInput>>,
 }
 
 impl ConsoleSession {
     /// The installed root service: `/`, the real `loginctl`/`runuser` and the running binary.
-    pub fn start(inner: Arc<dyn Platform>, socket: &Path) -> anyhow::Result<Arc<Self>> {
+    pub fn start(inner: Arc<dyn Platform>, socket: &Path, state_dir: Option<&Path>) -> anyhow::Result<Arc<Self>> {
         let exe = std::env::current_exe()?;
-        Self::start_with(inner, socket, "/", Arc::new(loginctl), None, &exe)
+        Self::start_with(inner, socket, "/", Arc::new(loginctl), None, &exe, state_dir)
     }
 
     /// `start` with the host root and the seams given: `spawn` (`None` = `runuser`) and `loginctl`.
@@ -270,19 +331,34 @@ impl ConsoleSession {
         loginctl: Arc<Loginctl>,
         spawn: Option<Arc<Spawn>>,
         exe: &Path,
+        state_dir: Option<&Path>,
     ) -> anyhow::Result<Arc<Self>> {
         let trusted: Arc<Mutex<Vec<u32>>> = Default::default();
         let trusted_for_listener = trusted.clone();
-        // The greeter and the lock screen both accept XTest input on Linux, so the login screen is not special.
+        // The greeter and the lock screen both accept input on Linux (XTest, or uinput on Wayland), so the login
+        // screen is not special.
         let sessions = SessionPlatform::listen_with(
             inner.clone(),
             socket,
             move |uid| uid == 0 || trusted_for_listener.lock().unwrap().contains(&uid),
             true,
         )?;
+        let token = state_dir.map(|dir| TokenStore::new(dir.join(super::screencast::TOKEN_FILE)));
+        // A helper publishes the portal's new restore token over the wire; the daemon owns the state dir.
+        if let Some(store) = token.clone() {
+            sessions.on_restore_token(move |token| {
+                // Every state poll carries the token; only a new one is worth a write.
+                if store.load().as_deref() == Some(token) {
+                    return;
+                }
+                if let Err(e) = store.save(token) {
+                    tracing::warn!("cannot store the screen cast restore token: {e:#}");
+                }
+            });
+        }
         let spawn: Arc<Spawn> = spawn.unwrap_or_else(|| {
             let (exe, socket) = (exe.to_owned(), socket.to_owned());
-            Arc::new(move |target| spawn_runuser(&exe, &socket, target))
+            Arc::new(move |target, token| spawn_runuser(&exe, &socket, target, token))
         });
         Ok(Arc::new(Self {
             inner,
@@ -292,21 +368,40 @@ impl ConsoleSession {
             root: root.into(),
             loginctl,
             spawn,
+            token,
+            uinput: Mutex::new(None),
         }))
     }
 
     fn target(&self) -> Option<Target> {
         let session = seat_session(self.loginctl.as_ref())?;
-        // A Wayland session (including a Wayland greeter) cannot be served: Xwayland only shows individual X11
-        // clients, not the desktop or the greeter. Report "no X11 session" rather than a misleading half-screen.
-        if session.session_type == "wayland" {
-            return None;
+        if session.is_wayland() {
+            // A Wayland greeter (GNOME's login screen) has no screen-cast portal to share its screen with: there is
+            // nothing a helper could capture, so report "unavailable" instead of a dead helper.
+            if session.is_greeter() {
+                return None;
+            }
+            return Some(wayland_target(&session, wayland_display(&self.root, session.uid)?));
         }
         let display = match session.display.is_empty() {
             true => socket_display(&self.root)?,
             false => session.display.clone(),
         };
         target_for(&self.root, &session, &display)
+    }
+
+    /// Why there is no helper for the session on the console. A Wayland session is served now, so the difference is
+    /// between "nothing is logged in" (X11 wording, also what a headless machine reports) and a Wayland greeter.
+    fn no_helper_error(&self) -> anyhow::Error {
+        match seat_session(self.loginctl.as_ref()) {
+            Some(session) if session.is_wayland() && session.is_greeter() => anyhow::anyhow!(
+                "screen capture at a Wayland login screen is not available: the greeter has no screen-cast portal"
+            ),
+            Some(session) if session.is_wayland() => anyhow::anyhow!(
+                "the Wayland session on the console did not start its capture helper (is the screen-cast portal running?)"
+            ),
+            _ => anyhow::anyhow!("no X11 session on the console: cannot see the screen"),
+        }
     }
 
     /// The live session state from logind, independent of whether a helper is up (a Wayland session has none).
@@ -335,6 +430,7 @@ impl ConsoleSession {
             self.trusted.lock().unwrap().clear();
             return;
         };
+        let token = self.token.as_ref().and_then(TokenStore::load);
         {
             let mut trusted = self.trusted.lock().unwrap();
             trusted.clear();
@@ -342,7 +438,7 @@ impl ConsoleSession {
                 trusted.push(uid);
             }
         }
-        match (self.spawn)(&target) {
+        match (self.spawn)(&target, token.as_deref()) {
             Ok(child) => *running = Some((target, child)),
             Err(e) => tracing::warn!("cannot start the session helper: {e:#}"),
         }
@@ -356,7 +452,7 @@ impl ConsoleSession {
         self.reconcile();
         let start = Instant::now();
         while self.sessions.helper_count() == 0 {
-            anyhow::ensure!(start.elapsed() < Duration::from_secs(5), "no X11 session on the console: cannot see the screen");
+            anyhow::ensure!(start.elapsed() < Duration::from_secs(5), self.no_helper_error());
             std::thread::sleep(Duration::from_millis(50));
             self.reconcile();
         }
@@ -366,6 +462,27 @@ impl ConsoleSession {
     fn check<T>(&self, f: impl FnOnce(&SessionPlatform) -> anyhow::Result<T>) -> anyhow::Result<T> {
         self.ensure_helper()?;
         f(&self.sessions)
+    }
+
+    fn seat_is_wayland(&self) -> bool {
+        seat_session(self.loginctl.as_ref()).is_some_and(|session| session.is_wayland())
+    }
+
+    /// Writes `input` to the daemon's virtual device; a move needs the portal's display geometry.
+    fn uinput_input(&self, input: Input) -> anyhow::Result<()> {
+        let displays = match input {
+            Input::Move { .. } => self.sessions.displays()?,
+            _ => vec![],
+        };
+        let mut device = self.uinput.lock().unwrap();
+        if device.is_none() {
+            *device = Some(VirtualInput::create()?);
+        }
+        let out = device.as_mut().expect("just created").input(input, &displays);
+        if out.is_err() {
+            *device = None;
+        }
+        out
     }
 }
 
@@ -380,6 +497,11 @@ impl Platform for ConsoleSession {
         self.check(|s| s.capture(display))
     }
     fn input(&self, input: Input) -> anyhow::Result<()> {
+        if self.seat_is_wayland() {
+            // Wayland input is the daemon's uinput device: the helper runs as the session user, which cannot create
+            // one, and the portal has no input path at all. It also reaches a Wayland greeter, which has no portal.
+            return self.uinput_input(input);
+        }
         // XTest reaches the greeter and the lock screen (unlike CGEvent at the macOS login window).
         self.check(|s| s.input(input))
     }
@@ -450,10 +572,10 @@ impl Platform for ConsoleSession {
 
 /// The root service's spawn: `runuser` switches to the session user, which is what makes the helper see that
 /// user's X authority and (for the greeter) the display manager's cookie.
-fn spawn_runuser(exe: &Path, socket: &Path, target: &Target) -> anyhow::Result<Child> {
+fn spawn_runuser(exe: &Path, socket: &Path, target: &Target, token: Option<&str>) -> anyhow::Result<Child> {
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new("runuser");
-    command.args(helper_args(exe, socket, target)).process_group(0);
+    command.args(helper_args(exe, socket, target, token)).process_group(0);
     command.spawn().map_err(|e| anyhow::anyhow!("cannot start the session helper as {}: {e}", target.user))
 }
 
@@ -472,9 +594,9 @@ fn stop(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// Starts the reconciler and the platform for the installed root service.
-pub fn console(inner: Arc<dyn Platform>, socket: &Path) -> anyhow::Result<Arc<ConsoleSession>> {
-    let this = ConsoleSession::start(inner, socket)?;
+/// Starts the reconciler and the platform for the installed root service; `state_dir` holds the portal token.
+pub fn console(inner: Arc<dyn Platform>, socket: &Path, state_dir: Option<&Path>) -> anyhow::Result<Arc<ConsoleSession>> {
+    let this = ConsoleSession::start(inner, socket, state_dir)?;
     this.reconcile();
     let reconciler = this.clone();
     std::thread::spawn(move || loop {
@@ -569,13 +691,13 @@ mod tests {
         let session = seat_session(&run).unwrap();
         assert_eq!((session.id.as_str(), session.user.as_str(), session.is_greeter()), ("c1", "lightdm", true));
         let target = target_for(&root, &session, &session.display).unwrap();
-        assert_eq!(target.xauthority, root.join("run/lightdm/root/:0"));
+        assert_eq!(target.xauthority, Some(root.join("run/lightdm/root/:0")));
         assert!(target.greeter);
         assert_eq!(console_uid(&run), Some(111));
 
         // LightDM's root-only cookie is found without Xorg's process too.
         std::fs::remove_dir_all(root.join("proc")).unwrap();
-        assert_eq!(target_for(&root, &session, ":0").unwrap().xauthority, root.join("run/lightdm/root/:0"));
+        assert_eq!(target_for(&root, &session, ":0").unwrap().xauthority, Some(root.join("run/lightdm/root/:0")));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -592,11 +714,14 @@ mod tests {
             display: ":1".into(),
             locked_hint: "no".into(),
         };
-        assert_eq!(target_for(&root, &session, ":1").unwrap().xauthority, root.join("run/user/1000/gdm/Xauthority"));
+        assert_eq!(
+            target_for(&root, &session, ":1").unwrap().xauthority,
+            Some(root.join("run/user/1000/gdm/Xauthority"))
+        );
         // No Xorg cmdline, no greeter paths: the home directory's cookie is the next choice.
         std::fs::remove_dir_all(root.join("run")).unwrap();
         touch(&root.join("home/alice/.Xauthority"));
-        assert_eq!(target_for(&root, &session, ":1").unwrap().xauthority, root.join("home/alice/.Xauthority"));
+        assert_eq!(target_for(&root, &session, ":1").unwrap().xauthority, Some(root.join("home/alice/.Xauthority")));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -619,17 +744,140 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    fn wayland_session() -> SessionInfo {
+        SessionInfo {
+            id: "2".into(),
+            user: "alice".into(),
+            uid: Some(1000),
+            class: "user".into(),
+            session_type: "wayland".into(),
+            display: String::new(),
+            locked_hint: "no".into(),
+        }
+    }
+
+    /// The daemon with a scripted logind; the helper is never spawned (`spawn` would fail in a test process).
+    fn daemon(root: &Path, session: SessionInfo) -> (Arc<ConsoleSession>, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rcli-linux-console-{}-{}", std::process::id(), rand_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("session.sock");
+        let run = Arc::new(move |args: &[&str]| -> Option<String> {
+            match args {
+                ["show-seat", "seat0", "-p", "ActiveSession", "--value"] => Some("2\n".into()),
+                ["show-session", "2", ..] => Some(format!(
+                    "{}\n{}\n{}\n{}\n{}\n{}\n",
+                    session.user,
+                    session.uid.unwrap_or(0),
+                    session.class,
+                    session.session_type,
+                    session.display,
+                    session.locked_hint
+                )),
+                _ => None,
+            }
+        });
+        let spawn: Arc<Spawn> = Arc::new(|_, _| anyhow::bail!("no helper in a test"));
+        let this = ConsoleSession::start_with(
+            Arc::new(crate::platform::FakePlatform::new("daemon")),
+            &socket,
+            root,
+            run,
+            Some(spawn),
+            Path::new("/usr/local/lib/rcli/rcli"),
+            None,
+        )
+        .unwrap();
+        (this, dir)
+    }
+
+    fn rand_suffix() -> u128 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    }
+
+    #[test]
+    fn a_wayland_session_targets_the_compositors_socket_and_has_no_x_cookie() {
+        let root = root("wayland");
+        touch(&root.join("run/user/1000/wayland-1"));
+        touch(&root.join("run/user/1000/wayland-0"));
+        touch(&root.join("run/user/1000/wayland-0.lock"));
+        // The compositor's own socket wins over a nested one, and lock files are not sockets.
+        assert_eq!(wayland_display(&root, Some(1000)).as_deref(), Some("wayland-0"));
+        std::fs::remove_file(root.join("run/user/1000/wayland-0")).unwrap();
+        assert_eq!(wayland_display(&root, Some(1000)).as_deref(), Some("wayland-1"));
+        assert_eq!(wayland_display(&root, Some(1001)), None);
+        let target = wayland_target(&wayland_session(), "wayland-0".into());
+        assert_eq!((target.session, target.xauthority), (SessionKind::Wayland, None));
+        assert!(!target.greeter);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_wayland_helper_gets_the_session_bus_the_socket_and_the_stored_token() {
+        let target = wayland_target(&wayland_session(), "wayland-0".into());
+        let args = helper_args(Path::new("/usr/local/lib/rcli/rcli"), Path::new("/run/rcli/session.sock"), &target, Some("tok-1"));
+        assert_eq!(
+            args,
+            vec![
+                "-u",
+                "alice",
+                "--",
+                "env",
+                "XDG_SESSION_TYPE=wayland",
+                "WAYLAND_DISPLAY=wayland-0",
+                "XDG_RUNTIME_DIR=/run/user/1000",
+                "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+                "RCLI_SCREENCAST_RESTORE_TOKEN=tok-1",
+                "/usr/local/lib/rcli/rcli",
+                "agent",
+                "session",
+                "--socket",
+                "/run/rcli/session.sock",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+        );
+        // Without a token the helper asks the portal once; the environment is otherwise the same.
+        let args = helper_args(Path::new("/usr/local/lib/rcli/rcli"), Path::new("/run/rcli/session.sock"), &target, None);
+        assert!(!args.iter().any(|arg| arg.starts_with("RCLI_SCREENCAST_RESTORE_TOKEN=")), "{args:?}");
+        assert!(!args.iter().any(|arg| arg.starts_with("XAUTHORITY=")), "a Wayland session has no X cookie: {args:?}");
+    }
+
+    #[test]
+    fn the_reconciler_serves_a_logged_in_wayland_session_and_refuses_its_greeter() {
+        let root = root("wayland-console");
+        touch(&root.join("run/user/1000/wayland-0"));
+        let session = wayland_session();
+        let (console, dir) = daemon(&root, session.clone());
+        let target = console.target().expect("a logged-in Wayland session can be served now");
+        assert_eq!((target.session, target.display.as_str()), (SessionKind::Wayland, "wayland-0"));
+        assert!(console.seat_is_wayland(), "input then goes through uinput, not the helper");
+        let _ = std::fs::remove_dir_all(dir);
+
+        let greeter = SessionInfo { user: "gdm".into(), uid: Some(111), class: "greeter".into(), ..session };
+        let (greeter_daemon, greeter_dir) = daemon(&root, greeter);
+        assert!(greeter_daemon.target().is_none(), "the greeter has no screen-cast portal to share");
+        assert!(
+            greeter_daemon.no_helper_error().to_string().contains("Wayland login screen"),
+            "{}",
+            greeter_daemon.no_helper_error()
+        );
+        let _ = std::fs::remove_dir_all(greeter_dir);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn the_helper_runs_as_the_session_user_with_the_displays_environment() {
         let target = Target {
+            session: SessionKind::X11,
             display: ":1".into(),
             user: "lightdm".into(),
             uid: Some(111),
-            xauthority: PathBuf::from("/run/lightdm/root/:1"),
+            xauthority: Some(PathBuf::from("/run/lightdm/root/:1")),
             greeter: true,
         };
         assert_eq!(
-            helper_args(Path::new("/usr/local/lib/rcli/rcli"), Path::new("/run/rcli/session.sock"), &target),
+            helper_args(Path::new("/usr/local/lib/rcli/rcli"), Path::new("/run/rcli/session.sock"), &target, None),
             vec![
                 "-u",
                 "lightdm",

@@ -39,7 +39,7 @@ pub struct DeviceConfig {
 pub async fn serve_device(config: DeviceConfig) -> anyhow::Result<()> {
     let server = ServerEndpoint { addr: config.server, server_key: config.key };
     #[cfg(target_os = "linux")]
-    let platform = Arc::new(rcli_agent::linux::LinuxPlatform::new(config.name.clone())?);
+    let platform = Arc::new(rcli_agent::linux::LinuxPlatform::with_state_dir(config.name.clone(), &config.state_dir)?);
     #[cfg(target_os = "macos")]
     let platform = Arc::new(rcli_agent::macos::MacPlatform::new(config.name.clone())?);
     #[cfg(windows)]
@@ -51,7 +51,7 @@ pub async fn serve_device(config: DeviceConfig) -> anyhow::Result<()> {
     // 24). Linux runs one helper for seat0 and reconciles it on login/logout.
     #[cfg(target_os = "linux")]
     let platform: Arc<dyn rcli_agent::platform::Platform> = match &config.session_socket {
-        Some(socket) => rcli_agent::linux::session::console(platform, socket)?,
+        Some(socket) => rcli_agent::linux::session::console(platform, socket, Some(&config.state_dir))?,
         None => platform,
     };
     #[cfg(target_os = "macos")]
