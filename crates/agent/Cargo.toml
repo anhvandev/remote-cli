@@ -22,3 +22,11 @@ tokio-rustls.workspace = true
 tracing.workspace = true
 bytes.workspace = true
 webrtc.workspace = true
+
+# The Linux X11 adapter (ticket 15): capture and RandR over x11rb, input over XTest (enigo), AT-SPI over D-Bus.
+[target.'cfg(target_os = "linux")'.dependencies]
+enigo.workspace = true
+libc.workspace = true
+sysinfo.workspace = true
+x11rb.workspace = true
+zbus.workspace = true

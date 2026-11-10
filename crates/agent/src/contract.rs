@@ -134,19 +134,19 @@ pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
         Ok(())
     });
     r.check("shell", Env::LoggedIn, || {
-        let out = p.shell("echo rcli-contract", RunAs::User("user".into()), SHELL_TIMEOUT)?;
+        let out = p.shell("echo rcli-contract", me(), SHELL_TIMEOUT)?;
         anyhow::ensure!(out.exit_code == 0 && out.stdout.trim() == "rcli-contract", "unexpected {out:?}");
         Ok(())
     });
     r.check("shell timeout", Env::LoggedIn, || {
         let start = Instant::now();
-        let out = p.shell("sleep 30", RunAs::User("user".into()), Duration::from_secs(1))?;
+        let out = p.shell("sleep 30", me(), Duration::from_secs(1))?;
         anyhow::ensure!(out.timed_out, "not reported as timed out: {out:?}");
         anyhow::ensure!(start.elapsed() < SHELL_TIMEOUT, "not killed in time: took {:?}", start.elapsed());
         Ok(())
     });
     r.check("pty", Env::LoggedIn, || {
-        let mut pty = p.pty(RunAs::User("user".into()), 80, 24)?;
+        let mut pty = p.pty(me(), 80, 24)?;
         pty.control.resize(100, 30)?;
         pty.input.write_all(b"echo rcli-contract\rexit 3\r")?;
         let (tx, rx) = std::sync::mpsc::channel();
@@ -220,6 +220,11 @@ fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Rep
         anyhow::ensure!(!p.recognize_text(&p.capture(primary(p)?)?)?.is_empty(), "no text recognized");
         Ok(())
     });
+}
+
+/// The account running the suite: on a real machine the Terminal User must be an account that exists.
+fn me() -> RunAs {
+    RunAs::User(std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "user".into()))
 }
 
 fn primary(p: &dyn Platform) -> anyhow::Result<u32> {

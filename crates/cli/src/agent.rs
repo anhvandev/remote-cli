@@ -5,7 +5,6 @@ use std::{path::PathBuf, sync::Arc};
 use clap::Args;
 use rcli_agent::{
     ipc,
-    platform::FakePlatform,
     secret_store::{FileSecretStore, SecretStore},
     settings::{AcceptMode, RootAccess},
     Credentials, ServerEndpoint,
@@ -44,8 +43,11 @@ impl Run {
     pub async fn run(self) -> anyhow::Result<()> {
         let _ = tracing_subscriber::fmt().try_init();
         let server = ServerEndpoint { addr: self.server, server_key: self.key };
-        // shortcut: no OS adapter exists yet (tickets 28-35), so the binary runs on the FakePlatform.
-        let platform = Arc::new(FakePlatform::new(self.name));
+        #[cfg(target_os = "linux")]
+        let platform = Arc::new(rcli_agent::linux::LinuxPlatform::new(self.name));
+        // shortcut: no adapter for this OS yet (tickets 21, 23), so the binary runs on the FakePlatform.
+        #[cfg(not(target_os = "linux"))]
+        let platform = Arc::new(rcli_agent::platform::FakePlatform::new(self.name));
         let path = self.state_dir.join("credentials.json");
         // shortcut: the encrypted-file fallback only; tickets 16/22/24 add DPAPI, Keychain and systemd-creds here.
         let secrets = FileSecretStore::new(&self.state_dir);

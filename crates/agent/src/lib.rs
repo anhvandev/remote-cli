@@ -6,6 +6,8 @@ mod clip;
 mod coords;
 mod executor;
 pub mod ipc;
+#[cfg(target_os = "linux")]
+pub mod linux;
 mod live;
 mod marks;
 mod media;
