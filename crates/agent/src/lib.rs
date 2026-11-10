@@ -9,6 +9,8 @@ pub mod ipc;
 mod live;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "macos")]
+pub mod macos_session;
 mod marks;
 mod media;
 mod observer;

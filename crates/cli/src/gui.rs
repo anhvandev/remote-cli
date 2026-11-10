@@ -39,6 +39,11 @@ struct App {
     unlock: String,
     /// The last action's message.
     note: String,
+    /// The install form (macOS, shown while no Agent answers): Server Address and Server Key.
+    #[cfg(target_os = "macos")]
+    install_server: String,
+    #[cfg(target_os = "macos")]
+    install_key: String,
 }
 
 impl App {
@@ -62,6 +67,10 @@ impl App {
             accept,
             unlock: String::new(),
             note: String::new(),
+            #[cfg(target_os = "macos")]
+            install_server: String::new(),
+            #[cfg(target_os = "macos")]
+            install_key: String::new(),
         }
     }
 
@@ -163,6 +172,28 @@ impl App {
         }
     }
 
+    /// Installs the Agent service from this app after the macOS authorization prompt (ticket 24). The person
+    /// running the app becomes the Terminal User. Permission grants belong to the installed app, so it is reopened.
+    #[cfg(target_os = "macos")]
+    fn install(&mut self) {
+        let user = std::env::var("USER").unwrap_or_default();
+        let mut args = vec!["agent", "install", "--server", self.install_server.trim(), "--key", self.install_key.trim()];
+        if !user.is_empty() {
+            args.extend(["--terminal-user", &user]);
+        }
+        match elevated(&args, None) {
+            Ok(out) => {
+                self.note = out;
+                let installed = std::path::Path::new("/Applications/rcli.app");
+                if !std::env::current_exe().is_ok_and(|exe| exe.starts_with(installed)) {
+                    let _ = std::process::Command::new("open").arg("-n").arg(installed).spawn();
+                    std::process::exit(0);
+                }
+            }
+            Err(e) => self.note = format!("install failed: {e}"),
+        }
+    }
+
     /// Grants root to one Controller for this session only (root).
     fn grant_root(&mut self, who: &str) {
         let reply = self.ipc_elevated(&Request::RootGrant { who: who.to_owned() }, &["agent", "root", "grant", who], None);
@@ -202,6 +233,22 @@ impl eframe::App for App {
             }
             if let Some(error) = self.info["error"].as_str() {
                 ui.label(format!("Agent unreachable: {error}"));
+                #[cfg(target_os = "macos")]
+                {
+                    ui.separator();
+                    ui.label("Install the Agent on this Mac (the Dashboard's Connect page shows both values)");
+                    ui.horizontal(|ui| {
+                        ui.label("Server Address:");
+                        ui.text_edit_singleline(&mut self.install_server);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Server Key:");
+                        ui.text_edit_singleline(&mut self.install_key);
+                    });
+                    if ui.button("Install").clicked() {
+                        self.install();
+                    }
+                }
             } else {
                 ui.label(format!("Device ID: {}", self.info["device_id"].as_str().unwrap_or("-")));
                 ui.label(format!(
@@ -327,9 +374,25 @@ impl eframe::App for App {
             #[cfg(target_os = "macos")]
             {
                 ui.separator();
-                ui.label("macOS permissions (Live View and remote input need them)");
-                ui.label("System Settings > Privacy & Security > Screen Recording: allow rcli.");
-                ui.label("System Settings > Privacy & Security > Accessibility: allow rcli.");
+                ui.label("macOS permissions (Live View and remote input need them, also at the lock and login screens)");
+                let (screen, ax) = rcli_agent::macos::grants();
+                let mark = |granted: bool| if granted { "allowed" } else { "not allowed yet" };
+                ui.label(format!("Screen Recording: {}", mark(screen)));
+                ui.label(format!("Accessibility: {}", mark(ax)));
+                if !(screen && ax) {
+                    ui.label("Click Allow, switch rcli on in each list System Settings opens, then reopen rcli.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Allow").clicked() {
+                            rcli_agent::macos::request_grants();
+                        }
+                        for (label, pane) in [("Open Screen Recording", "Privacy_ScreenCapture"), ("Open Accessibility", "Privacy_Accessibility")] {
+                            if ui.button(label).clicked() {
+                                let url = format!("x-apple.systempreferences:com.apple.preference.security?{pane}");
+                                let _ = std::process::Command::new("open").arg(url).spawn();
+                            }
+                        }
+                    });
+                }
             }
         });
         ctx.request_repaint_after(std::time::Duration::from_secs(2));
@@ -445,9 +508,19 @@ fn opener(socket: PathBuf, platform: Arc<dyn rcli_agent::platform::Platform>) ->
         let mut cmd = if service_is_root {
             let user = platform.metrics().ok().and_then(|r| r.logged_in_user).filter(|u| !u.is_empty() && u != "root");
             let Some(user) = user else { return };
-            // shortcut: plain `sudo -u`; the session's display environment (DISPLAY / WAYLAND_DISPLAY, macOS
-            // `launchctl asuser`) comes with the service installers of tickets 16 and 24.
+            // shortcut: plain `sudo -u`; the session's display environment (DISPLAY / WAYLAND_DISPLAY) comes with the
+            // Linux service installer of ticket 16.
+            #[cfg(not(target_os = "macos"))]
             let mut cmd = std::process::Command::new("sudo");
+            // A launchd daemon sits outside every GUI session: `launchctl asuser` puts the window in the user's.
+            #[cfg(target_os = "macos")]
+            let mut cmd = {
+                let uid = std::process::Command::new("id").args(["-u", &user]).output().ok();
+                let Some(uid) = uid.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).filter(|u| !u.is_empty()) else { return };
+                let mut cmd = std::process::Command::new("launchctl");
+                cmd.args(["asuser", &uid, "sudo"]);
+                cmd
+            };
             cmd.args(["-n", "-u", &user, "--", "env"]).arg(format!("RCLI_AGENT_SOCKET={}", socket.display())).arg(exe);
             cmd
         } else {
