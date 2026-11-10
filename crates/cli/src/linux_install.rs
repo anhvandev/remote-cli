@@ -10,6 +10,8 @@ use rcli_agent::settings::{DeviceSettings, RootAccess};
 
 pub const UNIT: &str = "rcli-agent.service";
 const KEY_ENV: &str = "RCLI_SERVER_KEY";
+/// The app-menu entry `rcli agent install` places; running it opens the GUI window (ticket 14).
+const DESKTOP: &str = include_str!("../../../packaging/linux/rcli.desktop");
 
 /// Runs an external program (`systemctl`, `hostname`); a seam for tests.
 pub type Run<'a> = &'a mut dyn FnMut(&str, &[&str]) -> anyhow::Result<()>;
@@ -52,6 +54,10 @@ impl Layout {
     /// The IPC socket `rcli agent …` clients use (the `agent run` default).
     pub fn ipc_socket(&self) -> PathBuf {
         self.at("/run/rcli/agent.sock")
+    }
+    /// The app-menu entry: running `rcli` with no arguments opens the window.
+    pub fn desktop_file(&self) -> PathBuf {
+        self.at("/usr/share/applications/rcli.desktop")
     }
 }
 
@@ -148,7 +154,8 @@ fn write(path: &Path, contents: &str, mode: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Copies the running binary to the stable path, links it, records the Device Settings and the Server Address.
+/// Copies the running binary to the stable path, links it, records the Device Settings and the Server Address, and
+/// installs the app-menu entry.
 /// `exe` is the running binary (the download, the deb payload or the RPM payload).
 pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, _run: Run) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -177,6 +184,8 @@ pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, _run: Run) -> 
         settings.root = RootAccess::Always;
     }
     settings.save(&state)?;
+    // The app menu launches the GUI window: `rcli` with no arguments (ticket 14).
+    write(&layout.desktop_file(), DESKTOP, 0o644)?;
     write(&layout.install_file(), &serde_json::json!({ "server": opts.server }).to_string(), 0o600)
 }
 
@@ -195,7 +204,7 @@ pub fn install_service(layout: &Layout, opts: &Options, run: Run) -> anyhow::Res
 pub fn uninstall_files(layout: &Layout, run: Run) -> anyhow::Result<()> {
     // A missing unit is not an error: a first install that failed after copying files must still be removable.
     let _ = run("systemctl", &["disable", "--now", UNIT]);
-    for file in [layout.unit(), layout.env_file(), layout.session_socket(), layout.link()] {
+    for file in [layout.unit(), layout.env_file(), layout.session_socket(), layout.link(), layout.desktop_file()] {
         let _ = std::fs::remove_file(file);
     }
     // `disable --now` stops it; the reload forgets the removed unit.
@@ -335,6 +344,11 @@ mod tests {
         assert_eq!(std::fs::metadata(layout.state_dir()).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(std::fs::metadata(layout.env_file()).unwrap().permissions().mode() & 0o777, 0o600, "it holds the Server Key");
         assert_eq!(std::fs::metadata(layout.install_file()).unwrap().permissions().mode() & 0o777, 0o600);
+        // The app menu launches the window with no arguments; `rcli agent install` puts the entry there.
+        let desktop = std::fs::read_to_string(layout.desktop_file()).unwrap();
+        assert!(desktop.contains("Exec=/usr/local/bin/rcli\n"), "{desktop}");
+        assert!(desktop.contains("[Desktop Entry]") && desktop.contains("Terminal=false"), "{desktop}");
+        assert_eq!(std::fs::metadata(layout.desktop_file()).unwrap().permissions().mode() & 0o777, 0o644);
         let env = std::fs::read_to_string(layout.env_file()).unwrap();
         assert_eq!(env, "RCLI_SERVER_KEY=rk_ab12_s3cr&t\n");
         let unit = std::fs::read_to_string(layout.unit()).unwrap();
@@ -358,7 +372,14 @@ mod tests {
             calls,
             vec!["systemctl disable --now rcli-agent.service".to_owned(), "systemctl daemon-reload".to_owned()]
         );
-        for gone in ["usr/local/lib/rcli/rcli", "usr/local/bin/rcli", "var/lib/rcli", "etc/systemd/system/rcli-agent.service", "etc/rcli/agent.env"] {
+        for gone in [
+            "usr/local/lib/rcli/rcli",
+            "usr/local/bin/rcli",
+            "var/lib/rcli",
+            "etc/systemd/system/rcli-agent.service",
+            "etc/rcli/agent.env",
+            "usr/share/applications/rcli.desktop",
+        ] {
             assert!(!root.join(gone).exists(), "{gone} is left behind");
         }
         let _ = std::fs::remove_dir_all(root);

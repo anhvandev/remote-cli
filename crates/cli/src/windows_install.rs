@@ -18,6 +18,8 @@ pub const SERVICE: &str = "rcli-agent";
 pub const DISPLAY_NAME: &str = "rcli Agent";
 /// The named pipe the SYSTEM service accepts its session helpers on (`windows_session.rs`).
 pub const PIPE: &str = r"\\.\pipe\rcli-agent-session";
+/// The Start Menu shortcut an install creates: running it opens the GUI window with no arguments (ticket 14).
+pub const SHORTCUT: &str = "rcli.lnk";
 
 /// Runs an external program (`sc.exe`, `icacls.exe`); a seam for tests.
 pub type Run<'a> = &'a mut dyn FnMut(&str, &[&str]) -> anyhow::Result<()>;
@@ -53,6 +55,11 @@ impl Layout {
 
     pub fn session_pipe(&self) -> &'static str {
         PIPE
+    }
+
+    /// The all-users Start Menu shortcut: visible to every account, like the service itself.
+    pub fn shortcut(&self) -> PathBuf {
+        self.program_data.join("Microsoft").join("Windows").join("Start Menu").join("Programs").join(SHORTCUT)
     }
 }
 
@@ -136,7 +143,8 @@ pub fn service_definition(layout: &Layout) -> ServiceDefinition {
     }
 }
 
-/// Copies the running binary to `%ProgramFiles%\rcli`, writes the protected config and records the Device Settings.
+/// Copies the running binary to `%ProgramFiles%\rcli`, writes the protected config, records the Device Settings and
+/// creates the Start Menu shortcut.
 /// `exe` is the binary running the install (a download in `%TEMP%`, or the installed one on a reinstall).
 pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, run: Run) -> anyhow::Result<()> {
     let installed = layout.exe();
@@ -175,7 +183,30 @@ pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, run: Run) -> a
     settings.save(&state)?;
     // Everything under %ProgramData%\rcli is the Device's private data, including the DPAPI blobs.
     restrict(run, &state)?;
+    create_shortcut(layout, run);
     Ok(())
+}
+
+/// The PowerShell that creates the Start Menu shortcut through WScript.Shell. Paths are single-quoted for
+/// `-Command` (a `'` would end the string, so it is doubled); the shortcut starts the installed exe with no
+/// arguments, which opens the GUI window.
+pub fn shortcut_script(layout: &Layout) -> String {
+    let quote = |path: &Path| path.display().to_string().replace('\'', "''");
+    let working_dir = layout.exe().parent().map(Path::to_path_buf).unwrap_or_default();
+    format!(
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}'); \
+         $s.TargetPath='{}'; $s.WorkingDirectory='{}'; $s.Save()",
+        quote(&layout.shortcut()),
+        quote(&layout.exe()),
+        quote(&working_dir),
+    )
+}
+
+/// Creates the Start Menu shortcut, best effort: a locked-down Start Menu or a missing PowerShell must not fail an
+/// otherwise good install.
+pub fn create_shortcut(layout: &Layout, run: Run) {
+    let script = shortcut_script(layout);
+    let _ = run("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &script]);
 }
 
 /// Restricts `path` to SYSTEM and the Administrators group, by well-known SID so a non-English Windows works too.
@@ -227,6 +258,7 @@ pub fn remove_service(run: Run) {
 /// Removes everything `install_files`/`install_service` wrote, including the Device's local data and secrets.
 pub fn uninstall_files(layout: &Layout, run: Run) -> anyhow::Result<()> {
     remove_service(run);
+    let _ = std::fs::remove_file(layout.shortcut());
     let state = layout.state_dir();
     if state.exists() {
         std::fs::remove_dir_all(&state)?;
@@ -393,8 +425,35 @@ mod tests {
             vec![
                 format!("icacls.exe {} /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F", layout.config().display()),
                 format!("icacls.exe {} /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F", layout.state_dir().display()),
+                format!("powershell.exe -NoProfile -NonInteractive -Command {}", shortcut_script(&layout)),
             ]
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_start_menu_shortcut_opens_the_installed_binary_with_no_arguments() {
+        let (layout, root) = temp_layout("shortcut");
+        let script = shortcut_script(&layout);
+        assert!(
+            layout.shortcut().ends_with(Path::new("Microsoft/Windows/Start Menu/Programs").join(SHORTCUT)),
+            "{}",
+            layout.shortcut().display()
+        );
+        assert!(script.contains(&format!("TargetPath='{}'", layout.exe().display())), "{script}");
+        assert!(script.contains(&layout.shortcut().display().to_string()), "{script}");
+        assert!(!script.contains(" agent "), "the shortcut must open the window, not a subcommand: {script}");
+
+        // A Start Menu that cannot be written (locked down, no PowerShell) is not an install failure.
+        let download = root.join("download").join("rcli.exe");
+        std::fs::create_dir_all(download.parent().unwrap()).unwrap();
+        std::fs::write(&download, b"binary").unwrap();
+        let failed = install_files(&layout, &opts(), &download, &mut |program, _args| {
+            anyhow::ensure!(program != "powershell.exe", "powershell is unavailable");
+            Ok(())
+        });
+        failed.unwrap();
+        assert!(layout.exe().exists(), "the rest of the install still happened");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -447,7 +506,9 @@ mod tests {
         }
         std::fs::create_dir_all(layout.state_dir().join("secrets")).unwrap();
         std::fs::write(layout.state_dir().join("secrets").join("device_password"), b"sealed").unwrap();
-        assert!(layout.exe().exists() && layout.state_dir().exists());
+        std::fs::create_dir_all(layout.shortcut().parent().unwrap()).unwrap();
+        std::fs::write(layout.shortcut(), b"shortcut").unwrap();
+        assert!(layout.exe().exists() && layout.state_dir().exists() && layout.shortcut().exists());
 
         calls.clear();
         {
@@ -459,6 +520,7 @@ mod tests {
         }
         assert_eq!(calls, vec!["sc.exe stop rcli-agent".to_owned(), "sc.exe delete rcli-agent".to_owned()]);
         assert!(!layout.state_dir().exists() && !layout.program_files.join("rcli").exists(), "an install file is left behind");
+        assert!(!layout.shortcut().exists(), "the Start Menu shortcut is left behind");
         let _ = std::fs::remove_dir_all(root);
     }
 
