@@ -44,3 +44,5 @@
   - The session helper is chosen per call: the first connected helper whose session is on the console (fast user switching is untested). Frames travel over the local socket as raw RGBA (about 60 MB for a 5K display), fine for Observations, maybe slow for Live View on very large displays.
   - `rcli agent server set` is still not persisted across a restart (as before); the daemon restarts with the `--server` from its plist.
   - `--name` defaults to `hostname -s`. The Linux cross-check could not be run here (no Linux C toolchain for `ring`); the non-macOS branches are cfg-gated stubs that bail.
+
+- final code-review fix (S4): macOS install now records the Terminal User through the shared `install.rs` helper: `--terminal-user`, else the account that ran `sudo` (the same rule Linux used). Before, a reinstall without the flag left whatever `settings.json` already had. The GUI install form always passes the flag, so it is unchanged; plists and launchd calls are untouched.
