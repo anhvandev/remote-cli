@@ -1,15 +1,14 @@
-//! The session-helper wire, shared by the roots that cannot reach the window server themselves: a macOS root
-//! LaunchDaemon (ticket 24) and the Linux root systemd service (ticket 16). A helper in the session on the console
-//! connects back over a local socket and does the screen work: displays, capture, input, the accessibility tree and
-//! the session state. The daemon sends those calls to the helper whose session is on the console and keeps
-//! everything else (shell, power, metrics).
+//! The daemon ↔ session helper split (macOS ticket 24, Linux ticket 16, Windows ticket 22; ADR 0001). A root/SYSTEM
+//! service cannot reach the window server or input desktop of the logged-in person, so a helper process in the
+//! console session connects back over a local stream and does the screen work: displays, capture, input, the
+//! accessibility tree and the session state. Everything else (shell, power, metrics) stays in the daemon.
+//!
 //! Wire: one JSON request per line; one JSON reply per line (`{"ok": …}` or `{"error": …}`), and after a capture
-//! reply its `len` raw RGBA bytes.
+//! reply its `len` raw RGBA bytes. `macos_session` (the Unix transport) and `windows_session` (named pipes) supply
+//! the transport.
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
-    os::unix::net::{UnixListener, UnixStream},
-    path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -18,37 +17,43 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::platform::{
-    DisplayInfo, Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, RunAs, SessionState,
-    ShellOutput, UiElement,
+    DisplayInfo, Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, RunAs, SessionState, ShellOutput, UiElement,
 };
 
-/// What an input Action fails with at the login window: CGEvent input never reaches it (ADR 0001).
+/// What an input Action fails with at the macOS login window: CGEvent input never reaches it (ADR 0001). Linux's
+/// greeter accepts XTest input, and Windows' SYSTEM helper can type at the sign-in screen and a UAC prompt.
 pub const LOGIN_WINDOW_INPUT: &str = "input unavailable at macOS login window";
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
-enum Request {
+pub enum Request {
     State,
     Displays,
-    Capture { display: u32 },
-    Input { input: Input },
-    Accessibility { display: u32 },
-    /// Locking works only from inside the user's session.
+    Capture {
+        display: u32,
+    },
+    Input {
+        input: Input,
+    },
+    Accessibility {
+        display: u32,
+    },
+    /// Locking works differently in each session: let the helper that is in it do it.
     Lock,
 }
 
-/// The daemon's Platform: screen calls go to the session helper on the console, the rest to `inner`.
-pub struct SessionPlatform {
-    inner: Arc<dyn Platform>,
-    helpers: Arc<Mutex<Vec<Helper>>>,
-}
-
-struct Helper {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
+/// One accepted helper connection. Calls are synchronous: a hung helper must not hang the Agent, so the transport
+/// sets a read timeout and the daemon drops a helper that fails to answer.
+pub struct Helper {
+    reader: BufReader<Box<dyn Read + Send>>,
+    writer: Box<dyn Write + Send>,
 }
 
 impl Helper {
+    pub fn new(reader: Box<dyn Read + Send>, writer: Box<dyn Write + Send>) -> Self {
+        Self { reader: BufReader::new(reader), writer }
+    }
+
     /// One round trip: the `ok` value, plus the raw bytes that follow a capture reply.
     fn call(&mut self, request: &Request) -> anyhow::Result<(Value, Vec<u8>)> {
         self.writer.write_all(format!("{}\n", serde_json::to_string(request)?).as_bytes())?;
@@ -64,41 +69,23 @@ impl Helper {
     }
 }
 
+/// The daemon's Platform: screen calls go to the session helper on the console, the rest to `inner`.
+pub struct SessionPlatform {
+    inner: Arc<dyn Platform>,
+    helpers: Arc<Mutex<Vec<Helper>>>,
+    /// Whether input is allowed at the login screen. macOS CGEvents never reach the login window; Linux's greeter
+    /// accepts XTest input, and Windows' SYSTEM helper can type there (and at a UAC prompt), so they must.
+    allow_login_input: bool,
+}
+
 impl SessionPlatform {
-    /// macOS: listens on `socket` for session helpers run by root (the login window) or by the console user.
-    /// Linux callers use `listen_with`, because the root service spawns exactly one helper for the seat0 session.
-    #[cfg(target_os = "macos")]
-    pub fn listen(inner: Arc<dyn Platform>, socket: &Path) -> anyhow::Result<Arc<Self>> {
-        Self::listen_with(inner, socket, |uid| uid == 0 || console_uid() == Some(uid))
+    pub fn new(inner: Arc<dyn Platform>, allow_login_input: bool) -> Self {
+        Self { inner, helpers: Default::default(), allow_login_input }
     }
 
-    /// `listen` with the peer check `trust(uid)` given (tests run as an ordinary user).
-    pub fn listen_with(
-        inner: Arc<dyn Platform>,
-        socket: &Path,
-        trust: impl Fn(u32) -> bool + Send + 'static,
-    ) -> anyhow::Result<Arc<Self>> {
-        if let Some(dir) = socket.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let _ = std::fs::remove_file(socket);
-        let listener = UnixListener::bind(socket)?;
-        // The user's helper must be able to connect; the peer uid, not the file mode, decides who is kept.
-        std::fs::set_permissions(socket, std::os::unix::fs::PermissionsExt::from_mode(0o666))?;
-        let helpers: Arc<Mutex<Vec<Helper>>> = Default::default();
-        let accepted = helpers.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                if !peer_uid(&stream).is_some_and(&trust) {
-                    continue;
-                }
-                // A hung helper must not hang the Agent: it is dropped like one that went away.
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-                let Ok(writer) = stream.try_clone() else { continue };
-                accepted.lock().unwrap().push(Helper { reader: BufReader::new(stream), writer });
-            }
-        });
-        Ok(Arc::new(Self { inner, helpers }))
+    /// The accepted helpers, for the transport's accept loop to push into.
+    pub fn helpers(&self) -> Arc<Mutex<Vec<Helper>>> {
+        self.helpers.clone()
     }
 
     /// Forgets every connected helper: its session ended, or another session came to the console.
@@ -156,7 +143,9 @@ impl Platform for SessionPlatform {
     }
     fn input(&self, input: Input) -> anyhow::Result<()> {
         self.with_active(|helper, state| {
-            anyhow::ensure!(state != SessionState::LoginScreen, LOGIN_WINDOW_INPUT);
+            if !self.allow_login_input {
+                anyhow::ensure!(state != SessionState::LoginScreen, LOGIN_WINDOW_INPUT);
+            }
             helper.call(&Request::Input { input }).map(drop)
         })
     }
@@ -166,7 +155,7 @@ impl Platform for SessionPlatform {
     fn recognize_text(&self, frame: &Frame) -> anyhow::Result<Vec<UiElement>> {
         self.inner.recognize_text(frame)
     }
-    /// No helper connected means no GUI session yet: the login window (or a Mac still booting).
+    /// No helper connected means no GUI session yet: the login window (or a machine still booting).
     fn session_state(&self) -> anyhow::Result<SessionState> {
         Ok(self.with_active(|_, state| Ok(state)).unwrap_or(SessionState::LoginScreen))
     }
@@ -208,23 +197,16 @@ impl Platform for SessionPlatform {
     }
 }
 
-/// The session helper (`rcli agent session`): connects to the daemon at `socket` and answers its screen calls from
-/// `platform`, reconnecting whenever the daemon restarts. `on_console` says whether this session is the one shown.
-pub fn run_helper(socket: &Path, platform: &dyn Platform, on_console: &dyn Fn() -> bool) -> ! {
-    loop {
-        if let Ok(stream) = UnixStream::connect(socket) {
-            if let Err(e) = answer(stream, platform, on_console) {
-                tracing::debug!("session helper connection ended: {e:#}");
-            }
-        }
-        std::thread::sleep(Duration::from_secs(2));
-    }
-}
-
-/// Answers the daemon's requests on one connection until it closes.
-pub fn answer(stream: UnixStream, platform: &dyn Platform, on_console: &dyn Fn() -> bool) -> anyhow::Result<()> {
-    let mut writer = stream.try_clone()?;
-    for line in BufReader::new(stream).lines() {
+/// The helper side: answers the daemon's requests from `platform` until the connection closes. `on_console` says
+/// whether this helper's session is the one on the console (a Mac or a Linux box may have several logged-in
+/// sessions).
+pub fn answer(
+    reader: Box<dyn Read + Send>,
+    mut writer: Box<dyn Write + Send>,
+    platform: &dyn Platform,
+    on_console: &dyn Fn() -> bool,
+) -> anyhow::Result<()> {
+    for line in BufReader::new(reader).lines() {
         let request: Request = serde_json::from_str(&line?)?;
         let mut bytes = vec![];
         let ok = match request {
@@ -265,70 +247,29 @@ fn display_from(v: &Value) -> DisplayInfo {
     }
 }
 
-fn peer_uid(stream: &UnixStream) -> Option<u32> {
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::fd::AsRawFd;
-        let (mut uid, mut gid) = (0, 0);
-        (unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } == 0).then_some(uid)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd;
-        let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
-        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-        let ok = unsafe {
-            libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                (&mut cred as *mut libc::ucred).cast(),
-                &mut len,
-            ) == 0
-        };
-        ok.then_some(cred.uid)
-    }
-}
-
-/// macOS: the user logged in on the console: the owner of `/dev/console` (root at the login window).
-#[cfg(target_os = "macos")]
-fn console_uid() -> Option<u32> {
-    std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/dev/console").ok()?).into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::platform::FakePlatform;
 
-    /// A daemon-side SessionPlatform with one helper serving `screen` (a FakePlatform session) over a real socket.
-    fn daemon_with_helper(screen: FakePlatform, on_console: bool) -> (Arc<SessionPlatform>, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("rcli-session-{}-{}", std::process::id(), rand_suffix()));
-        let socket = dir.join("session.sock");
-        let daemon = SessionPlatform::listen_with(Arc::new(FakePlatform::new("mac")), &socket, |_| true).unwrap();
-        let path = socket.clone();
+    /// A daemon-side SessionPlatform with one helper serving `screen` over a pair of in-memory pipes.
+    fn platform_with_helper(screen: FakePlatform, allow_login_input: bool) -> SessionPlatform {
+        let platform = SessionPlatform::new(Arc::new(FakePlatform::new("host")), allow_login_input);
+        // Requests go daemon → helper, replies helper → daemon.
+        let (requests_reader, requests_writer) = std::io::pipe().expect("anonymous pipe");
+        let (replies_reader, replies_writer) = std::io::pipe().expect("anonymous pipe");
+        platform.helpers().lock().unwrap().push(Helper::new(Box::new(replies_reader), Box::new(requests_writer)));
         std::thread::spawn(move || {
-            let stream = UnixStream::connect(&path).unwrap();
-            let _ = answer(stream, &screen, &move || on_console);
+            let _ = answer(Box::new(requests_reader), Box::new(replies_writer), &screen, &|| true);
         });
-        for _ in 0..200 {
-            if !daemon.helpers.lock().unwrap().is_empty() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        (daemon, dir)
-    }
-
-    fn rand_suffix() -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
+        platform
     }
 
     #[test]
     fn screen_calls_reach_the_session_on_the_console() {
         let screen = FakePlatform::new("session");
         screen.set_session_state(SessionState::Locked);
-        let (daemon, dir) = daemon_with_helper(screen.clone(), true);
+        let daemon = platform_with_helper(screen.clone(), false);
         assert_eq!(daemon.session_state().unwrap(), SessionState::Locked);
         assert_eq!(daemon.displays().unwrap(), screen.displays().unwrap());
         assert_eq!(daemon.capture(0).unwrap(), screen.capture(0).unwrap());
@@ -336,27 +277,31 @@ mod tests {
         assert_eq!(screen.inputs(), vec![Input::Key("a".into())], "the key reached the lock screen session");
         daemon.power(PowerAction::Lock).unwrap();
         assert_eq!(screen.power_actions(), vec![PowerAction::Lock], "the session locked itself");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn at_the_login_window_capture_works_and_input_is_unavailable() {
+    fn at_the_login_window_capture_works_and_input_is_unavailable_where_the_platform_says_so() {
         let screen = FakePlatform::new("loginwindow");
         screen.set_session_state(SessionState::LoginScreen);
-        let (daemon, dir) = daemon_with_helper(screen.clone(), true);
+        let daemon = platform_with_helper(screen.clone(), false);
         assert_eq!(daemon.session_state().unwrap(), SessionState::LoginScreen);
         assert!(daemon.capture(0).is_ok());
         let err = daemon.input(Input::Key("a".into())).unwrap_err();
         assert_eq!(err.to_string(), "input unavailable at macOS login window");
         assert!(screen.inputs().is_empty());
-        let _ = std::fs::remove_dir_all(dir);
+
+        // Linux's greeter and Windows' SYSTEM helper may type at the login screen and a UAC prompt.
+        let screen = FakePlatform::new("greeter");
+        screen.set_session_state(SessionState::LoginScreen);
+        let daemon = platform_with_helper(screen.clone(), true);
+        daemon.input(Input::Text("alice".into())).unwrap();
+        assert_eq!(screen.inputs(), vec![Input::Text("alice".into())]);
     }
 
     #[test]
-    fn without_a_session_on_the_console_it_reports_the_login_window_and_cannot_capture() {
-        let (daemon, dir) = daemon_with_helper(FakePlatform::new("switched-out user"), false);
+    fn without_a_helper_it_reports_the_login_window_and_cannot_capture() {
+        let daemon = SessionPlatform::new(Arc::new(FakePlatform::new("host")), false);
         assert_eq!(daemon.session_state().unwrap(), SessionState::LoginScreen);
         assert!(daemon.capture(0).unwrap_err().to_string().contains("no GUI session"));
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

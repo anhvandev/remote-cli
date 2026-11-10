@@ -11,18 +11,19 @@ pub mod linux;
 mod live;
 #[cfg(target_os = "macos")]
 pub mod macos;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub mod macos_session;
 mod marks;
 mod media;
 mod observer;
 pub mod platform;
-#[cfg(unix)]
-pub mod session;
 pub mod secret_store;
+pub mod session;
 pub mod settings;
 #[cfg(windows)]
 pub mod windows_platform;
+#[cfg(windows)]
+pub mod windows_session;
 
 use std::{
     io::Read,

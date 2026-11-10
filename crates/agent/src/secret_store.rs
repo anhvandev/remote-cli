@@ -59,7 +59,10 @@ impl SecretStore for FileSecretStore {
         let (nonce, data) = sealed.split_at(NONCE_LEN);
         let mut data = data.to_vec();
         let nonce = Nonce::try_assume_unique_for_key(nonce).map_err(|_| anyhow::anyhow!("bad secret nonce"))?;
-        let plain = self.key()?.open_in_place(nonce, Aad::from(name.as_bytes()), &mut data).map_err(|_| anyhow::anyhow!("cannot open a stored secret"))?;
+        let plain = self
+            .key()?
+            .open_in_place(nonce, Aad::from(name.as_bytes()), &mut data)
+            .map_err(|_| anyhow::anyhow!("cannot open a stored secret"))?;
         Ok(Some(String::from_utf8(plain.to_vec())?))
     }
 
@@ -252,6 +255,122 @@ impl SecretStore for KeychainSecretStore {
 
 #[cfg(target_os = "macos")]
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+/// Windows: DPAPI machine scope (`CRYPTPROTECT_LOCAL_MACHINE`), one blob per secret in `<dir>`. Only this machine
+/// can decrypt it, so a copied disk or backup does not reveal the Device Password (ticket 22). The installer ACLs
+/// `%ProgramData%\rcli` to SYSTEM and Administrators.
+// shortcut: machine scope means any account on this machine can decrypt; the directory ACL, not the account, is
+// the gate. Per-user scope would break the SYSTEM service reading what an elevated install wrote.
+#[cfg(windows)]
+pub struct DpapiSecretStore {
+    dir: PathBuf,
+}
+
+#[cfg(windows)]
+impl DpapiSecretStore {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
+}
+
+/// Encrypts `plain` for this machine. The optional entropy is the secret's name, so a blob cannot be moved to
+/// another name.
+#[cfg(windows)]
+fn protect(name: &str, plain: &[u8]) -> anyhow::Result<Vec<u8>> {
+    use windows::{
+        core::PCWSTR,
+        Win32::{
+            Foundation::{LocalFree, HLOCAL},
+            Security::Cryptography::{CryptProtectData, CRYPTPROTECT_LOCAL_MACHINE, CRYPT_INTEGER_BLOB},
+        },
+    };
+    let mut plain = plain.to_vec();
+    let mut entropy = name.as_bytes().to_vec();
+    let input = CRYPT_INTEGER_BLOB { cbData: plain.len() as u32, pbData: plain.as_mut_ptr() };
+    let entropy = CRYPT_INTEGER_BLOB { cbData: entropy.len() as u32, pbData: entropy.as_mut_ptr() };
+    let mut out = CRYPT_INTEGER_BLOB::default();
+    unsafe {
+        CryptProtectData(&input, PCWSTR::null(), Some(&entropy), None, None, CRYPTPROTECT_LOCAL_MACHINE, &mut out)?;
+        let sealed = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
+        let _ = LocalFree(Some(HLOCAL(out.pbData as *mut core::ffi::c_void)));
+        Ok(sealed)
+    }
+}
+
+#[cfg(windows)]
+fn unprotect(name: &str, sealed: &[u8]) -> anyhow::Result<Vec<u8>> {
+    use windows::Win32::{
+        Foundation::{LocalFree, HLOCAL},
+        Security::Cryptography::{CryptUnprotectData, CRYPTPROTECT_LOCAL_MACHINE, CRYPT_INTEGER_BLOB},
+    };
+    let mut sealed = sealed.to_vec();
+    let mut entropy = name.as_bytes().to_vec();
+    let input = CRYPT_INTEGER_BLOB { cbData: sealed.len() as u32, pbData: sealed.as_mut_ptr() };
+    let entropy = CRYPT_INTEGER_BLOB { cbData: entropy.len() as u32, pbData: entropy.as_mut_ptr() };
+    let mut out = CRYPT_INTEGER_BLOB::default();
+    unsafe {
+        CryptUnprotectData(&input, None, Some(&entropy), None, None, CRYPTPROTECT_LOCAL_MACHINE, &mut out)?;
+        let plain = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
+        let _ = LocalFree(Some(HLOCAL(out.pbData as *mut core::ffi::c_void)));
+        Ok(plain)
+    }
+}
+
+#[cfg(windows)]
+impl SecretStore for DpapiSecretStore {
+    fn get(&self, name: &str) -> anyhow::Result<Option<String>> {
+        let sealed = match std::fs::read(self.path(name)) {
+            Ok(sealed) => sealed,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Some(String::from_utf8(unprotect(name, &sealed)?)?))
+    }
+
+    fn set(&self, name: &str, secret: &str) -> anyhow::Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        write_private(&self.path(name), &protect(name, secret.as_bytes())?)
+    }
+
+    fn remove(&self, name: &str) -> anyhow::Result<()> {
+        match std::fs::remove_file(self.path(name)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod dpapi_tests {
+    use super::*;
+
+    #[test]
+    fn dpapi_secrets_are_machine_bound_and_round_trip() {
+        let dir = std::env::temp_dir().join(format!("rcli-dpapi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = DpapiSecretStore::new(&dir);
+        assert!(store.get("device_password").unwrap().is_none());
+        store.set("device_password", "hunter2xyz").unwrap();
+        assert_eq!(store.get("device_password").unwrap().as_deref(), Some("hunter2xyz"));
+        store.set("unlock_password", "s3cret pässword").unwrap();
+        assert_eq!(store.get("unlock_password").unwrap().as_deref(), Some("s3cret pässword"));
+        let raw = std::fs::read(dir.join("device_password")).unwrap();
+        assert!(!raw.windows(10).any(|w| w == b"hunter2xyz"), "the password is not stored in plaintext");
+        // A blob moved to another name does not decrypt: the name is the DPAPI entropy.
+        std::fs::copy(dir.join("device_password"), dir.join("other")).unwrap();
+        assert!(store.get("other").is_err());
+        store.remove("device_password").unwrap();
+        store.remove("device_password").unwrap();
+        assert!(store.get("device_password").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
 
 fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     use std::io::Write;

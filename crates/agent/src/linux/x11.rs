@@ -82,6 +82,8 @@ pub fn input(enigo: &mut enigo::Enigo, displays: &[DisplayInfo], input: Input) -
         Input::Key(name) => enigo.key(key(&name)?, Direction::Click)?,
         Input::KeyDown(name) => enigo.key(key(&name)?, Direction::Press)?,
         Input::KeyUp(name) => enigo.key(key(&name)?, Direction::Release)?,
+        // Ctrl+Alt+Del is the secure attention sequence, which X11 cannot synthesize.
+        Input::Sas => anyhow::bail!("Ctrl+Alt+Del is not available on Linux"),
     }
     Ok(())
 }

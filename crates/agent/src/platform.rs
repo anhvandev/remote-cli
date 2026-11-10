@@ -86,6 +86,9 @@ pub enum Input {
     Key(String),
     KeyDown(String),
     KeyUp(String),
+    /// Ctrl+Alt+Del. Windows cannot synthesize it with SendInput: the SYSTEM session helper calls `SendSAS`
+    /// instead (the software-SAS policy must allow it, see `docs/usage.md`). Unavailable elsewhere.
+    Sas,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
