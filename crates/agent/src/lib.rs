@@ -7,6 +7,8 @@ mod coords;
 mod executor;
 pub mod ipc;
 mod live;
+#[cfg(target_os = "macos")]
+pub mod macos;
 mod marks;
 mod media;
 mod observer;

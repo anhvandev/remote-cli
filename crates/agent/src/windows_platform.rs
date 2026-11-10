@@ -67,19 +67,19 @@ struct Sampler {
 }
 
 impl WindowsPlatform {
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<String>) -> anyhow::Result<Self> {
         // Real pixels everywhere: monitor sizes, capture, the mouse and UI Automation boxes.
         unsafe {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
         let sampler = Sampler {
-            system: sysinfo::System::new_all(),
-            disks: sysinfo::Disks::new_with_refreshed_list(),
-            networks: sysinfo::Networks::new_with_refreshed_list(),
-            users: sysinfo::Users::new_with_refreshed_list(),
+            system: sysinfo::System::new_all()?,
+            disks: sysinfo::Disks::new_with_refreshed_list()?,
+            networks: sysinfo::Networks::new_with_refreshed_list()?,
+            users: sysinfo::Users::new_with_refreshed_list()?,
             last: Instant::now(),
         };
-        Self { name: name.into(), system: Mutex::new(sampler) }
+        Ok(Self { name: name.into(), system: Mutex::new(sampler) })
     }
 
     fn display(&self, index: u32) -> anyhow::Result<DisplayInfo> {
@@ -236,14 +236,14 @@ impl Platform for WindowsPlatform {
             .networks
             .iter()
             .map(|(name, n)| NetworkInterface {
-                name: name.clone(),
+                name: name.to_string_lossy().into(),
                 mac: n.mac_address().to_string(),
                 ips: n.ip_networks().iter().map(|ip| format!("{}/{}", ip.addr, ip.prefix)).collect(),
             })
             .collect();
         // shortcut: no GPUs or serial number (they need WMI); add them when the Dashboard shows them.
         Ok(Inventory {
-            os: sysinfo::System::name().unwrap_or_else(|| "Windows".into()),
+            os: sysinfo::System::name().unwrap_or_else(|_| "Windows".into()),
             os_version: sysinfo::System::long_os_version().unwrap_or_default(),
             hostname: sysinfo::System::host_name().unwrap_or_default(),
             cpu_model: s.system.cpus().first().map(|c| c.brand().trim().to_owned()).unwrap_or_default(),
@@ -300,7 +300,7 @@ impl Platform for WindowsPlatform {
             disk_write_bytes_per_sec: per_sec(s.disks.iter().map(|d| d.usage().written_bytes).sum()),
             net_up_bytes_per_sec: per_sec(s.networks.values().map(|n| n.transmitted()).sum()),
             net_down_bytes_per_sec: per_sec(s.networks.values().map(|n| n.received()).sum()),
-            uptime_secs: Some(sysinfo::System::uptime()),
+            uptime_secs: sysinfo::System::uptime().ok(),
             logged_in_user: Some(user),
             battery_percent: battery.then_some(power.BatteryLifePercent.into()),
             battery_charging: battery.then_some(power.ACLineStatus == 1),
