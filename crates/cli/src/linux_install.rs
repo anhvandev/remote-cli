@@ -6,15 +6,13 @@
 
 use std::path::{Path, PathBuf};
 
-use rcli_agent::settings::{DeviceSettings, RootAccess};
+use crate::install::{system, write};
+pub use crate::install::{Options, Run};
 
 pub const UNIT: &str = "rcli-agent.service";
 const KEY_ENV: &str = "RCLI_SERVER_KEY";
 /// The app-menu entry `rcli agent install` places; running it opens the GUI window (ticket 14).
 const DESKTOP: &str = include_str!("../../../packaging/linux/rcli.desktop");
-
-/// Runs an external program (`systemctl`, `hostname`); a seam for tests.
-pub type Run<'a> = &'a mut dyn FnMut(&str, &[&str]) -> anyhow::Result<()>;
 
 pub struct Layout {
     pub root: PathBuf,
@@ -22,7 +20,7 @@ pub struct Layout {
 
 impl Layout {
     fn at(&self, path: &str) -> PathBuf {
-        self.root.join(path.trim_start_matches('/'))
+        crate::install::at(&self.root, path)
     }
     /// The stable path the service runs; `rcli upgrade` replaces this file in place.
     pub fn exe(&self) -> PathBuf {
@@ -58,27 +56,6 @@ impl Layout {
     /// The app-menu entry: running `rcli` with no arguments opens the window.
     pub fn desktop_file(&self) -> PathBuf {
         self.at("/usr/share/applications/rcli.desktop")
-    }
-}
-
-/// What `rcli agent install` was given.
-pub struct Options {
-    pub server: String,
-    pub key: String,
-    pub name: String,
-    /// The Terminal User; `None` = the installing account (`SUDO_USER`).
-    pub terminal_user: Option<String>,
-    pub allow_root: bool,
-}
-
-impl Options {
-    /// The Terminal User to record: the flag, else the account that ran `sudo`, else this process's account.
-    fn terminal_user(&self) -> String {
-        self.terminal_user
-            .clone()
-            .or_else(|| std::env::var("SUDO_USER").ok())
-            .filter(|u| !u.trim().is_empty() && u != "root")
-            .unwrap_or_else(rcli_agent::settings::default_terminal_user)
     }
 }
 
@@ -144,16 +121,6 @@ pub fn environment_file(opts: &Options) -> String {
     format!("{KEY_ENV}={}\n", opts.key)
 }
 
-fn write(path: &Path, contents: &str, mode: u32) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, contents)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-    Ok(())
-}
-
 /// Copies the running binary to the stable path, links it, records the Device Settings and the Server Address, and
 /// installs the app-menu entry.
 /// `exe` is the running binary (the download, the deb payload or the RPM payload).
@@ -178,12 +145,7 @@ pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, _run: Run) -> 
     let state = layout.state_dir();
     std::fs::create_dir_all(&state)?;
     std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700))?;
-    let mut settings = DeviceSettings::load(&state);
-    settings.terminal_user = opts.terminal_user();
-    if opts.allow_root {
-        settings.root = RootAccess::Always;
-    }
-    settings.save(&state)?;
+    crate::install::save_settings(&state, opts)?;
     // The app menu launches the GUI window: `rcli` with no arguments (ticket 14).
     write(&layout.desktop_file(), DESKTOP, 0o644)?;
     write(&layout.install_file(), &serde_json::json!({ "server": opts.server }).to_string(), 0o600)
@@ -221,13 +183,6 @@ pub fn uninstall_files(layout: &Layout, run: Run) -> anyhow::Result<()> {
             let _ = std::fs::remove_dir(&dir);
         }
     }
-    Ok(())
-}
-
-/// The real machine's `run`: the command must succeed.
-fn system(program: &str, args: &[&str]) -> anyhow::Result<()> {
-    let out = std::process::Command::new(program).args(args).output()?;
-    anyhow::ensure!(out.status.success(), "{program} {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
     Ok(())
 }
 
@@ -299,6 +254,7 @@ pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcli_agent::settings::{DeviceSettings, RootAccess};
 
     fn temp_root(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rcli-linux-install-{name}-{}", std::process::id()));
@@ -312,7 +268,7 @@ mod tests {
             server: "rcli.example.com:7443".into(),
             key: "rk_ab12_s3cr&t".into(),
             name: "linux-box".into(),
-            terminal_user: Some("alice".into()),
+            terminal_user: "alice".into(),
             allow_root: true,
         }
     }
@@ -403,15 +359,5 @@ mod tests {
         o.name = "bench %1 \"box\"".into();
         let unit = unit(&layout, &o);
         assert!(unit.contains("--name \"bench %%1 \\\"box\\\"\" --session-socket"), "{unit}");
-    }
-
-    #[test]
-    fn the_recorded_terminal_user_is_the_flag_first() {
-        let mut o = opts();
-        assert_eq!(o.terminal_user(), "alice");
-        // Without the flag, `install` falls back to SUDO_USER (the account that ran sudo), then the process account.
-        o.terminal_user = None;
-        let env_user = std::env::var("SUDO_USER").ok().filter(|u| !u.trim().is_empty() && u != "root");
-        assert_eq!(Some(o.terminal_user()), env_user.or_else(|| Some(o.terminal_user())));
     }
 }

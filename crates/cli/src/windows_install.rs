@@ -9,20 +9,18 @@
 
 use std::path::{Path, PathBuf};
 
-use rcli_agent::settings::{DeviceSettings, RootAccess};
 use serde::{Deserialize, Serialize};
+
+pub use crate::install::{Options, Run};
 
 /// The SCM name of the service.
 pub const SERVICE: &str = "rcli-agent";
 /// What the Services console shows.
 pub const DISPLAY_NAME: &str = "rcli Agent";
-/// The named pipe the SYSTEM service accepts its session helpers on (`windows_session.rs`).
-pub const PIPE: &str = r"\\.\pipe\rcli-agent-session";
+/// The named pipe the SYSTEM service accepts its session helpers on (`windows_session.rs` owns the name).
+pub const PIPE: &str = rcli_agent::session::PIPE;
 /// The Start Menu shortcut an install creates: running it opens the GUI window with no arguments (ticket 14).
 pub const SHORTCUT: &str = "rcli.lnk";
-
-/// Runs an external program (`sc.exe`, `icacls.exe`); a seam for tests.
-pub type Run<'a> = &'a mut dyn FnMut(&str, &[&str]) -> anyhow::Result<()>;
 
 /// Where an install puts things. Two roots, so a test can point both at a temp directory.
 #[derive(Clone, Debug)]
@@ -61,16 +59,6 @@ impl Layout {
     pub fn shortcut(&self) -> PathBuf {
         self.program_data.join("Microsoft").join("Windows").join("Start Menu").join("Programs").join(SHORTCUT)
     }
-}
-
-/// What `rcli agent install` was given.
-pub struct Options {
-    pub server: String,
-    pub key: String,
-    pub name: String,
-    /// The logged-in interactive user, never the elevated Administrator account that ran the install.
-    pub terminal_user: String,
-    pub allow_root: bool,
 }
 
 /// The protected file the service reads at start. The Server Key lives here, not in the service's arguments.
@@ -175,12 +163,7 @@ pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, run: Run) -> a
     // Administrators may read it.
     restrict(run, &layout.config())?;
 
-    let mut settings = DeviceSettings::load(&state);
-    settings.terminal_user = opts.terminal_user.clone();
-    if opts.allow_root {
-        settings.root = RootAccess::Always;
-    }
-    settings.save(&state)?;
+    crate::install::save_settings(&state, opts)?;
     // Everything under %ProgramData%\rcli is the Device's private data, including the DPAPI blobs.
     restrict(run, &state)?;
     create_shortcut(layout, run);
@@ -270,28 +253,10 @@ pub fn uninstall_files(layout: &Layout, run: Run) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The real machine's `run`: the command must succeed.
+/// This Device's name, as the Device reports it: the same hostname probe as the Controller's name (S7).
 #[cfg(windows)]
-fn system(program: &str, args: &[&str]) -> anyhow::Result<()> {
-    let out = std::process::Command::new(program).args(args).output()?;
-    anyhow::ensure!(out.status.success(), "{program} {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
-    Ok(())
-}
-
-/// This machine's name, as the Device reports it.
-#[cfg(windows)]
-pub fn machine_name() -> String {
-    std::env::var("COMPUTERNAME")
-        .ok()
-        .filter(|n| !n.trim().is_empty())
-        .or_else(|| {
-            std::process::Command::new("hostname.exe")
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-                .filter(|n| !n.is_empty())
-        })
-        .unwrap_or_else(|| "windows".into())
+pub fn device_name() -> String {
+    crate::config::hostname_or("windows")
 }
 
 /// `rcli agent install --server … --key …` from an elevated shell. Files, registration, then the service; a wrong
@@ -305,7 +270,7 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     let layout = Layout::real();
     // A reinstall must not destroy a working install when the new Server Key is wrong.
     let reinstall = layout.config().exists();
-    install_files(&layout, &opts, &std::env::current_exe()?, &mut system)?;
+    install_files(&layout, &opts, &std::env::current_exe()?, &mut crate::install::system)?;
     // Register now, so the Device ID and password exist before the service starts and a wrong key is caught here.
     let server = rcli_agent::ServerEndpoint { addr: opts.server.clone(), server_key: opts.key.clone() };
     let platform = rcli_agent::windows_platform::WindowsPlatform::new(opts.name.clone())?;
@@ -315,14 +280,14 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
         Err(e) => {
             // Leave no half-installed Device behind; on a reinstall keep the existing one and its credentials.
             if !reinstall {
-                let _ = uninstall_files(&layout, &mut system);
+                let _ = uninstall_files(&layout, &mut crate::install::system);
             }
             return Err(e.context("cannot register this Device; is the Server Address and Server Key right?"));
         }
     };
-    if let Err(e) = install_service(&layout, &mut system) {
+    if let Err(e) = install_service(&layout, &mut crate::install::system) {
         if !reinstall {
-            let _ = uninstall_files(&layout, &mut system);
+            let _ = uninstall_files(&layout, &mut crate::install::system);
         }
         return Err(e.context("cannot install the rcli-agent service"));
     }
@@ -368,7 +333,7 @@ pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
             writeln!(out, "warning: {e:#}")?;
         }
     }
-    uninstall_files(&layout, &mut system)?;
+    uninstall_files(&layout, &mut crate::install::system)?;
     writeln!(out, "stopped and deleted the service {SERVICE}; removed {} and the Device's local data", layout.exe().display())?;
     Ok(())
 }
@@ -376,6 +341,7 @@ pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcli_agent::settings::{DeviceSettings, RootAccess};
 
     fn temp_layout(name: &str) -> (Layout, PathBuf) {
         use std::sync::atomic::{AtomicU64, Ordering};

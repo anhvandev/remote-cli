@@ -6,11 +6,11 @@ use axum::{
 };
 use rcli_protocol::agent::{agent_message, server_message, IdentityUpdate, Inventory, Process, ProcessListRequest, Resources};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::{bad_request, Admin, ApiError, Caller};
-use crate::{audit, metrics, registry};
+use crate::{audit, auth::User, metrics, registry};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -63,39 +63,74 @@ async fn change(
     }
 
     if let Some(password) = &body.device_password {
-        push(&state, id, |request_id| {
-            IdentityUpdate { request_id, device_password: password.clone(), device_id: String::new(), name: String::new() }
-        })
-        .await?;
-        registry::set_device_password(&state, id, password).await?;
-        audit::record(&state, &user, id, "device.password", json!({}), json!({ "error": null })).await?;
+        apply_identity(&state, &user, id, Identity::Password(password)).await?;
     }
-
     if let Some(number) = &body.device_id {
-        push(&state, id, |request_id| {
-            IdentityUpdate { request_id, device_password: String::new(), device_id: number.clone(), name: String::new() }
-        })
-        .await?;
-        registry::set_device_number(&state, id, number).await?.map_err(bad_request)?;
-        audit::record(&state, &user, id, "device.id", json!({ "device_id": number }), json!({ "error": null })).await?;
+        apply_identity(&state, &user, id, Identity::DeviceId(number)).await?;
     }
-
     if let Some(name) = &body.name {
-        registry::rename(&state, id, name).await?.map_err(bad_request)?;
-        audit::record(&state, &user, id, "device.rename", json!({ "name": name }), json!({ "error": null })).await?;
+        apply_identity(&state, &user, id, Identity::Name(name)).await?;
     }
     Ok(Json(registry::get(&state, id).await?))
+}
+
+/// One identity field an Admin changed, and how it reaches the two sides.
+enum Identity<'a> {
+    Password(&'a str),
+    DeviceId(&'a str),
+    /// The Device name belongs to the Server alone: the Agent does not push it.
+    Name(&'a str),
+}
+
+impl Identity<'_> {
+    /// What the Device's Agent applies first; `None` for the name.
+    fn update(&self) -> Option<IdentityUpdate> {
+        let mut update = IdentityUpdate::default();
+        match self {
+            Identity::Password(password) => update.device_password = (*password).into(),
+            Identity::DeviceId(number) => update.device_id = (*number).into(),
+            Identity::Name(_) => return None,
+        }
+        Some(update)
+    }
+
+    /// Stores the change on the Server, after the Agent applied it.
+    async fn store(self, state: &super::State, id: Uuid) -> Result<(), ApiError> {
+        match self {
+            Identity::Password(password) => registry::set_device_password(state, id, password).await.map_err(ApiError::from),
+            Identity::DeviceId(number) => registry::set_device_number(state, id, number).await?.map_err(bad_request),
+            Identity::Name(name) => registry::rename(state, id, name).await?.map_err(bad_request),
+        }
+    }
+
+    /// The audit action and its parameters.
+    fn audit(&self) -> (&'static str, Value) {
+        match self {
+            Identity::Password(_) => ("device.password", json!({})),
+            Identity::DeviceId(number) => ("device.id", json!({ "device_id": number })),
+            Identity::Name(name) => ("device.rename", json!({ "name": name })),
+        }
+    }
+}
+
+/// Applies one identity change in the order that keeps both sides consistent: the Device's Agent first, then the
+/// Server's row, then the audit entry, so a Device that cannot apply it leaves both sides unchanged. A fourth
+/// identity field is a new `Identity` variant, not another copy of this sequence (S9).
+async fn apply_identity(state: &super::State, user: &User, id: Uuid, change: Identity<'_>) -> Result<(), ApiError> {
+    let (action, params) = change.audit();
+    if let Some(update) = change.update() {
+        push(state, id, update).await?;
+    }
+    change.store(state, id).await?;
+    audit::record(state, user, id, action, params, json!({ "error": null })).await?;
+    Ok(())
 }
 
 /// Sends an identity change to the Device's Agent and returns its refusal message, if any.
 /// shortcut: a reply lost after the Agent applied the change leaves the two sides disagreeing (the Server keeps the
 /// old ID/password); re-read the Device's identity on the next connection if that race ever shows up.
-async fn push(
-    state: &super::State,
-    id: Uuid,
-    build: impl FnOnce(u64) -> IdentityUpdate,
-) -> Result<(), ApiError> {
-    let msg = |request_id| server_message::Msg::IdentityChange(build(request_id));
+async fn push(state: &super::State, id: Uuid, update: IdentityUpdate) -> Result<(), ApiError> {
+    let msg = |request_id| server_message::Msg::IdentityChange(IdentityUpdate { request_id, ..update });
     match state.agents.request(id, msg).await? {
         agent_message::Msg::IdentityUpdated(r) => match r.error {
             None => Ok(()),

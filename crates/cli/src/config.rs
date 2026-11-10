@@ -73,16 +73,24 @@ pub fn set_session(dir: &Path, session: Option<String>) -> anyhow::Result<Config
     Ok(config)
 }
 
-/// This Controller machine's name, as audit entries and the Control Lock holder show it.
+/// This Controller's name, as audit entries and the Control Lock holder show it.
 pub fn hostname() -> String {
-    let var = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME"));
-    var.ok()
-        .filter(|h| !h.trim().is_empty())
-        .or_else(|| {
-            let out = std::process::Command::new("hostname").output().ok()?;
-            Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-        })
-        .unwrap_or_else(|| "controller".into())
+    hostname_or("controller")
+}
+
+/// This machine's name with a caller-chosen last resort: the Controller's name above, or the Device name an install
+/// records (`windows_install::device_name`). One probe serves both (S7).
+pub fn hostname_or(fallback: &str) -> String {
+    let env = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).ok();
+    let command = std::process::Command::new("hostname").output().ok().map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned());
+    hostname_from(env, command, fallback)
+}
+
+/// The probe's decision, split out so the fallbacks are tested without changing this process's environment.
+fn hostname_from(env: Option<String>, command: Option<String>, fallback: &str) -> String {
+    env.filter(|name| !name.trim().is_empty())
+        .or(command.filter(|name| !name.trim().is_empty()))
+        .unwrap_or_else(|| fallback.to_owned())
 }
 
 /// The Server Key's secret and Device Passwords travel in request headers, so the Controller API must be reached over
@@ -328,6 +336,16 @@ mod tests {
         }
         assert!(set.is_err(), "storing must report the unreachable Secret Service: {set:?}");
         assert!(get.as_ref().map_or(true, Option::is_none), "reading must not invent a password: {get:?}");
+    }
+
+    #[test]
+    fn one_hostname_probe_falls_back_in_order() {
+        use super::hostname_from as pick;
+        assert_eq!(pick(Some("lab-pc".into()), Some("ignored".into()), "controller"), "lab-pc");
+        assert_eq!(pick(Some("  ".into()), Some("from-command".into()), "controller"), "from-command");
+        assert_eq!(pick(None, Some("  ".into()), "controller"), "controller");
+        assert_eq!(pick(None, None, "windows"), "windows");
+        assert!(!super::hostname().trim().is_empty(), "the Controller always has a name");
     }
 
     #[test]

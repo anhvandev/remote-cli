@@ -208,6 +208,20 @@ mod tests {
         assert!(err.contains("settings"), "{err}");
     }
 
+    /// `name()` and the `#[serde(rename…)]` next to it are two encodings of one value: a change to either must show
+    /// up in both, or `rcli agent root …` and the IPC/wire values disagree (S8).
+    #[test]
+    fn the_names_match_what_serde_writes() {
+        for (level, name) in [(RootAccess::Never, "never"), (RootAccess::Ask, "ask"), (RootAccess::Always, "always")] {
+            assert_eq!(level.name(), name);
+            assert_eq!(serde_json::to_value(level).unwrap(), serde_json::json!(name));
+        }
+        for (mode, name) in [(AcceptMode::Password, "password"), (AcceptMode::PasswordAccept, "password+accept")] {
+            assert_eq!(mode.name(), name);
+            assert_eq!(serde_json::to_value(mode).unwrap(), serde_json::json!(name));
+        }
+    }
+
     #[test]
     fn only_the_fields_the_person_changed_are_sent() {
         let loaded = settings("alice", RootAccess::Always, AcceptMode::PasswordAccept);

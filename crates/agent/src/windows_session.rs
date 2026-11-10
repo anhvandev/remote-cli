@@ -19,7 +19,7 @@ use std::{
 };
 
 use windows::{
-    core::{w, PCWSTR, PWSTR},
+    core::{PCWSTR, PWSTR},
     Win32::{
         Foundation::{CloseHandle, GetLastError, LocalFree, HANDLE, HLOCAL, WAIT_TIMEOUT},
         Security::{
@@ -51,7 +51,11 @@ use crate::platform::Platform;
 pub use crate::session::{Helper, SessionPlatform};
 
 /// The pipe both sides agree on (public: `Docs` and the installer's service config use it).
-pub const PIPE: &str = r"\\.\pipe\rcli-agent-session";
+pub use crate::session::PIPE;
+
+/// The DACL on the helper pipe (and the IPC pipe, which admits the same callers): SYSTEM and Administrators full
+/// access, Everyone read and write, so any local user may connect. Remote clients are rejected by the pipe mode.
+pub const PIPE_DACL: &str = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;WD)";
 
 impl SessionPlatform {
     /// Accepts helpers on `pipe`. Windows lets the helper type at the sign-in and UAC screens, so input is not
@@ -106,17 +110,13 @@ fn accept(pipe: &str) -> anyhow::Result<(File, File)> {
     }
 }
 
-/// A DACL that lets SYSTEM and Administrators through and gives other local users read/write (the helper may run as
-/// the console user). Remote clients are rejected by the pipe mode.
+/// The security attributes that carry `PIPE_DACL`: SYSTEM and Administrators through, other local users read/write
+/// (the helper may run as the console user).
 fn pipe_security() -> anyhow::Result<(SECURITY_ATTRIBUTES, PSECURITY_DESCRIPTOR)> {
+    let dacl: Vec<u16> = PIPE_DACL.encode_utf16().chain(std::iter::once(0)).collect();
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            w!("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;WD)"),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            None,
-        )?;
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(dacl.as_ptr()), SDDL_REVISION_1, &mut descriptor, None)?;
     }
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -357,5 +357,16 @@ mod tests {
         unsafe {
             let _ = LocalFree(Some(HLOCAL(descriptor.0)));
         }
+    }
+
+    #[test]
+    fn one_dacl_serves_both_pipes_and_only_lets_local_users_read_and_write() {
+        assert!(PIPE_DACL.starts_with("D:"), "{PIPE_DACL}");
+        for ace in ["(A;;GA;;;SY)", "(A;;GA;;;BA)", "(A;;GRGW;;;WD)"] {
+            assert!(PIPE_DACL.contains(ace), "{PIPE_DACL} has no {ace}");
+        }
+        // Everyone gets read/write, never full access (which would let any local user re-ACL the pipe).
+        assert!(!PIPE_DACL.contains("(A;;GA;;;WD)"), "{PIPE_DACL}");
+        assert_eq!(PIPE, r"\\.\pipe\rcli-agent-session");
     }
 }

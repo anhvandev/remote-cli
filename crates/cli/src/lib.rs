@@ -9,6 +9,7 @@ use std::{
 
 pub mod agent;
 pub mod config;
+pub mod install;
 #[cfg(feature = "gui")]
 pub mod gui;
 #[cfg(target_os = "linux")]

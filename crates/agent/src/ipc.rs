@@ -474,15 +474,12 @@ fn pipe_server(path: &Path, first: bool) -> anyhow::Result<tokio::net::windows::
         Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1},
         PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
     };
-    // SYSTEM and Administrators: full access; Everyone: read and write, so any local user can send a request.
+    // SYSTEM and Administrators: full access; Everyone: read and write, so any local user can send a request. The
+    // helper pipe has the same callers, so both use one DACL (crate::windows_session::PIPE_DACL).
+    let dacl: Vec<u16> = crate::windows_session::PIPE_DACL.encode_utf16().chain(std::iter::once(0)).collect();
     let mut sd = PSECURITY_DESCRIPTOR::default();
     unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            windows::core::w!("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;WD)"),
-            SDDL_REVISION_1,
-            &mut sd,
-            None,
-        )?;
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(windows::core::PCWSTR(dacl.as_ptr()), SDDL_REVISION_1, &mut sd, None)?;
     }
     let mut attrs = SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: sd.0, bInheritHandle: false.into() };
     let server = unsafe {

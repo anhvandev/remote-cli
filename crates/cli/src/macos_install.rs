@@ -5,14 +5,12 @@
 
 use std::path::{Path, PathBuf};
 
-use rcli_agent::settings::{DeviceSettings, RootAccess};
+use crate::install::{system, write};
+pub use crate::install::{Options, Run};
 
 pub const DAEMON: &str = "dev.remotecli.agent";
 pub const SESSION: &str = "dev.remotecli.agent.session";
 const INFO_PLIST: &str = include_str!("../../../packaging/macos/Info.plist");
-
-/// Runs an external program (`launchctl`, `codesign`, `ditto`); a seam for tests.
-pub type Run<'a> = &'a mut dyn FnMut(&str, &[&str]) -> anyhow::Result<()>;
 
 pub struct Layout {
     pub root: PathBuf,
@@ -20,7 +18,7 @@ pub struct Layout {
 
 impl Layout {
     fn at(&self, path: &str) -> PathBuf {
-        self.root.join(path.trim_start_matches('/'))
+        crate::install::at(&self.root, path)
     }
     pub fn app(&self) -> PathBuf {
         self.at("/Applications/rcli.app")
@@ -48,16 +46,6 @@ impl Layout {
     fn log(&self) -> PathBuf {
         self.at("/Library/Logs/rcli-agent.log")
     }
-}
-
-/// What `rcli agent install` was given.
-pub struct Options {
-    pub server: String,
-    pub key: String,
-    pub name: String,
-    /// The Terminal User; `None` = the installing account (`SUDO_USER`).
-    pub terminal_user: Option<String>,
-    pub allow_root: bool,
 }
 
 fn xml(s: &str) -> String {
@@ -117,16 +105,6 @@ fn bundle_of(exe: &Path) -> Option<PathBuf> {
     (app.extension()? == "app").then(|| app.to_owned())
 }
 
-fn write(path: &Path, contents: &str, mode: u32) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, contents)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-    Ok(())
-}
-
 /// Puts the app in /Applications and records the Device Settings the install asked for. `exe` is the running binary.
 pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, run: Run) -> anyhow::Result<()> {
     let app = layout.app();
@@ -154,14 +132,7 @@ pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, run: Run) -> a
     let state = layout.state_dir();
     std::fs::create_dir_all(&state)?;
     std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
-    let mut settings = DeviceSettings::load(&state);
-    if let Some(user) = &opts.terminal_user {
-        settings.terminal_user = user.clone();
-    }
-    if opts.allow_root {
-        settings.root = RootAccess::Always;
-    }
-    settings.save(&state)?;
+    crate::install::save_settings(&state, opts)?;
     // No secret here: `uninstall` needs the Server Address to remove this Device, and the Server Key is in the
     // root-only daemon plist.
     write(&state.join("install.json"), &serde_json::json!({ "server": opts.server }).to_string(), 0o600)
@@ -196,13 +167,6 @@ pub fn uninstall_files(layout: &Layout, console_uid: Option<u32>, run: Run) -> a
             std::fs::remove_dir_all(dir)?;
         }
     }
-    Ok(())
-}
-
-/// The real machine's `run`: the command must succeed.
-fn system(program: &str, args: &[&str]) -> anyhow::Result<()> {
-    let out = std::process::Command::new(program).args(args).output()?;
-    anyhow::ensure!(out.status.success(), "{program} {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
     Ok(())
 }
 
@@ -266,6 +230,7 @@ pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcli_agent::settings::{DeviceSettings, RootAccess};
 
     fn temp_root(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rcli-install-{name}-{}", std::process::id()));
@@ -279,7 +244,7 @@ mod tests {
             server: "rcli.example.com:7443".into(),
             key: "rk_ab12_s3cr&t".into(),
             name: "mac-mini".into(),
-            terminal_user: Some("alice".into()),
+            terminal_user: "alice".into(),
             allow_root: true,
         }
     }

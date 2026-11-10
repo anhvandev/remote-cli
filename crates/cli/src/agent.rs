@@ -578,7 +578,8 @@ pub struct Install {
     /// Device name; default: this machine's host name.
     #[arg(long)]
     name: Option<String>,
-    /// The account terminal commands run as; default: the installing account (`SUDO_USER`).
+    /// The account terminal commands run as; default: the installing account (`SUDO_USER`), or the console user on
+    /// Windows.
     #[arg(long)]
     terminal_user: Option<String>,
     /// Always allow `--as root` (Device Setting root = always) instead of asking at the Device.
@@ -597,7 +598,7 @@ impl Install {
             server: self.server,
             key: self.key,
             name,
-            terminal_user: self.terminal_user,
+            terminal_user: crate::install::terminal_user(self.terminal_user),
             allow_root: self.allow_root,
         };
         crate::macos_install::install(opts, out).await
@@ -616,7 +617,7 @@ impl Install {
             server: self.server,
             key: self.key,
             name,
-            terminal_user: self.terminal_user,
+            terminal_user: crate::install::terminal_user(self.terminal_user),
             allow_root: self.allow_root,
         };
         crate::linux_install::install(opts, out).await
@@ -629,7 +630,7 @@ impl Install {
         let opts = crate::windows_install::Options {
             server: self.server,
             key: self.key,
-            name: self.name.unwrap_or_else(crate::windows_install::machine_name),
+            name: self.name.unwrap_or_else(crate::windows_install::device_name),
             terminal_user,
             allow_root: self.allow_root,
         };

@@ -27,6 +27,11 @@ type TokenSink = dyn Fn(&str) + Send + Sync;
 /// greeter accepts XTest input, and Windows' SYSTEM helper can type at the sign-in screen and a UAC prompt.
 pub const LOGIN_WINDOW_INPUT: &str = "input unavailable at macOS login window";
 
+/// The Windows named pipe the Agent service and its session helper agree on: the installer writes it into the
+/// service config, the service listens on it and the helper connects. The Unix transports use a socket beside the
+/// IPC socket instead.
+pub const PIPE: &str = r"\\.\pipe\rcli-agent-session";
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
