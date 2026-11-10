@@ -44,6 +44,7 @@ fn fake_platform_passes_every_check_in_every_environment() {
 | displays | ✅ | | |
 | capture | ✅ | ✅ | ✅ |
 | key shows on screen | ✅ | ✅ | ✅ |
+| text input | ✅ | ✅ | ✅ |
 | session state | ✅ | ✅ | ✅ |
 | control indicator | ✅ | ✅ | ✅ |
 | text recognition | ✅ | ✅ | ✅ |
@@ -143,8 +144,11 @@ fn keys_that_never_reach_the_screen_fail_in_every_environment() {
         report.failures(),
         vec![
             ("key shows on screen", Env::LoggedIn),
+            ("text input", Env::LoggedIn),
             ("key shows on screen", Env::LockScreen),
+            ("text input", Env::LockScreen),
             ("key shows on screen", Env::LoginScreen),
+            ("text input", Env::LoginScreen),
         ]
     );
     assert!(report.table().contains("| key shows on screen | ❌ screen did not change after the key |"));
