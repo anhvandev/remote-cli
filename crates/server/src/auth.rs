@@ -66,7 +66,7 @@ fn dummy_password_check(password: &str) {
 }
 
 /// The principal a password connection authenticates as: `<controller hostname> (<IP>)`, with a stable id per
-/// (machine, IP) so the Control Lock holder survives reconnects.
+/// (name, IP) so the Control Lock holder survives reconnects.
 fn controller_user(controller: &str, ip: &str) -> User {
     let name = format!("{} ({ip})", controller.trim());
     let digest = Sha256::digest(name.as_bytes());

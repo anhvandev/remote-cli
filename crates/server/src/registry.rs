@@ -226,7 +226,7 @@ pub async fn delete(state: &AppState, id: Uuid) -> anyhow::Result<()> {
 }
 
 /// Moves `old`'s resource history and audit entries to `new` (where both have a rollup for the same minute, `new`'s wins),
-/// then deletes `old`. Never done automatically: an admin decides two Devices are the same machine.
+/// then deletes `old`. Never done automatically: an admin decides two Devices are the same computer.
 pub async fn merge(state: &AppState, old: Uuid, new: Uuid) -> anyhow::Result<()> {
     state.agents.disconnect(old, "device_deleted", "this Device was merged into another");
     // No rollup may run while samples change owner.

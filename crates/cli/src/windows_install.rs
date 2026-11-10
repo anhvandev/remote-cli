@@ -5,22 +5,22 @@
 //! with error 1053.
 //!
 //! Every path hangs off `Layout`, and every external command (`sc.exe`, `icacls.exe`) goes through `Run`, so the
-//! layout, the service definition and the exact commands are tested on any host without touching a real machine.
+//! layout, the service definition and the exact commands are tested on any host without touching a real Device.
 
 use std::path::{Path, PathBuf};
 
-use rcli_agent::settings::{DeviceSettings, RootAccess};
 use serde::{Deserialize, Serialize};
+
+pub use crate::install::{Options, Run};
 
 /// The SCM name of the service.
 pub const SERVICE: &str = "rcli-agent";
 /// What the Services console shows.
 pub const DISPLAY_NAME: &str = "rcli Agent";
-/// The named pipe the SYSTEM service accepts its session helpers on (`windows_session.rs`).
-pub const PIPE: &str = r"\\.\pipe\rcli-agent-session";
-
-/// Runs an external program (`sc.exe`, `icacls.exe`); a seam for tests.
-pub type Run<'a> = &'a mut dyn FnMut(&str, &[&str]) -> anyhow::Result<()>;
+/// The named pipe the SYSTEM service accepts its session helpers on (`windows_session.rs` owns the name).
+pub const PIPE: &str = rcli_agent::session::PIPE;
+/// The Start Menu shortcut an install creates: running it opens the GUI window with no arguments (ticket 14).
+pub const SHORTCUT: &str = "rcli.lnk";
 
 /// Where an install puts things. Two roots, so a test can point both at a temp directory.
 #[derive(Clone, Debug)]
@@ -30,7 +30,7 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// The real machine: `%ProgramFiles%` and `%ProgramData%` (never assumed to be on `C:`).
+    /// The real Device: `%ProgramFiles%` and `%ProgramData%` (never assumed to be on `C:`).
     #[cfg(windows)]
     pub fn real() -> Self {
         let dir = |name: &str, fallback: &str| std::env::var_os(name).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(fallback));
@@ -54,16 +54,11 @@ impl Layout {
     pub fn session_pipe(&self) -> &'static str {
         PIPE
     }
-}
 
-/// What `rcli agent install` was given.
-pub struct Options {
-    pub server: String,
-    pub key: String,
-    pub name: String,
-    /// The logged-in interactive user, never the elevated Administrator account that ran the install.
-    pub terminal_user: String,
-    pub allow_root: bool,
+    /// The all-users Start Menu shortcut: visible to every account, like the service itself.
+    pub fn shortcut(&self) -> PathBuf {
+        self.program_data.join("Microsoft").join("Windows").join("Start Menu").join("Programs").join(SHORTCUT)
+    }
 }
 
 /// The protected file the service reads at start. The Server Key lives here, not in the service's arguments.
@@ -136,7 +131,8 @@ pub fn service_definition(layout: &Layout) -> ServiceDefinition {
     }
 }
 
-/// Copies the running binary to `%ProgramFiles%\rcli`, writes the protected config and records the Device Settings.
+/// Copies the running binary to `%ProgramFiles%\rcli`, writes the protected config, records the Device Settings and
+/// creates the Start Menu shortcut.
 /// `exe` is the binary running the install (a download in `%TEMP%`, or the installed one on a reinstall).
 pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, run: Run) -> anyhow::Result<()> {
     let installed = layout.exe();
@@ -167,15 +163,33 @@ pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, run: Run) -> a
     // Administrators may read it.
     restrict(run, &layout.config())?;
 
-    let mut settings = DeviceSettings::load(&state);
-    settings.terminal_user = opts.terminal_user.clone();
-    if opts.allow_root {
-        settings.root = RootAccess::Always;
-    }
-    settings.save(&state)?;
+    crate::install::save_settings(&state, opts)?;
     // Everything under %ProgramData%\rcli is the Device's private data, including the DPAPI blobs.
     restrict(run, &state)?;
+    create_shortcut(layout, run);
     Ok(())
+}
+
+/// The PowerShell that creates the Start Menu shortcut through WScript.Shell. Paths are single-quoted for
+/// `-Command` (a `'` would end the string, so it is doubled); the shortcut starts the installed exe with no
+/// arguments, which opens the GUI window.
+pub fn shortcut_script(layout: &Layout) -> String {
+    let quote = |path: &Path| path.display().to_string().replace('\'', "''");
+    let working_dir = layout.exe().parent().map(Path::to_path_buf).unwrap_or_default();
+    format!(
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}'); \
+         $s.TargetPath='{}'; $s.WorkingDirectory='{}'; $s.Save()",
+        quote(&layout.shortcut()),
+        quote(&layout.exe()),
+        quote(&working_dir),
+    )
+}
+
+/// Creates the Start Menu shortcut, best effort: a locked-down Start Menu or a missing PowerShell must not fail an
+/// otherwise good install.
+pub fn create_shortcut(layout: &Layout, run: Run) {
+    let script = shortcut_script(layout);
+    let _ = run("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &script]);
 }
 
 /// Restricts `path` to SYSTEM and the Administrators group, by well-known SID so a non-English Windows works too.
@@ -227,6 +241,7 @@ pub fn remove_service(run: Run) {
 /// Removes everything `install_files`/`install_service` wrote, including the Device's local data and secrets.
 pub fn uninstall_files(layout: &Layout, run: Run) -> anyhow::Result<()> {
     remove_service(run);
+    let _ = std::fs::remove_file(layout.shortcut());
     let state = layout.state_dir();
     if state.exists() {
         std::fs::remove_dir_all(&state)?;
@@ -238,28 +253,10 @@ pub fn uninstall_files(layout: &Layout, run: Run) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The real machine's `run`: the command must succeed.
+/// This Device's name, as the Device reports it: the same hostname probe as the Controller's name (S7).
 #[cfg(windows)]
-fn system(program: &str, args: &[&str]) -> anyhow::Result<()> {
-    let out = std::process::Command::new(program).args(args).output()?;
-    anyhow::ensure!(out.status.success(), "{program} {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
-    Ok(())
-}
-
-/// This machine's name, as the Device reports it.
-#[cfg(windows)]
-pub fn machine_name() -> String {
-    std::env::var("COMPUTERNAME")
-        .ok()
-        .filter(|n| !n.trim().is_empty())
-        .or_else(|| {
-            std::process::Command::new("hostname.exe")
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-                .filter(|n| !n.is_empty())
-        })
-        .unwrap_or_else(|| "windows".into())
+pub fn device_name() -> String {
+    crate::config::hostname_or("windows")
 }
 
 /// `rcli agent install --server … --key …` from an elevated shell. Files, registration, then the service; a wrong
@@ -273,7 +270,7 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     let layout = Layout::real();
     // A reinstall must not destroy a working install when the new Server Key is wrong.
     let reinstall = layout.config().exists();
-    install_files(&layout, &opts, &std::env::current_exe()?, &mut system)?;
+    install_files(&layout, &opts, &std::env::current_exe()?, &mut crate::install::system)?;
     // Register now, so the Device ID and password exist before the service starts and a wrong key is caught here.
     let server = rcli_agent::ServerEndpoint { addr: opts.server.clone(), server_key: opts.key.clone() };
     let platform = rcli_agent::windows_platform::WindowsPlatform::new(opts.name.clone())?;
@@ -283,14 +280,14 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
         Err(e) => {
             // Leave no half-installed Device behind; on a reinstall keep the existing one and its credentials.
             if !reinstall {
-                let _ = uninstall_files(&layout, &mut system);
+                let _ = uninstall_files(&layout, &mut crate::install::system);
             }
             return Err(e.context("cannot register this Device; is the Server Address and Server Key right?"));
         }
     };
-    if let Err(e) = install_service(&layout, &mut system) {
+    if let Err(e) = install_service(&layout, &mut crate::install::system) {
         if !reinstall {
-            let _ = uninstall_files(&layout, &mut system);
+            let _ = uninstall_files(&layout, &mut crate::install::system);
         }
         return Err(e.context("cannot install the rcli-agent service"));
     }
@@ -336,7 +333,7 @@ pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
             writeln!(out, "warning: {e:#}")?;
         }
     }
-    uninstall_files(&layout, &mut system)?;
+    uninstall_files(&layout, &mut crate::install::system)?;
     writeln!(out, "stopped and deleted the service {SERVICE}; removed {} and the Device's local data", layout.exe().display())?;
     Ok(())
 }
@@ -344,6 +341,7 @@ pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcli_agent::settings::{DeviceSettings, RootAccess};
 
     fn temp_layout(name: &str) -> (Layout, PathBuf) {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -393,8 +391,35 @@ mod tests {
             vec![
                 format!("icacls.exe {} /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F", layout.config().display()),
                 format!("icacls.exe {} /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F", layout.state_dir().display()),
+                format!("powershell.exe -NoProfile -NonInteractive -Command {}", shortcut_script(&layout)),
             ]
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_start_menu_shortcut_opens_the_installed_binary_with_no_arguments() {
+        let (layout, root) = temp_layout("shortcut");
+        let script = shortcut_script(&layout);
+        assert!(
+            layout.shortcut().ends_with(Path::new("Microsoft/Windows/Start Menu/Programs").join(SHORTCUT)),
+            "{}",
+            layout.shortcut().display()
+        );
+        assert!(script.contains(&format!("TargetPath='{}'", layout.exe().display())), "{script}");
+        assert!(script.contains(&layout.shortcut().display().to_string()), "{script}");
+        assert!(!script.contains(" agent "), "the shortcut must open the window, not a subcommand: {script}");
+
+        // A Start Menu that cannot be written (locked down, no PowerShell) is not an install failure.
+        let download = root.join("download").join("rcli.exe");
+        std::fs::create_dir_all(download.parent().unwrap()).unwrap();
+        std::fs::write(&download, b"binary").unwrap();
+        let failed = install_files(&layout, &opts(), &download, &mut |program, _args| {
+            anyhow::ensure!(program != "powershell.exe", "powershell is unavailable");
+            Ok(())
+        });
+        failed.unwrap();
+        assert!(layout.exe().exists(), "the rest of the install still happened");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -447,7 +472,9 @@ mod tests {
         }
         std::fs::create_dir_all(layout.state_dir().join("secrets")).unwrap();
         std::fs::write(layout.state_dir().join("secrets").join("device_password"), b"sealed").unwrap();
-        assert!(layout.exe().exists() && layout.state_dir().exists());
+        std::fs::create_dir_all(layout.shortcut().parent().unwrap()).unwrap();
+        std::fs::write(layout.shortcut(), b"shortcut").unwrap();
+        assert!(layout.exe().exists() && layout.state_dir().exists() && layout.shortcut().exists());
 
         calls.clear();
         {
@@ -459,6 +486,7 @@ mod tests {
         }
         assert_eq!(calls, vec!["sc.exe stop rcli-agent".to_owned(), "sc.exe delete rcli-agent".to_owned()]);
         assert!(!layout.state_dir().exists() && !layout.program_files.join("rcli").exists(), "an install file is left behind");
+        assert!(!layout.shortcut().exists(), "the Start Menu shortcut is left behind");
         let _ = std::fs::remove_dir_all(root);
     }
 

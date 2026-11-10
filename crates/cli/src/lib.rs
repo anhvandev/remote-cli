@@ -9,6 +9,7 @@ use std::{
 
 pub mod agent;
 pub mod config;
+pub mod install;
 #[cfg(feature = "gui")]
 pub mod gui;
 #[cfg(target_os = "linux")]
@@ -60,10 +61,6 @@ enum Command {
         /// Server Key, rk_<CA fingerprint>_<secret>.
         #[arg(long, hide_env_values = true)]
         key: String,
-        /// Accept an http:// Server Address on another machine. The Server Key and Device Passwords then travel
-        /// unencrypted; http:// to this machine itself is always accepted.
-        #[arg(long)]
-        insecure_http: bool,
     },
     /// Sign in with a Dashboard account and save the session (Admin commands need it).
     Login {
@@ -324,7 +321,7 @@ enum AgentCommand {
 #[derive(Subcommand)]
 enum LockCommand {
     /// Take the Control Lock. The CLI keeps no `lock/watch` open, so the lock ends only after 10 minutes without
-    /// an Action (or on release); the 60 s disconnect grace applies to watching clients (`rcli mcp`, Dashboard).
+    /// an Action (or on release); the 60 s disconnect grace applies to watchers (`rcli mcp`, Dashboard).
     Acquire { device: String },
     Release { device: String },
     Status { device: String },
@@ -630,8 +627,8 @@ where
         };
     }
     let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);
-    if let Command::Setup { server, key, insecure_http } = &cli.command {
-        let text = config::setup(&dir, server, key, *insecure_http).await?;
+    if let Command::Setup { server, key } = &cli.command {
+        let text = config::setup(&dir, server, key).await?;
         let body = config::load_at(&dir)?.map(|c| config::json(&c)).unwrap_or(serde_json::Value::Null);
         return match cli.json {
             true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),
@@ -1190,7 +1187,7 @@ pub struct Connection {
     pub token: Option<String>,
     /// The saved Server Key: with a remembered Device Password this makes a password connection.
     pub server_key: Option<String>,
-    /// This machine's name, shown in audit entries and as Control Lock holder.
+    /// This Controller's name, shown in audit entries and as Control Lock holder.
     pub controller: String,
 }
 

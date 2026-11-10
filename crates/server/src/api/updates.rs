@@ -26,7 +26,7 @@ struct Current {
     device: Option<String>,
 }
 
-/// `rcli upgrade` fetches the build rolled out to its Device (or, on a Controller-only machine, the fleet's build)
+/// `rcli upgrade` fetches the build rolled out to its Device (or, on a Controller-only install, the fleet's build)
 /// and verifies the signature against the key it pinned at setup. The Server Key (header `X-Rcli-Server-Key`) is
 /// the only credential, so not just anyone can ask which build a given Device ID is on.
 async fn current(

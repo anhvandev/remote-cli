@@ -1,4 +1,4 @@
-//! The Agent GUI window (ticket 14): a small egui window, a client of the Agent's local IPC.
+//! The Agent GUI window (ticket 14): a small egui window that talks to the Agent over its local IPC.
 //! Built only with `--features gui`; the default `rcli` binary links no display libraries.
 
 use std::path::PathBuf;
@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use eframe::egui;
 use rcli_agent::{
     ipc::{self, Request},
-    settings::{AcceptMode, RootAccess},
+    settings::{AcceptMode, Change, DeviceSettings, RootAccess},
 };
 use serde_json::{json, Value};
 
@@ -31,10 +31,11 @@ struct App {
     shown: Option<String>,
     /// The Server Key and unlock password after an elevated reveal.
     secrets: Option<Value>,
-    /// The Device Settings editor, seeded from `info` on the first fetch.
-    terminal_user: String,
-    root: RootAccess,
-    accept: AcceptMode,
+    /// The Device Settings as the Agent last reported them (root-only), once the person loaded them. `None` until
+    /// then, so the editors never start from made-up defaults.
+    loaded: Option<DeviceSettings>,
+    /// The Device Settings editor: seeded from `loaded`, never sent as a whole (only changed fields are).
+    edited: DeviceSettings,
     /// The new unlock password being typed.
     unlock: String,
     /// The last action's message.
@@ -50,10 +51,6 @@ impl App {
     fn new(socket: PathBuf) -> Self {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let info = fetch(&rt, &socket);
-        let settings = &info["settings"];
-        let terminal_user = settings["terminal_user"].as_str().unwrap_or_default().to_owned();
-        let root = serde_json::from_value(settings["root"].clone()).unwrap_or_default();
-        let accept = serde_json::from_value(settings["accept"].clone()).unwrap_or_default();
         Self {
             socket,
             rt,
@@ -62,9 +59,8 @@ impl App {
             password: String::new(),
             shown: None,
             secrets: None,
-            terminal_user,
-            root,
-            accept,
+            loaded: None,
+            edited: DeviceSettings::default(),
             unlock: String::new(),
             note: String::new(),
             #[cfg(any(target_os = "macos", windows))]
@@ -130,16 +126,90 @@ impl App {
         self.shown = None;
     }
 
-    /// Applies the Device Settings editors (root; the Agent saves and applies them at once).
+    /// Applies only the Device Settings fields the person changed (root; the Agent saves and applies them at once).
+    /// Each field goes on its own and every failure is reported: one refused change must not hide another one.
     fn set_settings(&mut self) {
-        let calls = [
-            (Request::TerminalUserSet { user: self.terminal_user.clone() }, vec!["agent", "terminal-user", "set", &self.terminal_user]),
-            (Request::RootSet { root: self.root }, vec!["agent", "root", self.root.name()]),
-            (Request::AcceptSet { accept: self.accept }, vec!["agent", "accept", self.accept.name()]),
-        ];
-        for (request, args) in calls {
-            let reply = self.ipc_elevated(&request, &args, None);
-            self.note = note(&reply);
+        let Some(loaded) = self.loaded.clone() else {
+            self.note = "load the Device Settings first: they are root-only".into();
+            return;
+        };
+        let change = Change::between(&loaded, &self.edited);
+        if change.is_empty() {
+            self.note = "no Device Settings changed".into();
+            return;
+        }
+        let mut lines = Vec::new();
+        let mut applied = Change::default();
+        if let Some(user) = change.terminal_user.clone() {
+            let request = Request::TerminalUserSet { user: user.clone() };
+            match self.send_setting("Terminal User", &request, &["agent", "terminal-user", "set", &user]) {
+                Ok(message) => {
+                    applied.terminal_user = Some(user);
+                    lines.push(message);
+                }
+                Err(e) => lines.push(e),
+            }
+        }
+        if let Some(root) = change.root {
+            let request = Request::RootSet { root };
+            match self.send_setting("root access", &request, &["agent", "root", root.name()]) {
+                Ok(message) => {
+                    applied.root = Some(root);
+                    lines.push(message);
+                }
+                Err(e) => lines.push(e),
+            }
+        }
+        if let Some(accept) = change.accept {
+            let request = Request::AcceptSet { accept };
+            match self.send_setting("accept mode", &request, &["agent", "accept", accept.name()]) {
+                Ok(message) => {
+                    applied.accept = Some(accept);
+                    lines.push(message);
+                }
+                Err(e) => lines.push(e),
+            }
+        }
+        if let Some(loaded) = self.loaded.as_mut() {
+            applied.apply(loaded);
+        }
+        self.note = lines.join("\n");
+    }
+
+    /// One changed setting, run elevated when the Agent refuses only for lack of root; `Err` names the setting.
+    fn send_setting(&self, field: &str, request: &Request, args: &[&str]) -> Result<String, String> {
+        let reply = self.ipc_elevated(request, args, None);
+        match reply["message"].as_str() {
+            Some(message) => Ok(message.to_owned()),
+            None => Err(format!("{field}: {}", reply["error"].as_str().unwrap_or("the Agent did not report a result"))),
+        }
+    }
+
+    /// The `info` reply as root sees it: the ordinary IPC when this process is already root, else one OS
+    /// authorization prompt (`rcli agent info --json`, like Reveal). The Settings and the secrets are root-only, so
+    /// the unelevated reply never carries them.
+    fn root_info(&self) -> Result<Value, String> {
+        let reply = self.ipc(&Request::Info);
+        if reply.get("settings").is_some() || reply.get("server_key").is_some() {
+            return Ok(reply);
+        }
+        let out = elevated(&["agent", "info", "--json"], None).map_err(|e| e.to_string())?;
+        serde_json::from_str(&out).map_err(|e| format!("the elevated `rcli agent info` did not return JSON: {e}"))
+    }
+
+    /// Reads the Device Settings through the elevated path and fills the editors from that reply. Until this
+    /// succeeds the editors are disabled: a click on Apply must never send made-up values.
+    fn load_settings(&mut self) {
+        match self.root_info() {
+            Ok(reply) => match DeviceSettings::from_info(&reply) {
+                Ok(settings) => {
+                    self.edited = settings.clone();
+                    self.loaded = Some(settings);
+                    self.note = "the Device Settings were loaded".into();
+                }
+                Err(e) => self.note = format!("cannot edit the Device Settings: {e}"),
+            },
+            Err(e) => self.note = format!("cannot read the Device Settings: {e}"),
         }
     }
 
@@ -156,16 +226,14 @@ impl App {
         self.note = note(&reply);
     }
 
-    /// The Server Key and the unlock password: root-only fields of `info`, so this always asks the OS (like Reveal).
+    /// The Server Key and the unlock password: root-only fields of `info`, so this asks the OS when not root.
     fn reveal_secrets(&mut self) {
-        let reply = match elevated(&["agent", "info", "--json"], None) {
-            Ok(out) => serde_json::from_str::<Value>(&out).unwrap_or_else(|_| json!({ "error": out })),
-            Err(e) => json!({ "error": e.to_string() }),
-        };
-        if reply.get("server_key").is_some() {
-            self.secrets = Some(reply);
-        } else {
-            self.note = format!("cannot read the Server Key: {}", reply["error"].as_str().unwrap_or_default());
+        match self.root_info() {
+            Ok(reply) if reply.get("server_key").is_some() => self.secrets = Some(reply),
+            Ok(reply) => {
+                self.note = format!("cannot read the Server Key: {}", reply["error"].as_str().unwrap_or("the Agent did not include it"))
+            }
+            Err(e) => self.note = format!("cannot read the Server Key: {e}"),
         }
     }
 
@@ -229,15 +297,15 @@ impl eframe::App for App {
         self.prompts = self.ipc(&Request::Prompts);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("rcli");
-            if !self.note.is_empty() {
-                ui.label(&self.note);
+            for line in self.note.lines() {
+                ui.label(line);
             }
             if let Some(error) = self.info["error"].as_str() {
                 ui.label(format!("Agent unreachable: {error}"));
                 #[cfg(any(target_os = "macos", windows))]
                 {
                     ui.separator();
-                    ui.label("Install the Agent on this machine (the Dashboard's Connect page shows both values)");
+                    ui.label("Install the Agent on this Device (the Dashboard's Connect page shows both values)");
                     ui.horizontal(|ui| {
                         ui.label("Server Address:");
                         ui.text_edit_singleline(&mut self.install_server);
@@ -262,28 +330,43 @@ impl eframe::App for App {
                 }
                 ui.separator();
                 ui.label("Device Settings");
-                let s = &self.info["settings"];
-                ui.label(format!("Terminal user: {}", s["terminal_user"].as_str().unwrap_or("-")));
-                ui.label(format!("Root: {}", s["root"].as_str().unwrap_or("-")));
-                ui.label(format!("Accept: {}", s["accept"].as_str().unwrap_or("-")));
-                ui.horizontal(|ui| {
-                    ui.label("Terminal user:");
-                    ui.text_edit_singleline(&mut self.terminal_user);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Root:");
-                    for level in [RootAccess::Never, RootAccess::Ask, RootAccess::Always] {
-                        ui.selectable_value(&mut self.root, level, level.name());
+                match self.loaded.clone() {
+                    Some(settings) => {
+                        ui.label(format!("Terminal user: {}", settings.terminal_user));
+                        ui.label(format!("Root: {}", settings.root.name()));
+                        ui.label(format!("Accept: {}", settings.accept.name()));
+                        ui.horizontal(|ui| {
+                            ui.label("Terminal user:");
+                            ui.text_edit_singleline(&mut self.edited.terminal_user);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Root:");
+                            for level in [RootAccess::Never, RootAccess::Ask, RootAccess::Always] {
+                                ui.selectable_value(&mut self.edited.root, level, level.name());
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Accept:");
+                            for mode in [AcceptMode::Password, AcceptMode::PasswordAccept] {
+                                ui.selectable_value(&mut self.edited.accept, mode, mode.name());
+                            }
+                        });
+                        // Only the fields the person changed are sent (see `Change::between`).
+                        if ui.button("Apply Device Settings").clicked() {
+                            self.set_settings();
+                        }
+                        if ui.button("Reload Device Settings").clicked() {
+                            self.load_settings();
+                        }
                     }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Accept:");
-                    for mode in [AcceptMode::Password, AcceptMode::PasswordAccept] {
-                        ui.selectable_value(&mut self.accept, mode, mode.name());
+                    None => {
+                        // The Agent hides Settings from an unelevated `info` reply, so they are read through the same
+                        // OS authorization prompt as Reveal. Apply stays unavailable until that reply fills the editors.
+                        ui.label("Root only: loading asks for permission the way Reveal does (polkit, UAC or macOS authorization).");
+                        if ui.button("Load Device Settings").clicked() {
+                            self.load_settings();
+                        }
                     }
-                });
-                if ui.button("Apply Device Settings").clicked() {
-                    self.set_settings();
                 }
                 ui.separator();
                 ui.label("Device Password");
@@ -423,7 +506,7 @@ fn elevated(args: &[&str], stdin: Option<&str>) -> anyhow::Result<String> {
         child.stdin.take().unwrap().write_all(input.as_bytes())?;
     }
     let out = child.wait_with_output()?;
-    anyhow::ensure!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr).trim());
+    anyhow::ensure!(out.status.success(), "{}", refusal(&out.stderr));
     Ok(String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_owned())
 }
 
@@ -449,8 +532,21 @@ fn elevated(args: &[&str], stdin: Option<&str>) -> anyhow::Result<String> {
         let _ = std::fs::remove_file(file);
     }
     let out = out?;
-    anyhow::ensure!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr).trim());
+    anyhow::ensure!(out.status.success(), "{}", refusal(&out.stderr));
     Ok(String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_owned())
+}
+
+/// What to show when an elevation helper failed: its stderr, or a clear line when the OS printed none (a cancelled
+/// polkit or macOS authorization prompt leaves both streams empty, and an empty error reports nothing).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn refusal(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let text = text.trim();
+    if text.is_empty() {
+        "the elevation prompt was refused or failed".to_owned()
+    } else {
+        text.to_owned()
+    }
 }
 
 /// Runs `rcli agent …` elevated after the UAC prompt and returns its stdout. The elevated process cannot inherit

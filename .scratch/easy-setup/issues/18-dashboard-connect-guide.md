@@ -73,3 +73,7 @@
   Server Address alone).
 
 - code-review fix: `GET /api/v1/server-settings` is refused to password connections (`403 user_session_required`) — the spec says a password connection has no Server-admin rights, which beats this ticket's "a password connection may read it too"; every signed-in User (Admin and Operator) still reads it. The guide's copy drops the retired "máy" wording ("Máy mới" → "Device mới", "máy đó" → "Device đó").
+
+- final code-review fix (P4): the guide's `rcli setup` guidance no longer offers `--insecure-http` (the flag is gone).
+  `http://` is accepted only for loopback/same computer; every other Server Address must be `https://` behind the TLS
+  reverse proxy. docs/usage.md and ADR 0003 updated; no dashboard code change, the http warning banner is unchanged.

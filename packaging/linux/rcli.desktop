@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=rcli
+Comment=Remote CLI: this Device's Agent window, connection status and Device Settings
+Exec=/usr/local/bin/rcli
+Icon=utilities-terminal
+Terminal=false
+Categories=System;RemoteAccess;
+StartupNotify=true

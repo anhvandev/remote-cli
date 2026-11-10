@@ -168,3 +168,10 @@
   exactly like `macos_install::uninstall` and `linux_install::uninstall`. The Server audits it as an Admin
   `device.delete` with `self: true` and closes the connection; an unreachable Server is a warning, not a failure.
   The `HOOK (ticket 16)` comment is gone.
+
+- final code-review fix (P2, S4): the installer now creates the all-users Start Menu shortcut
+  (`%ProgramData%\Microsoft\Windows\Start Menu\Programs\rcli.lnk`) through WScript.Shell/PowerShell, best effort
+  (a locked-down Start Menu or a missing PowerShell does not fail an otherwise good install); uninstall removes it.
+  It starts the installed exe with no arguments, so it assumes the distributed build has `--features gui` (the GUI
+  install form does too). The installer shares the new `crates/cli/src/install.rs` helpers with Linux/macOS. Human
+  step on real Windows: Start menu → rcli opens the window; after `rcli agent uninstall` the shortcut is gone.

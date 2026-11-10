@@ -86,7 +86,7 @@ impl SecretStore for FileSecretStore {
 }
 
 /// Linux: Device secrets encrypted by `systemd-creds`, in files under the Agent's state directory.
-/// `--with-key=auto` uses the host key and the TPM when the machine has one, so a copied disk or backup does not
+/// `--with-key=auto` uses the host key and the TPM when the Device has one, so a copied disk or backup does not
 /// reveal the secret; the credential name is bound into the key, and system-scope credentials are readable only by
 /// root (the root service's user binding). `systemd-creds` is not a link-time dependency, so a system without it
 /// falls back to `FileSecretStore` (chosen by `rcli agent install`).
@@ -99,7 +99,7 @@ pub struct SystemdCredsSecretStore {
 #[cfg(target_os = "linux")]
 type CredsRunner = dyn Fn(&[&str], Option<&[u8]>) -> anyhow::Result<Vec<u8>> + Send + Sync;
 
-/// Whether this machine can encrypt with `systemd-creds` (systemd built with the credential support).
+/// Whether this Device can encrypt with `systemd-creds` (systemd built with the credential support).
 pub fn systemd_creds_available() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -172,7 +172,7 @@ impl SecretStore for SystemdCredsSecretStore {
     }
 }
 
-/// Runs `systemd-creds` (the real machine's runner): the ciphertext goes to the last argument, the plaintext comes
+/// Runs `systemd-creds` (the real runner): the ciphertext goes to the last argument, the plaintext comes
 /// from stdin when `input` is given, else stdout carries the plaintext.
 #[cfg(target_os = "linux")]
 fn run_systemd_creds(args: &[&str], input: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
@@ -198,7 +198,7 @@ fn run_systemd_creds(args: &[&str], input: Option<&[u8]>) -> anyhow::Result<Vec<
 }
 
 /// macOS: generic passwords in a keychain file, by default the System Keychain, which only root can write.
-/// Never prompts: a call that would show a dialog fails instead (the root daemon has nobody to ask).
+/// Never prompts: a call that would show a dialog fails instead (a root service has nobody to ask).
 // shortcut: items trust the binary that stored them, and an unsigned build is trusted by its hash, so after an
 // upgrade reading fails until the secret is set again; signed builds (out of scope) fix this.
 #[cfg(target_os = "macos")]
@@ -256,10 +256,10 @@ impl SecretStore for KeychainSecretStore {
 #[cfg(target_os = "macos")]
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
-/// Windows: DPAPI machine scope (`CRYPTPROTECT_LOCAL_MACHINE`), one blob per secret in `<dir>`. Only this machine
+/// Windows: DPAPI machine scope (`CRYPTPROTECT_LOCAL_MACHINE`), one blob per secret in `<dir>`. Only this Device
 /// can decrypt it, so a copied disk or backup does not reveal the Device Password (ticket 22). The installer ACLs
 /// `%ProgramData%\rcli` to SYSTEM and Administrators.
-// shortcut: machine scope means any account on this machine can decrypt; the directory ACL, not the account, is
+// shortcut: DPAPI machine scope means any account on this Device can decrypt; the directory ACL, not the account, is
 // the gate. Per-user scope would break the SYSTEM service reading what an elevated install wrote.
 #[cfg(windows)]
 pub struct DpapiSecretStore {
@@ -277,7 +277,7 @@ impl DpapiSecretStore {
     }
 }
 
-/// Encrypts `plain` for this machine. The optional entropy is the secret's name, so a blob cannot be moved to
+/// Encrypts `plain` for this Device. The optional entropy is the secret's name, so a blob cannot be moved to
 /// another name.
 #[cfg(windows)]
 fn protect(name: &str, plain: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -351,7 +351,7 @@ mod dpapi_tests {
     use super::*;
 
     #[test]
-    fn dpapi_secrets_are_machine_bound_and_round_trip() {
+    fn dpapi_secrets_are_device_bound_and_round_trip() {
         let dir = std::env::temp_dir().join(format!("rcli-dpapi-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = DpapiSecretStore::new(&dir);
@@ -409,7 +409,7 @@ mod tests {
     }
 
     /// The systemd-creds store, with a runner that plays the CLI's role: it writes the ciphertext file named by
-    /// the last argument and reads it back for decrypt. The real `systemd-creds` is exercised on a real machine.
+    /// the last argument and reads it back for decrypt. The real `systemd-creds` is exercised on a real Device.
     #[cfg(target_os = "linux")]
     #[test]
     fn systemd_creds_store_round_trips_with_the_name_bound_and_the_cli_never_leaks_the_secret() {

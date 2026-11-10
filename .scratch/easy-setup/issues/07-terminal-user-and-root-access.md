@@ -77,3 +77,8 @@
   `su`/`runas`), the GUI prompt (ticket 14), and the Windows named pipe (ticket 03's existing shortcut).
 
 - code-review fix: glossary wording in `run_as`'s doc comment ("the run-as" → "the account"; Terminal User, avoid "run-as user").
+
+- final code-review fix (P5/P6): no change to how the Agent enforces the Terminal User or the root level. The
+  `prompts` IPC deviation is documented at `Request::Prompts` (`shortcut:` naming story 27 vs the IPC split), and the
+  GUI now reads and writes these Settings elevated, sending only the changed fields (P6), so a stale window cannot
+  rewrite `never`/`always`.

@@ -1,11 +1,14 @@
-//! The daemon ↔ session helper split (macOS ticket 24, Linux ticket 16, Windows ticket 22; ADR 0001). A root/SYSTEM
-//! service cannot reach the window server or input desktop of the logged-in person, so a helper process in the
-//! console session connects back over a local stream and does the screen work: displays, capture, input, the
-//! accessibility tree and the session state. Everything else (shell, power, metrics) stays in the daemon.
-//!
+//! The Agent service ↔ session helper split (macOS ticket 24, Linux ticket 16, Windows ticket 22; ADR 0001). A
+//! root/SYSTEM service cannot reach the window server or input desktop of the logged-in person, so a helper process
+//! in the console session connects back over a local stream and does the screen work: displays, capture, input, the
+//! accessibility tree and the session state. Everything else (shell, power, metrics) stays in the Agent service.
 //! Wire: one JSON request per line; one JSON reply per line (`{"ok": …}` or `{"error": …}`), and after a capture
 //! reply its `len` raw RGBA bytes. `macos_session` (the Unix transport) and `windows_session` (named pipes) supply
 //! the transport.
+
+// shortcut: ADR 0001 calls the root process "a root daemon", and launchd names its job a LaunchDaemon, so that term
+// stays where the platform uses it (the `DAEMON` label, "root daemon" in the ADR). Elsewhere this file says "Agent
+// service", which GLOSSARY.md prefers (Agent — _Avoid_: client, daemon) rather than overriding the ADR.
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -20,12 +23,17 @@ use crate::platform::{
     DisplayInfo, Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, RunAs, SessionState, ShellOutput, UiElement,
 };
 
-/// Where a helper's new portal restore token goes (Linux Wayland); the daemon persists it.
+/// Where a helper's new portal restore token goes (Linux Wayland); the Agent service persists it.
 type TokenSink = dyn Fn(&str) + Send + Sync;
 
 /// What an input Action fails with at the macOS login window: CGEvent input never reaches it (ADR 0001). Linux's
 /// greeter accepts XTest input, and Windows' SYSTEM helper can type at the sign-in screen and a UAC prompt.
 pub const LOGIN_WINDOW_INPUT: &str = "input unavailable at macOS login window";
+
+/// The Windows named pipe the Agent service and its session helper agree on: the installer writes it into the
+/// service config, the service listens on it and the helper connects. The Unix transports use a socket beside the
+/// IPC socket instead.
+pub const PIPE: &str = r"\\.\pipe\rcli-agent-session";
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -46,7 +54,7 @@ pub enum Request {
 }
 
 /// One accepted helper connection. Calls are synchronous: a hung helper must not hang the Agent, so the transport
-/// sets a read timeout and the daemon drops a helper that fails to answer.
+/// sets a read timeout and the Agent service drops a helper that fails to answer.
 pub struct Helper {
     reader: BufReader<Box<dyn Read + Send>>,
     writer: Box<dyn Write + Send>,
@@ -72,7 +80,7 @@ impl Helper {
     }
 }
 
-/// The daemon's Platform: screen calls go to the session helper on the console, the rest to `inner`.
+/// The Agent service's Platform: screen calls go to the session helper on the console, the rest to `inner`.
 pub struct SessionPlatform {
     inner: Arc<dyn Platform>,
     helpers: Arc<Mutex<Vec<Helper>>>,
@@ -93,7 +101,7 @@ impl SessionPlatform {
         self.helpers.clone()
     }
 
-    /// Called with every portal restore token a helper publishes, so the daemon can keep it in the state dir.
+    /// Called with every portal restore token a helper publishes, so the Agent service can keep it in the state dir.
     pub fn on_restore_token(&self, sink: impl Fn(&str) + Send + Sync + 'static) {
         *self.token_sink.lock().unwrap() = Some(Arc::new(sink));
     }
@@ -170,7 +178,7 @@ impl Platform for SessionPlatform {
     fn recognize_text(&self, frame: &Frame) -> anyhow::Result<Vec<UiElement>> {
         self.inner.recognize_text(frame)
     }
-    /// No helper connected means no GUI session yet: the login window (or a machine still booting).
+    /// No helper connected means no GUI session yet: the login window (or a Device still booting).
     fn session_state(&self) -> anyhow::Result<SessionState> {
         Ok(self.with_active(|_, state| Ok(state)).unwrap_or(SessionState::LoginScreen))
     }
@@ -212,7 +220,7 @@ impl Platform for SessionPlatform {
     }
 }
 
-/// The helper side: answers the daemon's requests from `platform` until the connection closes. `on_console` says
+/// The helper side: answers the Agent service's requests from `platform` until the connection closes. `on_console` says
 /// whether this helper's session is the one on the console (a Mac or a Linux box may have several logged-in
 /// sessions).
 pub fn answer(
@@ -227,7 +235,7 @@ pub fn answer(
         let ok = match request {
             Request::State => platform.session_state().map(|s| {
                 let reply = json!({ "state": s, "on_console": on_console() });
-                // Linux Wayland helpers publish the portal's restore token; the daemon owns the state dir.
+                // Linux Wayland helpers publish the portal's restore token; the Agent service owns the state dir.
                 #[cfg(target_os = "linux")]
                 let reply = match crate::linux::screencast::published_token() {
                     Some(token) => {
@@ -280,10 +288,10 @@ mod tests {
     use super::*;
     use crate::platform::FakePlatform;
 
-    /// A daemon-side SessionPlatform with one helper serving `screen` over a pair of in-memory pipes.
+    /// A service-side SessionPlatform with one helper serving `screen` over a pair of in-memory pipes.
     fn platform_with_helper(screen: FakePlatform, allow_login_input: bool) -> SessionPlatform {
         let platform = SessionPlatform::new(Arc::new(FakePlatform::new("host")), allow_login_input);
-        // Requests go daemon → helper, replies helper → daemon.
+        // Requests go Agent service → helper, replies helper → Agent service.
         let (requests_reader, requests_writer) = std::io::pipe().expect("anonymous pipe");
         let (replies_reader, replies_writer) = std::io::pipe().expect("anonymous pipe");
         platform.helpers().lock().unwrap().push(Helper::new(Box::new(replies_reader), Box::new(requests_writer)));
@@ -297,13 +305,13 @@ mod tests {
     fn screen_calls_reach_the_session_on_the_console() {
         let screen = FakePlatform::new("session");
         screen.set_session_state(SessionState::Locked);
-        let daemon = platform_with_helper(screen.clone(), false);
-        assert_eq!(daemon.session_state().unwrap(), SessionState::Locked);
-        assert_eq!(daemon.displays().unwrap(), screen.displays().unwrap());
-        assert_eq!(daemon.capture(0).unwrap(), screen.capture(0).unwrap());
-        daemon.input(Input::Key("a".into())).unwrap();
+        let service = platform_with_helper(screen.clone(), false);
+        assert_eq!(service.session_state().unwrap(), SessionState::Locked);
+        assert_eq!(service.displays().unwrap(), screen.displays().unwrap());
+        assert_eq!(service.capture(0).unwrap(), screen.capture(0).unwrap());
+        service.input(Input::Key("a".into())).unwrap();
         assert_eq!(screen.inputs(), vec![Input::Key("a".into())], "the key reached the lock screen session");
-        daemon.power(PowerAction::Lock).unwrap();
+        service.power(PowerAction::Lock).unwrap();
         assert_eq!(screen.power_actions(), vec![PowerAction::Lock], "the session locked itself");
     }
 
@@ -326,15 +334,15 @@ mod tests {
     }
 
     #[test]
-    fn a_helpers_restore_token_reaches_the_daemons_sink() {
-        let daemon = platform_with_raw_helper(
+    fn a_helpers_restore_token_reaches_the_agent_services_sink() {
+        let service = platform_with_raw_helper(
             r#"{"ok":{"state":"LoggedIn","on_console":true,"restore_token":"tok-from-helper"},"len":0}"#,
         );
         let seen: Arc<Mutex<Vec<String>>> = Default::default();
         let sink = seen.clone();
-        daemon.on_restore_token(move |token| sink.lock().unwrap().push(token.to_owned()));
+        service.on_restore_token(move |token| sink.lock().unwrap().push(token.to_owned()));
         // Any helper call polls the state first, which is where the token rides along.
-        assert_eq!(daemon.session_state().unwrap(), SessionState::LoggedIn);
+        assert_eq!(service.session_state().unwrap(), SessionState::LoggedIn);
         assert_eq!(seen.lock().unwrap().as_slice(), ["tok-from-helper"]);
     }
 
@@ -342,25 +350,25 @@ mod tests {
     fn at_the_login_window_capture_works_and_input_is_unavailable_where_the_platform_says_so() {
         let screen = FakePlatform::new("loginwindow");
         screen.set_session_state(SessionState::LoginScreen);
-        let daemon = platform_with_helper(screen.clone(), false);
-        assert_eq!(daemon.session_state().unwrap(), SessionState::LoginScreen);
-        assert!(daemon.capture(0).is_ok());
-        let err = daemon.input(Input::Key("a".into())).unwrap_err();
+        let service = platform_with_helper(screen.clone(), false);
+        assert_eq!(service.session_state().unwrap(), SessionState::LoginScreen);
+        assert!(service.capture(0).is_ok());
+        let err = service.input(Input::Key("a".into())).unwrap_err();
         assert_eq!(err.to_string(), "input unavailable at macOS login window");
         assert!(screen.inputs().is_empty());
 
         // Linux's greeter and Windows' SYSTEM helper may type at the login screen and a UAC prompt.
         let screen = FakePlatform::new("greeter");
         screen.set_session_state(SessionState::LoginScreen);
-        let daemon = platform_with_helper(screen.clone(), true);
-        daemon.input(Input::Text("alice".into())).unwrap();
+        let service = platform_with_helper(screen.clone(), true);
+        service.input(Input::Text("alice".into())).unwrap();
         assert_eq!(screen.inputs(), vec![Input::Text("alice".into())]);
     }
 
     #[test]
     fn without_a_helper_it_reports_the_login_window_and_cannot_capture() {
-        let daemon = SessionPlatform::new(Arc::new(FakePlatform::new("host")), false);
-        assert_eq!(daemon.session_state().unwrap(), SessionState::LoginScreen);
-        assert!(daemon.capture(0).unwrap_err().to_string().contains("no GUI session"));
+        let service = SessionPlatform::new(Arc::new(FakePlatform::new("host")), false);
+        assert_eq!(service.session_state().unwrap(), SessionState::LoginScreen);
+        assert!(service.capture(0).unwrap_err().to_string().contains("no GUI session"));
     }
 }

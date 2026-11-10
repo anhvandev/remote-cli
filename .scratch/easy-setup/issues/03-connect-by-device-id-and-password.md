@@ -87,3 +87,14 @@
   `--password`), since tests pass `--password`; the static Device Password UI in the Dashboard (tickets 09/11).
 
 - code-review fix: a remembered Device Password is no longer plaintext in the Controller config file — `config::remember` now seals the `Remembered` JSON with the Agent's `FileSecretStore` (AES-256-GCM, key file under `passwords/`), `remember`/`forget` delete the old plaintext `<device>.json`, and a unit test asserts no plaintext on disk. Also `rcli agent info` no longer shows the Device Settings to non-root callers (spec: only the ID, status and controllers); they moved behind the root gate with the Server Key and unlock password, covered in `crates/agent/src/ipc.rs` tests.
+
+- final code-review fix (P1, P4, P7): remembered Device Passwords now use the Linux Secret Service (`keyring`
+  `sync-secret-service`) instead of always bailing to the 0600 file; when no Secret Service answers (headless
+  Controller, cron, `--config-dir` tests) `remember` keeps the 0600 fallback. A Linux-only test points
+  `DBUS_SESSION_BUS_ADDRESS` at a dead socket and asserts a clean error rather than a panic or a real keychain write;
+  the file-fallback round-trip test still runs everywhere. `rcli setup` now requires `https://` to another host: the
+  invented `--insecure-http` flag is gone, loopback http stays as the documented test/same-computer exception, and
+  ADR 0003 + docs/usage.md say the same. The generated Device Password alphabet dropped `o` and `L`; the test now
+  asserts the whole alphabet and the testkit IPC test rejects the whole `0Oo1lIL` set. Human step (desktop Linux):
+  `rcli connect <id>` then `secret-tool search service rcli` (or Seahorse) shows the entry; on a headless host the
+  0600 password file remains.

@@ -71,7 +71,7 @@ async fn download(State(state): State<super::State>, Path((os, arch)): Path<(Str
 // The last step installs the service: macOS (ticket 24) and Windows (ticket 22, install.ps1 below) do it today;
 // Linux waits for ticket 16's systemd unit, where this line fails with "not available on this OS yet".
 const INSTALL_SH: &str = r#"#!/bin/sh
-# Installs the rcli Agent on this machine and registers it with the Server.
+# Installs the rcli Agent on this Device and registers it with the Server.
 # Usage: curl -fsSL {{ORIGIN}}/install.sh | sudo sh -s -- --key <Server Key>
 set -eu
 key=""
@@ -112,7 +112,7 @@ chmod +x "$dir/rcli"
 // exe through UAC and waits, so a failed install still sets a non-zero exit code. The Server Key never goes into
 // the installed service's arguments; it is read by the installer here and written to a SYSTEM-only config file.
 // Usage: iwr {{ORIGIN}}/install.ps1 -OutFile install.ps1; .\install.ps1 -Key <Server Key>
-const INSTALL_PS1: &str = r#"# Installs the rcli Agent on this machine and registers it with the Server.
+const INSTALL_PS1: &str = r#"# Installs the rcli Agent on this Device and registers it with the Server.
 # Usage: .\install.ps1 -Key <Server Key>
 param([string]$Key = "")
 $ErrorActionPreference = "Stop"

@@ -31,7 +31,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     let platform: std::sync::Arc<dyn rcli_agent::platform::Platform> = {
         let mac = std::sync::Arc::new(rcli_agent::macos::MacPlatform::new("contract").expect("macOS adapter"));
-        // `--session-socket <path>`: run as the installed root daemon does, the screen work done by the session
+        // `--session-socket <path>`: run as the installed root Agent service does, the screen work done by the session
         // helpers (the LaunchAgent) that connect there (ticket 24: lock screen and login window).
         let args: Vec<String> = std::env::args().collect();
         match args.iter().position(|a| a == "--session-socket").and_then(|i| args.get(i + 1)) {

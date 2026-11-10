@@ -1,18 +1,18 @@
 //! `rcli agent install|uninstall` on macOS (ticket 24): the app bundle in /Applications (TCC grants stick to it),
 //! a root LaunchDaemon running the Agent, and a LaunchAgent in the LoginWindow and Aqua sessions doing its screen
 //! work (ADR 0001). Every path hangs off `Layout::root`, and every external command goes through `run`, so the
-//! file layout and the `launchctl` calls are tested without touching the machine.
+//! file layout and the `launchctl` calls are tested without touching the Device.
 
 use std::path::{Path, PathBuf};
 
-use rcli_agent::settings::{DeviceSettings, RootAccess};
+use crate::install::{system, write};
+pub use crate::install::{Options, Run};
 
+// shortcut: ADR 0001 calls the root process "a root daemon" and this job is a launchd LaunchDaemon, so the label
+// and the LaunchDaemon wording stay; prose elsewhere says "Agent service" (GLOSSARY.md: Agent — _Avoid_: daemon).
 pub const DAEMON: &str = "dev.remotecli.agent";
 pub const SESSION: &str = "dev.remotecli.agent.session";
 const INFO_PLIST: &str = include_str!("../../../packaging/macos/Info.plist");
-
-/// Runs an external program (`launchctl`, `codesign`, `ditto`); a seam for tests.
-pub type Run<'a> = &'a mut dyn FnMut(&str, &[&str]) -> anyhow::Result<()>;
 
 pub struct Layout {
     pub root: PathBuf,
@@ -20,7 +20,7 @@ pub struct Layout {
 
 impl Layout {
     fn at(&self, path: &str) -> PathBuf {
-        self.root.join(path.trim_start_matches('/'))
+        crate::install::at(&self.root, path)
     }
     pub fn app(&self) -> PathBuf {
         self.at("/Applications/rcli.app")
@@ -41,23 +41,13 @@ impl Layout {
     pub fn session_plist(&self) -> PathBuf {
         self.at(&format!("/Library/LaunchAgents/{SESSION}.plist"))
     }
-    /// Where the daemon listens for the session helpers, beside the IPC socket.
+    /// Where the Agent service listens for the session helpers, beside the IPC socket.
     pub fn session_socket(&self) -> PathBuf {
         self.at("/var/run/rcli/session.sock")
     }
     fn log(&self) -> PathBuf {
         self.at("/Library/Logs/rcli-agent.log")
     }
-}
-
-/// What `rcli agent install` was given.
-pub struct Options {
-    pub server: String,
-    pub key: String,
-    pub name: String,
-    /// The Terminal User; `None` = the installing account (`SUDO_USER`).
-    pub terminal_user: Option<String>,
-    pub allow_root: bool,
 }
 
 fn xml(s: &str) -> String {
@@ -117,16 +107,6 @@ fn bundle_of(exe: &Path) -> Option<PathBuf> {
     (app.extension()? == "app").then(|| app.to_owned())
 }
 
-fn write(path: &Path, contents: &str, mode: u32) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, contents)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-    Ok(())
-}
-
 /// Puts the app in /Applications and records the Device Settings the install asked for. `exe` is the running binary.
 pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, run: Run) -> anyhow::Result<()> {
     let app = layout.app();
@@ -154,20 +134,13 @@ pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, run: Run) -> a
     let state = layout.state_dir();
     std::fs::create_dir_all(&state)?;
     std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
-    let mut settings = DeviceSettings::load(&state);
-    if let Some(user) = &opts.terminal_user {
-        settings.terminal_user = user.clone();
-    }
-    if opts.allow_root {
-        settings.root = RootAccess::Always;
-    }
-    settings.save(&state)?;
+    crate::install::save_settings(&state, opts)?;
     // No secret here: `uninstall` needs the Server Address to remove this Device, and the Server Key is in the
-    // root-only daemon plist.
+    // root-only LaunchDaemon plist.
     write(&state.join("install.json"), &serde_json::json!({ "server": opts.server }).to_string(), 0o600)
 }
 
-/// Writes both launchd jobs and starts them: the daemon now, the session helper in the console user's session now
+/// Writes both launchd jobs and starts them: the Agent's LaunchDaemon now, the session helper in the console user's session now
 /// (and launchd starts it in every later login window and Aqua session).
 pub fn install_jobs(layout: &Layout, opts: &Options, console_uid: Option<u32>, run: Run) -> anyhow::Result<()> {
     write(&layout.daemon_plist(), &daemon_plist(layout, opts), 0o600)?;
@@ -199,13 +172,6 @@ pub fn uninstall_files(layout: &Layout, console_uid: Option<u32>, run: Run) -> a
     Ok(())
 }
 
-/// The real machine's `run`: the command must succeed.
-fn system(program: &str, args: &[&str]) -> anyhow::Result<()> {
-    let out = std::process::Command::new(program).args(args).output()?;
-    anyhow::ensure!(out.status.success(), "{program} {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
-    Ok(())
-}
-
 /// The user logged in on the console (root at the login window).
 fn console_uid() -> Option<u32> {
     Some(std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/dev/console").ok()?))
@@ -216,7 +182,7 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli agent install --server … --key …");
     let layout = Layout { root: "/".into() };
     install_files(&layout, &opts, &std::env::current_exe()?, &mut system)?;
-    // Register now, so a wrong Server Key fails here and the Device ID can be shown; the daemon finds the credentials.
+    // Register now, so a wrong Server Key fails here and the Device ID can be shown; the service finds the credentials.
     let server = rcli_agent::ServerEndpoint { addr: opts.server.clone(), server_key: opts.key.clone() };
     let platform = rcli_agent::macos::MacPlatform::new(opts.name.clone())?;
     let secrets = crate::agent::secret_store(&layout.state_dir());
@@ -266,6 +232,7 @@ pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcli_agent::settings::{DeviceSettings, RootAccess};
 
     fn temp_root(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rcli-install-{name}-{}", std::process::id()));
@@ -279,7 +246,7 @@ mod tests {
             server: "rcli.example.com:7443".into(),
             key: "rk_ab12_s3cr&t".into(),
             name: "mac-mini".into(),
-            terminal_user: Some("alice".into()),
+            terminal_user: "alice".into(),
             allow_root: true,
         }
     }
@@ -348,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn the_daemon_runs_the_agent_as_root_with_the_key_out_of_its_arguments() {
+    fn the_launchdaemon_runs_the_agent_as_root_with_the_key_out_of_its_arguments() {
         let layout = Layout { root: "/".into() };
         let daemon = daemon_plist(&layout, &opts());
         let expected_args = "    <string>/Applications/rcli.app/Contents/MacOS/rcli</string>\n    <string>agent</string>\n    \
