@@ -1,4 +1,4 @@
-//! The Agent GUI window (ticket 14): a small egui window, a client of the Agent's local IPC.
+//! The Agent GUI window (ticket 14): a small egui window that talks to the Agent over its local IPC.
 //! Built only with `--features gui`; the default `rcli` binary links no display libraries.
 
 use std::path::PathBuf;
@@ -305,7 +305,7 @@ impl eframe::App for App {
                 #[cfg(any(target_os = "macos", windows))]
                 {
                     ui.separator();
-                    ui.label("Install the Agent on this machine (the Dashboard's Connect page shows both values)");
+                    ui.label("Install the Agent on this Device (the Dashboard's Connect page shows both values)");
                     ui.horizontal(|ui| {
                         ui.label("Server Address:");
                         ui.text_edit_singleline(&mut self.install_server);

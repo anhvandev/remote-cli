@@ -78,7 +78,7 @@ pub fn hostname() -> String {
     hostname_or("controller")
 }
 
-/// This machine's name with a caller-chosen last resort: the Controller's name above, or the Device name an install
+/// The local host name with a caller-chosen last resort: the Controller's name above, or the Device name an install
 /// records (`windows_install::device_name`). One probe serves both (S7).
 pub fn hostname_or(fallback: &str) -> String {
     let env = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).ok();
@@ -94,8 +94,8 @@ fn hostname_from(env: Option<String>, command: Option<String>, fallback: &str) -
 }
 
 /// The Server Key's secret and Device Passwords travel in request headers, so the Controller API must be reached over
-/// https (it sits behind a TLS reverse proxy). The one exception is loopback, for a Server on this machine and for
-/// tests: nothing leaves the machine there. There is no flag to accept plain http to another host.
+/// https (it sits behind a TLS reverse proxy). The one exception is loopback, for a Server on this computer and for
+/// tests: nothing leaves the computer there. There is no flag to accept plain http to another host.
 fn check_transport(base: &str) -> anyhow::Result<()> {
     let url = reqwest::Url::parse(base).map_err(|e| anyhow::anyhow!("bad Server Address {base}: {e}"))?;
     let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']);
@@ -147,7 +147,7 @@ fn check_pin(server_key_secret: &str, update_key_hex: &str, mac: Option<&str>) -
     Ok(())
 }
 
-/// A remembered Device Password and the Controller machine name it was saved with.
+/// A remembered Device Password and the Controller's name it was saved with.
 #[derive(Serialize, Deserialize)]
 pub struct Remembered {
     pub password: String,
@@ -166,7 +166,7 @@ const IN_KEYCHAIN: &str = "keychain";
 /// config directory. A config directory chosen with `--config-dir` / `RCLI_CONFIG_DIR` (tests, portable setups)
 /// keeps everything in it.
 // The Linux Secret Service needs a D-Bus session, which a headless Controller or a cron job lacks: `remember`
-// falls back to the 0600 file when `set` fails, so such a machine keeps working without a keychain.
+// falls back to the 0600 file when `set` fails, so such a Controller keeps working without a keychain.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod keychain {
     fn entry(device: &str) -> keyring::Result<keyring::Entry> {
@@ -268,7 +268,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 }
 
 /// Authenticates `req` as a password connection: the Server Key, the Device ID and its Device Password, and the
-/// Controller machine's name.
+/// The Controller's name.
 pub fn password_connection(
     req: reqwest::RequestBuilder,
     key: &str,
@@ -307,10 +307,10 @@ pub fn json(config: &Config) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_server_address_must_be_https_unless_it_is_this_machine() {
+    fn the_server_address_must_be_https_unless_it_is_loopback() {
         use super::check_transport as ok;
         assert!(ok("https://server.example.com:8080").is_ok());
-        // Loopback http is the one exception: a Server on this machine, and the tests.
+        // Loopback http is the one exception: a Server on this computer, and the tests.
         for local in ["http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"] {
             assert!(ok(local).is_ok(), "{local}");
         }

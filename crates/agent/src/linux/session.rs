@@ -2,16 +2,16 @@
 //! lock screen and the display-manager (greeter) login. It cannot use its own environment: on X11 the server's
 //! cookie lives in the session's Xauthority file and enigo (input) reads `DISPLAY`/`XAUTHORITY` from the
 //! environment; on Wayland the desktop portal that captures the screen lives on the user's session bus. So the
-//! daemon discovers seat0's active session with logind and runs `rcli agent session` as that session's user with
+//! Agent service discovers seat0's active session with logind and runs `rcli agent session` as that session's user with
 //! the right variables set. The helper answers the same wire protocol as the macOS session helper; displays,
 //! capture, accessibility and session state go to it, while shell, power, metrics and inventory stay in the
-//! daemon.
+//! Agent service.
 //!
 //! Input differs by session type: X11 goes through the helper (XTest reaches the lock screen and the greeter,
 //! unlike CGEvent at the macOS login window), Wayland through a virtual device on `/dev/uinput` that only root can
-//! create, so the daemon writes it and the helper only captures.
+//! create, so the Agent service writes it and the helper only captures.
 //!
-//! Why not talk to the X server directly? A root daemon can read the cookie, but enigo would still need the
+//! Why not talk to the X server directly? The root Agent service can read the cookie, but enigo would still need the
 //! process-global environment, and that changes when the console session changes. The helper already existed for
 //! macOS; here it doubles as the only place the session environment is set.
 
@@ -104,7 +104,7 @@ pub fn parse_session(values: &[&str]) -> Option<SessionInfo> {
 }
 
 /// The console session state from logind facts: a greeter is the login screen, `LockedHint=yes` the lock screen,
-/// any other active session is logged in. `None` (no logind, no seat) is the login screen on a machine with no one.
+/// any other active session is logged in. `None` (no logind, no seat) is the login screen on a Device with no one.
 pub fn state_from(session: Option<&SessionInfo>) -> SessionState {
     match session {
         None => SessionState::LoginScreen,
@@ -255,7 +255,7 @@ pub fn console_uid(run: &dyn Fn(&[&str]) -> Option<String>) -> Option<u32> {
     seat_session(run).and_then(|s| s.uid)
 }
 
-/// The real machine's `loginctl` reader: `None` when it fails or prints nothing.
+/// The real `loginctl` reader: `None` when it fails or prints nothing.
 fn loginctl(args: &[&str]) -> Option<String> {
     let out = std::process::Command::new("loginctl").args(args).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
@@ -391,7 +391,7 @@ impl ConsoleSession {
     }
 
     /// Why there is no helper for the session on the console. A Wayland session is served now, so the difference is
-    /// between "nothing is logged in" (X11 wording, also what a headless machine reports) and a Wayland greeter.
+    /// between "nothing is logged in" (X11 wording, also what a headless Device reports) and a Wayland greeter.
     fn no_helper_error(&self) -> anyhow::Error {
         match seat_session(self.loginctl.as_ref()) {
             Some(session) if session.is_wayland() && session.is_greeter() => anyhow::anyhow!(

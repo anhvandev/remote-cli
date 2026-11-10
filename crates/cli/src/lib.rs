@@ -321,7 +321,7 @@ enum AgentCommand {
 #[derive(Subcommand)]
 enum LockCommand {
     /// Take the Control Lock. The CLI keeps no `lock/watch` open, so the lock ends only after 10 minutes without
-    /// an Action (or on release); the 60 s disconnect grace applies to watching clients (`rcli mcp`, Dashboard).
+    /// an Action (or on release); the 60 s disconnect grace applies to watchers (`rcli mcp`, Dashboard).
     Acquire { device: String },
     Release { device: String },
     Status { device: String },
@@ -1187,7 +1187,7 @@ pub struct Connection {
     pub token: Option<String>,
     /// The saved Server Key: with a remembered Device Password this makes a password connection.
     pub server_key: Option<String>,
-    /// This machine's name, shown in audit entries and as Control Lock holder.
+    /// This Controller's name, shown in audit entries and as Control Lock holder.
     pub controller: String,
 }
 

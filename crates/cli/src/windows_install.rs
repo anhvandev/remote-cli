@@ -5,7 +5,7 @@
 //! with error 1053.
 //!
 //! Every path hangs off `Layout`, and every external command (`sc.exe`, `icacls.exe`) goes through `Run`, so the
-//! layout, the service definition and the exact commands are tested on any host without touching a real machine.
+//! layout, the service definition and the exact commands are tested on any host without touching a real Device.
 
 use std::path::{Path, PathBuf};
 
@@ -30,7 +30,7 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// The real machine: `%ProgramFiles%` and `%ProgramData%` (never assumed to be on `C:`).
+    /// The real Device: `%ProgramFiles%` and `%ProgramData%` (never assumed to be on `C:`).
     #[cfg(windows)]
     pub fn real() -> Self {
         let dir = |name: &str, fallback: &str| std::env::var_os(name).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(fallback));

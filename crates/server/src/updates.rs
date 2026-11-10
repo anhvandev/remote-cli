@@ -120,7 +120,7 @@ pub async fn fleet_build(state: &AppState, target: &str) -> anyhow::Result<Optio
 }
 
 /// The build `rcli upgrade` fetches when it names its Device: the one rolled out to it (`update_version`), so an
-/// unpublished or not-yet-rolled-out build never reaches a Device. No Device row (a Controller-only machine) or no
+/// unpublished or not-yet-rolled-out build never reaches a Device. No Device row (a Controller-only install) or no
 /// rollout to it yet falls back to the fleet's build.
 pub async fn upgrade_build(state: &AppState, device: Option<&str>, target: &str) -> anyhow::Result<Option<(String, Vec<u8>, Vec<u8>)>> {
     let mut rolled_out = None;

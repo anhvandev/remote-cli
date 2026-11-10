@@ -18,7 +18,7 @@ pub async fn run(config: &Config, path: &Path, socket: Option<PathBuf>) -> anyho
     anyhow::ensure!(!key.is_empty(), "no update key is pinned; run `rcli setup` again");
 
     let target = rcli_agent::target();
-    // A running Agent names this Device, so the Server serves the build rolled out to it; a Controller-only machine
+    // A running Agent names this Device, so the Server serves the build rolled out to it; a Controller-only install
     // has no Device row and gets the newest published build.
     let device = local_device(&socket.unwrap_or_else(rcli_agent::ipc::default_socket)).await;
     let url = format!("{}/api/v1/agent-builds/{target}", config.server.trim_end_matches('/'));
@@ -39,7 +39,7 @@ pub async fn run(config: &Config, path: &Path, socket: Option<PathBuf>) -> anyho
     let build = resp.bytes().await?.to_vec();
     anyhow::ensure!(
         rcli_protocol::update::verify(&key, &version, &target, &build, &signature),
-        "bad signature: the build is not signed with this machine's pinned update key; the old binary is untouched"
+        "bad signature: the build is not signed with this install's pinned update key; the old binary is untouched"
     );
     // Check the service first: on a root install, refusing after the swap would leave a new binary unstarted.
     let service = service_to_restart()?;
@@ -135,14 +135,14 @@ pub(crate) fn is_root() -> bool {
     std::process::Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
 }
 
-/// This machine's Device ID when its Agent is running: `rcli upgrade` then fetches the build rolled out to it.
+/// The Device ID of the local Agent, when one is running: `rcli upgrade` then fetches the build rolled out to it.
 async fn local_device(socket: &Path) -> Option<String> {
     let info = rcli_agent::ipc::send(socket, &rcli_agent::ipc::Request::Info).await.ok()?;
     Some(info["device_id"].as_str()?.to_owned())
 }
 
 /// Whether this upgrade replaces an installed Agent's binary, so its service must be restarted onto it. Root (an
-/// Administrator on Windows) on an installed Device only: a Controller-only machine never touches a service, and a
+/// Administrator on Windows) on an installed Device only: a Controller-only install never touches a service, and a
 /// root upgrade with no service installed is refused *before* the swap (a new binary nobody starts is worse).
 fn service_to_restart() -> anyhow::Result<bool> {
     if !is_root() {

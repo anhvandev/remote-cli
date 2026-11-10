@@ -1,4 +1,4 @@
-//! Windows transport for the daemon ↔ session helper split (see `session.rs`) and the helper launcher (ticket 22).
+//! Windows transport for the Agent service ↔ session helper split (see `session.rs`) and the helper launcher (ticket 22).
 //! The installed Agent is a SYSTEM service in session 0, which cannot see or type on the interactive desktops. The
 //! service launches `rcli agent session --pipe …` in the active console session with a SYSTEM token moved into that
 //! session (the token winlogon itself runs with there: `DuplicateTokenEx` + `SetTokenInformation(TokenSessionId)`,
@@ -146,7 +146,7 @@ pub fn run_helper(pipe: &str, platform: &dyn Platform, on_console: &dyn Fn() -> 
     }
 }
 
-/// Whether this helper's session is the active console session (the state the daemon shows).
+/// Whether this helper's session is the active console session (the state the Agent service shows).
 pub fn on_console() -> bool {
     unsafe {
         let mut session = 0u32;
@@ -198,7 +198,7 @@ struct Target {
 
 fn console_target() -> Option<Target> {
     let session = unsafe { WTSGetActiveConsoleSessionId() };
-    // 0xFFFFFFFF: there is no console session at all (a Server Core box, or a machine still booting).
+    // 0xFFFFFFFF: there is no console session at all (a Server Core box, or a Device still booting).
     (session != u32::MAX).then(|| Target { session, user: console_user(session).unwrap_or_default() })
 }
 

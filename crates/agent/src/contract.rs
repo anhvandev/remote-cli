@@ -1,5 +1,5 @@
 //! Contract suite for the Platform port, in the style of `prototype/lockscreen-probe`.
-//! It runs against any adapter: the FakePlatform in CI, a real OS adapter on a real machine with an operator
+//! It runs against any adapter: the FakePlatform in CI, a real OS adapter on a real Device with an operator
 //! following prompts. Each check yields one cell of a results table (rows = checks, columns = environments).
 
 use std::{
@@ -44,7 +44,7 @@ pub enum Env {
 
 const ENVS: [Env; 3] = [Env::LoggedIn, Env::LockScreen, Env::LoginScreen];
 
-/// What the suite asks the person at the machine to do.
+/// What the suite asks the person at the Device to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     FocusTextField,
@@ -223,7 +223,7 @@ fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Rep
         Ok(())
     });
     r.check("session state", env, || wait_for_state(p, expected, Duration::ZERO));
-    // shortcut: only checks that show/hide succeed here; whether it is visible is checked by eye on a real machine.
+    // shortcut: only checks that show/hide succeed here; whether it is visible is checked by eye on a real Device.
     r.check("control indicator", env, || {
         p.set_control_indicator(true)?;
         p.set_control_indicator(false)
@@ -235,7 +235,7 @@ fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Rep
     });
 }
 
-/// The account running the suite: on a real machine the Terminal User must be an account that exists.
+/// The account running the suite: on a real Device the Terminal User must be an account that exists.
 fn me() -> RunAs {
     RunAs::User(std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "user".into()))
 }

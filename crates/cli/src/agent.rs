@@ -102,7 +102,7 @@ pub struct Run {
     /// Device name reported at registration.
     #[arg(long)]
     name: String,
-    /// Local IPC socket `rcli agent ...` clients use.
+    /// Local IPC socket `rcli agent ...`, the GUI and scripts use.
     #[arg(long, env = "RCLI_AGENT_SOCKET")]
     socket: Option<PathBuf>,
     /// Root daemon: where the console session helpers (`rcli agent session`) connect to do the screen work.
@@ -575,7 +575,7 @@ pub struct Install {
     /// Server Key, rk_<CA fingerprint>_<secret>.
     #[arg(long, env = "RCLI_SERVER_KEY", hide_env_values = true)]
     key: String,
-    /// Device name; default: this machine's host name.
+    /// Device name; default: this Device's host name.
     #[arg(long)]
     name: Option<String>,
     /// The account terminal commands run as; default: the installing account (`SUDO_USER`), or the console user on
@@ -643,7 +643,7 @@ impl Install {
     }
 }
 
-/// The logged-in interactive user: the person at the machine, not the elevated administrator account that may have
+/// The logged-in interactive user: the person at the Device, not the elevated administrator account that may have
 /// been used for "Run as different user". Falls back to this process's account.
 #[cfg(windows)]
 fn terminal_user() -> String {

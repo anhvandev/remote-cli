@@ -2,7 +2,7 @@
 //! service that comes back after a reboot, and the Device's Device Settings. The Server Key travels in a
 //! root-only `EnvironmentFile`, never on the command line (`ps` shows every process's arguments to every user).
 //! Every path hangs off `Layout::root` and every external command goes through `run`, so the layout, the unit
-//! file and the systemctl pipeline are tested without touching the machine.
+//! file and the systemctl pipeline are tested without touching the Device.
 
 use std::path::{Path, PathBuf};
 
@@ -49,7 +49,7 @@ impl Layout {
     pub fn session_socket(&self) -> PathBuf {
         self.at("/run/rcli/session.sock")
     }
-    /// The IPC socket `rcli agent …` clients use (the `agent run` default).
+    /// The IPC socket `rcli agent …`, the GUI and scripts use (the `agent run` default).
     pub fn ipc_socket(&self) -> PathBuf {
         self.at("/run/rcli/agent.sock")
     }
@@ -79,7 +79,7 @@ fn systemd_arg(s: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// The root service: the Agent itself. `--session-socket` makes the daemon spawn and supervise the console
+/// The root service: the Agent itself. `--session-socket` makes the Agent service spawn and supervise the console
 /// session helper (see `rcli_agent::linux::session`). The Server Key comes from `EnvironmentFile`, and the unit
 /// names that file, so the key is never an argument.
 pub fn unit(layout: &Layout, opts: &Options) -> String {

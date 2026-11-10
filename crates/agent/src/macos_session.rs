@@ -1,8 +1,8 @@
-//! The Unix transport for the daemon ↔ session helper split (see `session.rs`): macOS ticket 24 and Linux ticket
+//! The Unix transport for the Agent service ↔ session helper split (see `session.rs`): macOS ticket 24 and Linux ticket
 //! 16. Both installed Agents are root services (a macOS LaunchDaemon, a Linux systemd unit), and a root daemon
 //! cannot reach the window server of the logged-in person. A helper in each GUI session (the macOS LoginWindow and
-//! Aqua sessions, the Linux seat0 X11 session the daemon spawns) connects back over a local Unix socket and does the
-//! screen work; the daemon sends those calls to the helper whose session is on the console.
+//! Aqua sessions, the Linux seat0 X11 session the Agent service spawns) connects back over a local Unix socket and
+//! does the screen work; the Agent service sends those calls to the helper whose session is on the console.
 //!
 //! The module keeps the macOS name because the CLI, the contract binary and the LaunchAgent refer to it; on Linux
 //! `linux::session` starts the helper and reuses this transport.
@@ -26,7 +26,7 @@ impl SessionPlatform {
         Self::listen_with(inner, socket, |uid| uid == 0 || console_uid() == Some(uid), false)
     }
 
-    /// `listen` with the peer check `trust(uid)` given (tests run as an ordinary user, and the Linux daemon trusts
+    /// `listen` with the peer check `trust(uid)` given (tests run as an ordinary user, and the Linux Agent service trusts
     /// the uid it spawned the helper as). `allow_login_input` lets a greeter helper accept input; macOS must not
     /// (`LOGIN_WINDOW_INPUT`), Linux must.
     pub fn listen_with(
@@ -61,8 +61,8 @@ impl SessionPlatform {
     }
 }
 
-/// The session helper (`rcli agent session`): connects to the daemon at `socket` and answers its screen calls from
-/// `platform`, reconnecting whenever the daemon restarts. `on_console` says whether this session is the one shown.
+/// The session helper (`rcli agent session`): connects to the Agent service at `socket` and answers its screen calls from
+/// `platform`, reconnecting whenever the Agent service restarts. `on_console` says whether this is the one shown.
 pub fn run_helper(socket: &Path, platform: &dyn Platform, on_console: &dyn Fn() -> bool) -> ! {
     loop {
         if let Ok(stream) = UnixStream::connect(socket) {
@@ -74,7 +74,7 @@ pub fn run_helper(socket: &Path, platform: &dyn Platform, on_console: &dyn Fn() 
     }
 }
 
-/// Answers the daemon's requests on one connection until it closes.
+/// Answers the Agent service's requests on one connection until it closes.
 pub fn answer(stream: UnixStream, platform: &dyn Platform, on_console: &dyn Fn() -> bool) -> anyhow::Result<()> {
     let writer = stream.try_clone()?;
     crate::session::answer(Box::new(stream), Box::new(writer), platform, on_console)
@@ -109,27 +109,27 @@ mod tests {
     use super::*;
     use crate::platform::{FakePlatform, Input, PowerAction, SessionState};
 
-    /// A daemon-side SessionPlatform with one helper serving `screen` (a FakePlatform session) over a real socket.
-    fn daemon_with_helper(screen: FakePlatform, on_console: bool) -> (Arc<SessionPlatform>, std::path::PathBuf) {
+    /// A service-side SessionPlatform with one helper serving `screen` (a FakePlatform session) over a real socket.
+    fn service_with_helper(screen: FakePlatform, on_console: bool) -> (Arc<SessionPlatform>, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("rcli-session-{}-{}", std::process::id(), rand_suffix()));
         let socket = dir.join("session.sock");
-        let daemon = SessionPlatform::listen_with(Arc::new(FakePlatform::new("mac")), &socket, |_| true, false).unwrap();
+        let service = SessionPlatform::listen_with(Arc::new(FakePlatform::new("mac")), &socket, |_| true, false).unwrap();
         let path = socket.clone();
         std::thread::spawn(move || {
             let stream = UnixStream::connect(&path).unwrap();
             let _ = answer(stream, &screen, &move || on_console);
         });
         for _ in 0..200 {
-            if !daemon.helpers().lock().unwrap().is_empty() {
+            if !service.helpers().lock().unwrap().is_empty() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        (daemon, dir)
+        (service, dir)
     }
 
     /// Unique per test, even when several start in the same nanosecond: a shared socket path makes one test's
-    /// helper connect to another test's daemon.
+    /// helper connect to another test's service.
     fn rand_suffix() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -141,13 +141,13 @@ mod tests {
     fn screen_calls_reach_the_session_on_the_console() {
         let screen = FakePlatform::new("session");
         screen.set_session_state(SessionState::Locked);
-        let (daemon, dir) = daemon_with_helper(screen.clone(), true);
-        assert_eq!(daemon.session_state().unwrap(), SessionState::Locked);
-        assert_eq!(daemon.displays().unwrap(), screen.displays().unwrap());
-        assert_eq!(daemon.capture(0).unwrap(), screen.capture(0).unwrap());
-        daemon.input(Input::Key("a".into())).unwrap();
+        let (service, dir) = service_with_helper(screen.clone(), true);
+        assert_eq!(service.session_state().unwrap(), SessionState::Locked);
+        assert_eq!(service.displays().unwrap(), screen.displays().unwrap());
+        assert_eq!(service.capture(0).unwrap(), screen.capture(0).unwrap());
+        service.input(Input::Key("a".into())).unwrap();
         assert_eq!(screen.inputs(), vec![Input::Key("a".into())], "the key reached the lock screen session");
-        daemon.power(PowerAction::Lock).unwrap();
+        service.power(PowerAction::Lock).unwrap();
         assert_eq!(screen.power_actions(), vec![PowerAction::Lock], "the session locked itself");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -156,10 +156,10 @@ mod tests {
     fn at_the_login_window_capture_works_and_input_is_unavailable() {
         let screen = FakePlatform::new("loginwindow");
         screen.set_session_state(SessionState::LoginScreen);
-        let (daemon, dir) = daemon_with_helper(screen.clone(), true);
-        assert_eq!(daemon.session_state().unwrap(), SessionState::LoginScreen);
-        assert!(daemon.capture(0).is_ok());
-        let err = daemon.input(Input::Key("a".into())).unwrap_err();
+        let (service, dir) = service_with_helper(screen.clone(), true);
+        assert_eq!(service.session_state().unwrap(), SessionState::LoginScreen);
+        assert!(service.capture(0).is_ok());
+        let err = service.input(Input::Key("a".into())).unwrap_err();
         assert_eq!(err.to_string(), "input unavailable at macOS login window");
         assert!(screen.inputs().is_empty());
         let _ = std::fs::remove_dir_all(dir);
@@ -167,9 +167,9 @@ mod tests {
 
     #[test]
     fn without_a_session_on_the_console_it_reports_the_login_window_and_cannot_capture() {
-        let (daemon, dir) = daemon_with_helper(FakePlatform::new("switched-out user"), false);
-        assert_eq!(daemon.session_state().unwrap(), SessionState::LoginScreen);
-        assert!(daemon.capture(0).unwrap_err().to_string().contains("no GUI session"));
+        let (service, dir) = service_with_helper(FakePlatform::new("switched-out user"), false);
+        assert_eq!(service.session_state().unwrap(), SessionState::LoginScreen);
+        assert!(service.capture(0).unwrap_err().to_string().contains("no GUI session"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }
