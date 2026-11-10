@@ -177,11 +177,7 @@ pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, _run: Run) -> 
         settings.root = RootAccess::Always;
     }
     settings.save(&state)?;
-    write(&layout.install_file(), &serde_json::json!({ "server": opts.server }).to_string(), 0o600)?;
-    // The Secret Store needs a private directory for the file fallback and the systemd-creds files.
-    std::fs::create_dir_all(state.join("secrets"))?;
-    std::fs::set_permissions(state.join("secrets"), std::fs::Permissions::from_mode(0o700))?;
-    Ok(())
+    write(&layout.install_file(), &serde_json::json!({ "server": opts.server }).to_string(), 0o600)
 }
 
 /// Writes the unit and the root-only key file, then enables and (re)starts the service. `restart` also covers an
