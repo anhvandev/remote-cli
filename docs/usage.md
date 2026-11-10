@@ -30,6 +30,45 @@ Lệnh quản trị Server (`user`, `rollout`, `audit`, `server-key`, `server-ad
 cần một phiên User: `rcli login <tên>` (mật khẩu Dashboard + mã TOTP), `rcli logout` để xoá.
 Operator đăng nhập được nhưng các lệnh đó trả `admin_required`. Các lệnh trên Device vẫn dùng `rcli connect`.
 
+## Cài trên Windows
+
+Agent chạy như một Windows service tên `rcli-agent` (tài khoản LocalSystem, tự khởi động cùng máy). Ba cách cài, cùng một kết quả:
+
+```powershell
+# 1. Tải rcli.exe, bấm đúp: cửa sổ rcli mở với ô Server Address + Server Key và nút Install (UAC hỏi một lần).
+# 2. Một dòng trong PowerShell bình thường (script tự xin quyền qua UAC):
+iwr https://<server>/install.ps1 -OutFile install.ps1; .\install.ps1 -Key <Server Key>
+# 3. Trong PowerShell "Run as administrator", với binary đã tải:
+rcli agent install --server <server>:<port> --key <Server Key>
+```
+
+Cài xong in ra Device ID và Device Password. Binary ở `%ProgramFiles%\rcli\rcli.exe`; dữ liệu Device (credentials, Device Settings, Secret Store) ở `%ProgramData%\rcli`, chỉ SYSTEM và Administrators đọc được. Server Key nằm trong `%ProgramData%\rcli\service.json`, **không** nằm trên command line của service (`sc qc rcli-agent` không thấy nó). Secret Store dùng DPAPI machine scope (`CryptProtectData` + `CRYPTPROTECT_LOCAL_MACHINE`), nên copy ổ đĩa hay bản backup sang máy khác không đọc được Device Password.
+
+Nếu Server Key sai, lệnh cài thất bại ngay và không để lại service hay file nào.
+
+**Màn khoá, màn đăng nhập và UAC.** Service chạy trong session 0 nên không thấy desktop của người dùng. Nó chạy một helper (`rcli agent session`) trong phiên console bằng token SYSTEM của chính nó, chuyển vào phiên đó (`DuplicateTokenEx` + `SetTokenInformation(TokenSessionId)`, cần `SeTcbPrivilege`) — đúng token mà winlogon dùng, nên mở được cả desktop `Winlogon` (màn khoá, màn đăng nhập) và secure desktop của UAC (`WTSQueryUserToken` chỉ là phương án dự phòng). Helper chuyển sang input desktop trước mỗi lần chụp/gõ. Vì vậy `shot`, `act`, `unlock` chạy được ở màn khoá, màn đăng nhập và hộp thoại UAC. Helper được chạy lại khi phiên console hoặc người đăng nhập đổi (đăng nhập, đăng xuất, chuyển user). Không cần cấp quyền Screen Recording như macOS. Lưu ý: vì helper chạy dưới SYSTEM, OCR (Windows.Media.Ocr) dùng profile của SYSTEM; nếu `--text` không nhận được chữ ở màn khoá, cài thêm gói ngôn ngữ OCR cho máy.
+
+**Ctrl+Alt+Del.** Windows chỉ cho tiến trình SYSTEM gửi secure attention sequence qua `SendSAS` (sas.dll), và phải bật policy một lần trên mỗi Device (mặc định là tắt):
+
+```powershell
+# PowerShell as administrator, một lần:
+Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+  -Name SoftwareSASGeneration -Type DWord -Value 1
+# 0 = tắt (mặc định), 1 = cho phép ứng dụng chạy dưới quyền SYSTEM (đủ cho rcli), 2 = cho phép mọi ứng dụng
+```
+
+Rồi từ Controller: `rcli lock acquire <Device ID>` và `rcli act <Device ID> key ctrl+alt+del`. Không bật policy thì Windows bỏ qua `SendSAS` và không có gì xảy ra.
+
+**Gỡ cài đặt** (PowerShell "Run as administrator"):
+
+```powershell
+rcli agent uninstall
+```
+
+Lệnh này dừng và xoá service, xoá `%ProgramFiles%\rcli` và `%ProgramData%\rcli` (kể cả Secret Store). Device vẫn còn trên Server ở trạng thái Offline cho tới khi Admin xoá bằng `rcli device delete <Device ID>` — giống macOS/Linux. Log của service ở `%ProgramData%\rcli\agent.log`.
+
+Build chưa ký nên SmartScreen có thể cảnh báo khi chạy `rcli.exe` vừa tải: chọn "More info" → "Run anyway" (trang Connect của Dashboard giải thích).
+
 ## Vai trò
 
 Role chỉ còn quản trị Server; việc gì chạy được trên Device do Device Settings của chính Device đó quyết định.
@@ -115,7 +154,8 @@ rcli lock acquire demo-pc
 rcli unlock demo-pc --out ./shots                    # Agent gõ mật khẩu đã lưu + Enter, trả ảnh sau đó
 ```
 
-`rcli device show` cho biết `session`: `Active`, `LockScreen` hoặc `LoginScreen`.
+`rcli device show` cho biết `session`: `Active`, `LockScreen` hoặc `LoginScreen`. Trên Windows, xem thêm mục
+**Cài trên Windows** để bật policy cho `Ctrl+Alt+Del`; `unlock` gõ mật khẩu + Enter ở cả màn khoá và màn đăng nhập.
 
 ## Terminal
 
