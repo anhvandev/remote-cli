@@ -234,7 +234,10 @@ pub fn set_root(dir: &Path, device: &str, on: bool) -> anyhow::Result<()> {
 
 pub fn remembered(dir: &Path, device: &str) -> anyhow::Result<Option<Remembered>> {
     let stored = match password_store(dir).get(device)? {
-        Some(stored) if stored == IN_KEYCHAIN => keychain::get(device)?,
+        // The file only says "in the keychain": a Controller that can no longer reach it (no D-Bus session, a
+        // different account) gets a message naming the keychain, not a bare D-Bus error.
+        Some(stored) if stored == IN_KEYCHAIN => keychain::get(device)
+            .map_err(|e| anyhow::anyhow!("cannot read the remembered Device Password from the OS keychain: {e}"))?,
         stored => stored,
     };
     stored.map(|s| serde_json::from_str(&s)).transpose().map_err(Into::into)
