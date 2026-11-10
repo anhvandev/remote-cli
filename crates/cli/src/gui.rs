@@ -39,10 +39,10 @@ struct App {
     unlock: String,
     /// The last action's message.
     note: String,
-    /// The install form (macOS, shown while no Agent answers): Server Address and Server Key.
-    #[cfg(target_os = "macos")]
+    /// The install form (macOS and Windows, shown while no Agent answers): Server Address and Server Key.
+    #[cfg(any(target_os = "macos", windows))]
     install_server: String,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     install_key: String,
 }
 
@@ -67,9 +67,9 @@ impl App {
             accept,
             unlock: String::new(),
             note: String::new(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             install_server: String::new(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             install_key: String::new(),
         }
     }
@@ -133,10 +133,7 @@ impl App {
     /// Applies the Device Settings editors (root; the Agent saves and applies them at once).
     fn set_settings(&mut self) {
         let calls = [
-            (
-                Request::TerminalUserSet { user: self.terminal_user.clone() },
-                vec!["agent", "terminal-user", "set", &self.terminal_user],
-            ),
+            (Request::TerminalUserSet { user: self.terminal_user.clone() }, vec!["agent", "terminal-user", "set", &self.terminal_user]),
             (Request::RootSet { root: self.root }, vec!["agent", "root", self.root.name()]),
             (Request::AcceptSet { accept: self.accept }, vec!["agent", "accept", self.accept.name()]),
         ];
@@ -172,11 +169,12 @@ impl App {
         }
     }
 
-    /// Installs the Agent service from this app after the macOS authorization prompt (ticket 24). The person
-    /// running the app becomes the Terminal User. Permission grants belong to the installed app, so it is reopened.
-    #[cfg(target_os = "macos")]
+    /// Installs the Agent service from this app after the OS elevation prompt (a macOS authorization dialog, a
+    /// Windows UAC prompt). The person running the app becomes the Terminal User. On macOS permission grants belong
+    /// to the installed app, so it is reopened; on Windows the downloaded exe may be deleted once the service runs.
+    #[cfg(any(target_os = "macos", windows))]
     fn install(&mut self) {
-        let user = std::env::var("USER").unwrap_or_default();
+        let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
         let mut args = vec!["agent", "install", "--server", self.install_server.trim(), "--key", self.install_key.trim()];
         if !user.is_empty() {
             args.extend(["--terminal-user", &user]);
@@ -184,10 +182,13 @@ impl App {
         match elevated(&args, None) {
             Ok(out) => {
                 self.note = out;
-                let installed = std::path::Path::new("/Applications/rcli.app");
-                if !std::env::current_exe().is_ok_and(|exe| exe.starts_with(installed)) {
-                    let _ = std::process::Command::new("open").arg("-n").arg(installed).spawn();
-                    std::process::exit(0);
+                #[cfg(target_os = "macos")]
+                {
+                    let installed = std::path::Path::new("/Applications/rcli.app");
+                    if !std::env::current_exe().is_ok_and(|exe| exe.starts_with(installed)) {
+                        let _ = std::process::Command::new("open").arg("-n").arg(installed).spawn();
+                        std::process::exit(0);
+                    }
                 }
             }
             Err(e) => self.note = format!("install failed: {e}"),
@@ -233,10 +234,10 @@ impl eframe::App for App {
             }
             if let Some(error) = self.info["error"].as_str() {
                 ui.label(format!("Agent unreachable: {error}"));
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 {
                     ui.separator();
-                    ui.label("Install the Agent on this Mac (the Dashboard's Connect page shows both values)");
+                    ui.label("Install the Agent on this machine (the Dashboard's Connect page shows both values)");
                     ui.horizontal(|ui| {
                         ui.label("Server Address:");
                         ui.text_edit_singleline(&mut self.install_server);
@@ -251,10 +252,7 @@ impl eframe::App for App {
                 }
             } else {
                 ui.label(format!("Device ID: {}", self.info["device_id"].as_str().unwrap_or("-")));
-                ui.label(format!(
-                    "Connection: {}",
-                    if self.info["connected"] == true { "connected" } else { "disconnected" }
-                ));
+                ui.label(format!("Connection: {}", if self.info["connected"] == true { "connected" } else { "disconnected" }));
                 ui.label(format!("Server: {}", self.info["server"].as_str().unwrap_or("-")));
                 if ui.button("Reveal Server Key and unlock password").clicked() {
                     self.reveal_secrets();
@@ -313,10 +311,7 @@ impl eframe::App for App {
                 ui.separator();
                 ui.label("Unlock password");
                 if let Some(secrets) = &self.secrets {
-                    ui.label(format!(
-                        "Unlock password: {}",
-                        secrets["unlock_password"].as_str().unwrap_or("(not set)")
-                    ));
+                    ui.label(format!("Unlock password: {}", secrets["unlock_password"].as_str().unwrap_or("(not set)")));
                 }
                 ui.horizontal(|ui| {
                     ui.label("New:");
@@ -385,7 +380,9 @@ impl eframe::App for App {
                         if ui.button("Allow").clicked() {
                             rcli_agent::macos::request_grants();
                         }
-                        for (label, pane) in [("Open Screen Recording", "Privacy_ScreenCapture"), ("Open Accessibility", "Privacy_Accessibility")] {
+                        for (label, pane) in
+                            [("Open Screen Recording", "Privacy_ScreenCapture"), ("Open Accessibility", "Privacy_Accessibility")]
+                        {
                             if ui.button(label).clicked() {
                                 let url = format!("x-apple.systempreferences:com.apple.preference.security?{pane}");
                                 let _ = std::process::Command::new("open").arg(url).spawn();
@@ -456,7 +453,89 @@ fn elevated(args: &[&str], stdin: Option<&str>) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_owned())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// Runs `rcli agent …` elevated after the UAC prompt and returns its stdout. The elevated process cannot inherit
+/// this one's output, so a hidden `cmd.exe` writes stdout/stderr to temp files; `stdin` goes through a file too, so a
+/// password never appears on the elevated command line.
+#[cfg(windows)]
+fn elevated(args: &[&str], stdin: Option<&str>) -> anyhow::Result<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::{
+        core::PCWSTR,
+        Win32::{
+            Foundation::CloseHandle,
+            System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE},
+            UI::{
+                Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
+                WindowsAndMessaging::SW_HIDE,
+            },
+        },
+    };
+
+    let dir = std::env::temp_dir().join(format!("rcli-gui-elevated-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let (out_path, err_path, status_path) = (dir.join("out"), dir.join("err"), dir.join("status"));
+    let batch = dir.join("run.cmd");
+    // Every argument is quoted: a Server Key may contain `&` or `^`, and paths may contain spaces. cmd does not
+    // expand `%` inside... it does, so a key with `%` would break; Update key alphabets are base64url, no `%`.
+    let quote = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+    let mut command = quote(&std::env::current_exe()?.to_string_lossy());
+    command.push(' ');
+    command.push_str(&args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" "));
+    if let Some(input) = stdin {
+        let input_path = dir.join("stdin");
+        std::fs::write(&input_path, input)?;
+        command.push_str(&format!(" < {}", quote(&input_path.to_string_lossy())));
+    }
+    std::fs::write(
+        &batch,
+        format!(
+            "@echo off\r\n{command} > {} 2> {}\r\necho %ERRORLEVEL% > {}\r\n",
+            quote(&out_path.to_string_lossy()),
+            quote(&err_path.to_string_lossy()),
+            quote(&status_path.to_string_lossy())
+        ),
+    )?;
+
+    let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let file = wide(std::ffi::OsStr::new("cmd.exe"));
+    let parameters = wide(std::ffi::OsStr::new(&format!("/c \"{}\"", batch.display())));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        lpVerb: windows::core::w!("runas"),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(parameters.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    let elevated = unsafe { ShellExecuteExW(&mut info) };
+    if let Err(e) = elevated {
+        let _ = std::fs::remove_dir_all(&dir);
+        anyhow::bail!("elevation was refused or failed (UAC prompt): {e}");
+    }
+    anyhow::ensure!(!info.hProcess.is_invalid(), "elevation did not start a process");
+    let mut process_code = 0u32;
+    unsafe {
+        WaitForSingleObject(info.hProcess, INFINITE);
+        let _ = GetExitCodeProcess(info.hProcess, &mut process_code);
+        let _ = CloseHandle(info.hProcess);
+    }
+    // cmd.exe's own exit code is the last command in the batch (`echo`), which always succeeds: the batch writes the
+    // real one to the status file.
+    let code = std::fs::read_to_string(&status_path).ok().and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(process_code as i32);
+    if code != 0 {
+        let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
+        let stdout = std::fs::read_to_string(&out_path).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        anyhow::bail!("{}", if stderr.trim().is_empty() { stdout.trim().to_owned() } else { stderr.trim().to_owned() });
+    }
+    let out = std::fs::read_to_string(&out_path).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(out.trim_end_matches(['\n', '\r']).to_owned())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn elevated(_args: &[&str], _stdin: Option<&str>) -> anyhow::Result<String> {
     anyhow::bail!("elevation is not supported here yet; run `sudo rcli agent password …`")
 }
@@ -469,9 +548,7 @@ fn shell_quote(s: &str) -> String {
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rcli_agent::platform::{
-    Frame, Input, Inventory, PowerAction, Process, Pty, Resources, RunAs, SessionState, ShellOutput, UiElement,
-};
+use rcli_agent::platform::{Frame, Input, Inventory, PowerAction, Process, Pty, Resources, RunAs, SessionState, ShellOutput, UiElement};
 
 /// The Agent's platform seen from a desktop: prompts (tickets 07/08) go to the GUI window over the IPC, and the
 /// window opens when someone starts controlling the Device or a prompt needs the person's answer (ticket 14).
@@ -505,31 +582,54 @@ fn opener(socket: PathBuf, platform: Arc<dyn rcli_agent::platform::Platform>) ->
             }
         }
         let exe = std::env::current_exe().unwrap_or_else(|_| "rcli".into());
-        let mut cmd = if service_is_root {
-            let user = platform.metrics().ok().and_then(|r| r.logged_in_user).filter(|u| !u.is_empty() && u != "root");
-            let Some(user) = user else { return };
-            // shortcut: plain `sudo -u`; the session's display environment (DISPLAY / WAYLAND_DISPLAY) comes with the
-            // Linux service installer of ticket 16.
-            #[cfg(not(target_os = "macos"))]
-            let mut cmd = std::process::Command::new("sudo");
-            // A launchd daemon sits outside every GUI session: `launchctl asuser` puts the window in the user's.
-            #[cfg(target_os = "macos")]
-            let mut cmd = {
-                let uid = std::process::Command::new("id").args(["-u", &user]).output().ok();
-                let Some(uid) = uid.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).filter(|u| !u.is_empty()) else { return };
-                let mut cmd = std::process::Command::new("launchctl");
-                cmd.args(["asuser", &uid, "sudo"]);
-                cmd
-            };
-            cmd.args(["-n", "-u", &user, "--", "env"]).arg(format!("RCLI_AGENT_SOCKET={}", socket.display())).arg(exe);
-            cmd
-        } else {
-            let mut cmd = std::process::Command::new(exe);
-            cmd.env("RCLI_AGENT_SOCKET", &socket);
-            cmd
-        };
-        *child = cmd.spawn().ok();
+        if let Some(mut cmd) = gui_command(&socket, &exe, service_is_root, &platform) {
+            *child = cmd.spawn().ok();
+        }
     })
+}
+
+/// The command that opens the GUI window in the session that can show it, if this process can reach one.
+fn gui_command(
+    socket: &std::path::Path,
+    exe: &std::path::Path,
+    service_is_root: bool,
+    platform: &Arc<dyn rcli_agent::platform::Platform>,
+) -> Option<std::process::Command> {
+    if !service_is_root {
+        let mut cmd = std::process::Command::new(exe);
+        cmd.env("RCLI_AGENT_SOCKET", socket);
+        return Some(cmd);
+    }
+    let user = platform.metrics().ok().and_then(|r| r.logged_in_user).filter(|u| !u.is_empty() && u != "root");
+    let user = user?;
+    // shortcut: plain `sudo -u`; the session's display environment (DISPLAY / WAYLAND_DISPLAY) comes with the Linux
+    // service installer of ticket 16.
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let mut cmd = std::process::Command::new("sudo");
+        cmd.args(["-n", "-u", &user, "--", "env"]).arg(format!("RCLI_AGENT_SOCKET={}", socket.display())).arg(exe);
+        Some(cmd)
+    }
+    // A launchd daemon sits outside every GUI session: `launchctl asuser` puts the window in the user's.
+    #[cfg(target_os = "macos")]
+    {
+        let uid = std::process::Command::new("id").args(["-u", &user]).output().ok();
+        let uid = uid.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).filter(|u| !u.is_empty())?;
+        let mut cmd = std::process::Command::new("launchctl");
+        cmd.args(["asuser", &uid, "sudo"])
+            .args(["-n", "-u", &user, "--", "env"])
+            .arg(format!("RCLI_AGENT_SOCKET={}", socket.display()))
+            .arg(exe);
+        Some(cmd)
+    }
+    // shortcut: a SYSTEM service cannot put a window on the console user's desktop without a `CreateProcessAsUser`
+    // round trip through the session helper. Until that exists, prompts (root "ask", "password+accept") reject at
+    // the Device because nobody can answer them; the control indicator is the tray-less window the person opens.
+    #[cfg(windows)]
+    {
+        let _ = user;
+        None
+    }
 }
 
 impl rcli_agent::platform::Platform for WindowPlatform {

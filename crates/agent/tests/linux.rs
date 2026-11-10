@@ -135,14 +135,15 @@ fn wait_for<T>(mut f: impl FnMut() -> Option<T>) -> T {
 fn the_session_helper_forwards_screen_calls_to_the_x_server() {
     use rcli_agent::{
         platform::{FakePlatform, Platform},
-        session::{answer, SessionPlatform},
+        macos_session::{answer, SessionPlatform},
     };
     use std::sync::Arc;
 
     let dir = std::env::temp_dir().join(format!("rcli-x11-session-{}-{}", std::process::id(), Instant::now().elapsed().as_nanos()));
     std::fs::create_dir_all(&dir).unwrap();
     let socket = dir.join("session.sock");
-    let daemon = SessionPlatform::listen_with(Arc::new(FakePlatform::new("daemon")), &socket, |_| true).unwrap();
+    // The greeter accepts XTest input, so the login screen is not special (unlike the macOS one).
+    let daemon = SessionPlatform::listen_with(Arc::new(FakePlatform::new("daemon")), &socket, |_| true, true).unwrap();
     let screen = LinuxPlatform::new("session").unwrap();
     let path = socket.clone();
     std::thread::spawn(move || {

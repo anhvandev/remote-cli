@@ -121,8 +121,14 @@ async fn main() -> anyhow::Result<()> {
     std::fs::write(out, info.to_string())?;
     println!("rcli-devstack ready: {info}");
 
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+    // SIGTERM handling is Unix-only; Windows dev runs stop it with Ctrl-C.
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await?;
     let _ = std::fs::remove_file(out);
     Ok(()) // dropping `sys` removes the Postgres container
 }

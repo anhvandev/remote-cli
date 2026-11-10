@@ -69,6 +69,8 @@ async fn agent_info_shows_the_device_id_and_connection_status_to_any_local_user(
     assert_eq!(json["connected"], true);
 }
 
+/// Unix socket modes; Windows named pipes use a DACL instead (see `crates/agent/src/ipc.rs`).
+#[cfg(unix)]
 #[tokio::test]
 async fn the_socket_is_open_to_every_local_user() {
     use std::os::unix::fs::PermissionsExt;

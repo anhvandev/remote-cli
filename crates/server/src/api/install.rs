@@ -68,8 +68,8 @@ async fn download(State(state): State<super::State>, Path((os, arch)): Path<(Str
         .into_response())
 }
 
-// shortcut: `rcli agent install` (which installs the service) lands with tickets 16/22/24; until then the last
-// step of this script fails with "no such command" on a real machine.
+// The last step installs the service: macOS (ticket 24) and Windows (ticket 22, install.ps1 below) do it today;
+// Linux waits for ticket 16's systemd unit, where this line fails with "not available on this OS yet".
 const INSTALL_SH: &str = r#"#!/bin/sh
 # Installs the rcli Agent on this machine and registers it with the Server.
 # Usage: curl -fsSL {{ORIGIN}}/install.sh | sudo sh -s -- --key <Server Key>
@@ -108,9 +108,10 @@ chmod +x "$dir/rcli"
 "$dir"/rcli agent install --server {{SERVER}} --key "$key"
 "#;
 
-// shortcut: same as install.sh — `rcli agent install` lands with ticket 22, which also finishes this script
-// (service install, Start Menu). One-line usage:
-//   iwr {{ORIGIN}}/install.ps1 -OutFile install.ps1; .\install.ps1 -Key <Server Key>
+// The PowerShell one-liner (ticket 22): download, then install elevated. An unelevated shell re-launches the same
+// exe through UAC and waits, so a failed install still sets a non-zero exit code. The Server Key never goes into
+// the installed service's arguments; it is read by the installer here and written to a SYSTEM-only config file.
+// Usage: iwr {{ORIGIN}}/install.ps1 -OutFile install.ps1; .\install.ps1 -Key <Server Key>
 const INSTALL_PS1: &str = r#"# Installs the rcli Agent on this machine and registers it with the Server.
 # Usage: .\install.ps1 -Key <Server Key>
 param([string]$Key = "")
@@ -122,7 +123,20 @@ $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
 }
 $url = "{{ORIGIN}}/download/windows/$arch"
 Write-Host "downloading $url"
-$tmp = Join-Path $env:TEMP "rcli.exe"
-Invoke-WebRequest -Uri $url -OutFile $tmp
-& $tmp agent install --server {{SERVER}} --key $Key
+$dir = Join-Path $env:TEMP "rcli-install"
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$exe = Join-Path $dir "rcli.exe"
+Invoke-WebRequest -Uri $url -OutFile $exe
+# Installing a service needs Administrator. Ask for elevation once and wait for that install, so the exit code and
+# any error text are the elevated install's.
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "elevating (accept the UAC prompt)"
+    $elevated = Start-Process -FilePath $exe -Verb RunAs -Wait -PassThru -ArgumentList @(
+        "agent", "install", "--server", "{{SERVER}}", "--key", $Key
+    )
+    exit $elevated.ExitCode
+}
+& $exe agent install --server {{SERVER}} --key $Key
+exit $LASTEXITCODE
 "#;

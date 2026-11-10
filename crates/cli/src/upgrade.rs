@@ -65,7 +65,38 @@ fn replace(path: &Path, build: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Root on Unix, an elevated (Administrator/SYSTEM) token on Windows.
 pub(crate) fn is_root() -> bool {
+    #[cfg(windows)]
+    {
+        use windows::Win32::{
+            Foundation::HANDLE,
+            Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY},
+            System::Threading::{GetCurrentProcess, OpenProcessToken},
+        };
+        let mut token = HANDLE::default();
+        let elevated = unsafe {
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_ok()
+                && {
+                    let mut elevation = TOKEN_ELEVATION::default();
+                    let mut len = 0u32;
+                    GetTokenInformation(
+                        token,
+                        TokenElevation,
+                        Some(&mut elevation as *mut _ as *mut _),
+                        size_of::<TOKEN_ELEVATION>() as u32,
+                        &mut len as *mut u32,
+                    )
+                    .is_ok()
+                        && elevation.TokenIsElevated != 0
+                }
+        };
+        if !token.is_invalid() {
+            let _ = unsafe { windows::Win32::Foundation::CloseHandle(token) };
+        }
+        elevated
+    }
+    #[cfg(not(windows))]
     std::process::Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
 }
 

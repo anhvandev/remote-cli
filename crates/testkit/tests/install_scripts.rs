@@ -67,4 +67,8 @@ async fn install_ps1_is_a_powershell_script_that_installs_the_agent() {
     assert!(script.contains("agent install --server"), "{script}");
     assert!(script.contains("-Key"), "{script}");
     assert!(script.contains("download/windows/"), "{script}");
+    // Installing a service needs Administrator: the one-liner relaunches itself through UAC and waits.
+    assert!(script.contains("RunAs"), "{script}");
+    // The Server Key comes in as -Key, never baked into a public script.
+    assert!(!script.contains("rk_"), "{script}");
 }

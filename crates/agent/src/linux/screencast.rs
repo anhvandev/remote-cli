@@ -123,8 +123,12 @@ pub fn rgba(data: &[u8], width: u32, height: u32, stride: i32, format: PixelForm
     anyhow::ensure!(data.len() >= needed, "the frame buffer holds {} bytes, {} are needed", data.len(), needed);
     let mut out = Vec::with_capacity(width as usize * height as usize * 4);
     let swap = matches!(format, PixelFormat::Bgra | PixelFormat::Bgrx | PixelFormat::Bgr);
-    for line in data.chunks_exact(row).take(height as usize) {
-        for pixel in line[..width as usize * bpp].chunks_exact(bpp) {
+    // Row by row: the last row often carries no trailing padding, so `chunks_exact` would drop it.
+    for y in 0..height as usize {
+        let start = y * row;
+        let end = start + width as usize * bpp;
+        anyhow::ensure!(end <= data.len(), "the frame buffer holds {} bytes, {end} are needed", data.len());
+        for pixel in data[start..end].chunks_exact(bpp) {
             if swap {
                 out.extend_from_slice(&[pixel[2], pixel[1], pixel[0], if bpp == 4 { pixel[3] } else { 255 }]);
             } else {
@@ -413,6 +417,8 @@ fn consume(opened: Opened, slots: &[Arc<Slot>]) -> anyhow::Result<()> {
     let context = pw::context::ContextBox::new(mainloop.loop_(), None)?;
     let core = context.connect_fd(opened.fd, None)?;
     let mut streams = Vec::with_capacity(opened.streams.len());
+    // One serialized format pod serves every stream; `connect` needs its own mutable slice per stream.
+    let params = format_params();
     for (info, slot) in opened.streams.into_iter().zip(slots.iter().cloned()) {
         let stream = pw::stream::StreamBox::new(
             &core,
@@ -477,7 +483,7 @@ fn consume(opened: Opened, slots: &[Arc<Slot>]) -> anyhow::Result<()> {
             pw::spa::utils::Direction::Input,
             Some(info.node_id),
             pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
-            &mut format_params(),
+            &mut { params },
         )?;
         streams.push((stream, listener));
     }
@@ -599,6 +605,14 @@ mod tests {
         data.extend_from_slice(&[0xff; 6]);
         let converted = rgba(&data, 2, 2, 12, PixelFormat::Rgb).unwrap();
         assert_eq!(converted, vec![1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]);
+        // The last row usually has no trailing padding in `spa_chunk.size`.
+        let mut data = vec![1, 2, 3, 4, 5, 6];
+        data.extend_from_slice(&[0xff; 6]);
+        data.extend_from_slice(&[7, 8, 9, 10, 11, 12]);
+        assert_eq!(
+            rgba(&data, 2, 2, 12, PixelFormat::Rgb).unwrap(),
+            vec![1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]
+        );
         // A buffer that is too small, or a stride shorter than a row, is an error, not a skew.
         assert!(rgba(&data[..10], 2, 2, 12, PixelFormat::Rgb).unwrap_err().to_string().contains("needed"));
         assert!(rgba(&data, 2, 2, 3, PixelFormat::Rgb).unwrap_err().to_string().contains("shorter"));

@@ -30,7 +30,7 @@ use super::{
 };
 use crate::{
     platform::{Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, RunAs, SessionState, ShellOutput, UiElement},
-    session::SessionPlatform,
+    macos_session::SessionPlatform,
 };
 
 /// Users a display manager runs its greeter as; their X server is the login screen, not a logged-in user.
@@ -335,9 +335,14 @@ impl ConsoleSession {
     ) -> anyhow::Result<Arc<Self>> {
         let trusted: Arc<Mutex<Vec<u32>>> = Default::default();
         let trusted_for_listener = trusted.clone();
-        let sessions = SessionPlatform::listen_with(inner.clone(), socket, move |uid| {
-            uid == 0 || trusted_for_listener.lock().unwrap().contains(&uid)
-        })?;
+        // The greeter and the lock screen both accept input on Linux (XTest, or uinput on Wayland), so the login
+        // screen is not special.
+        let sessions = SessionPlatform::listen_with(
+            inner.clone(),
+            socket,
+            move |uid| uid == 0 || trusted_for_listener.lock().unwrap().contains(&uid),
+            true,
+        )?;
         let token = state_dir.map(|dir| TokenStore::new(dir.join(super::screencast::TOKEN_FILE)));
         // A helper publishes the portal's new restore token over the wire; the daemon owns the state dir.
         if let Some(store) = token.clone() {
@@ -606,7 +611,7 @@ pub fn run_helper(socket: &Path) -> ! {
             std::process::exit(1);
         }
     };
-    crate::session::run_helper(socket, &platform, &|| true)
+    crate::macos_session::run_helper(socket, &platform, &|| true)
 }
 
 #[cfg(test)]

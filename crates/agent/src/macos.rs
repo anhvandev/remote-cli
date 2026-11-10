@@ -411,6 +411,8 @@ impl Platform for MacPlatform {
                 let k = key(&name)?;
                 self.with_enigo(|e| e.key(k, Direction::Release))
             }
+            // Ctrl+Alt+Del is the secure attention sequence, which macOS has no equivalent of.
+            Input::Sas => anyhow::bail!("Ctrl+Alt+Del is not available on macOS"),
         }
     }
 

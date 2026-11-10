@@ -15,7 +15,11 @@ test("install scripts come through the Dashboard origin", async ({ request }) =>
 
   const ps1 = await request.get("/install.ps1");
   expect(ps1.ok()).toBeTruthy();
-  expect(await ps1.text()).toContain("agent install");
+  const powershell = await ps1.text();
+  expect(powershell).toContain("agent install");
+  expect(powershell).toContain("RunAs"); // the one-liner installs the service elevated (UAC)
+  expect(powershell).toContain(`${new URL(ps1.url()).origin}/download/windows/`);
+  expect(powershell).not.toContain("rk_"); // the Server Key must never be in a public script
 
   const missing = await request.get("/download/unknown-os/unknown-arch");
   expect(missing.status()).toBe(404);

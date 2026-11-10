@@ -174,6 +174,10 @@ impl Executor {
                 if keys.iter().any(|k| k.is_empty()) {
                     return Err(error("invalid_action", format!("bad key combination {combo:?}")));
                 }
+                // Ctrl+Alt+Del is the secure attention sequence, not three keys: Windows must call SendSAS.
+                if is_sas(&keys) {
+                    return Ok(vec![Input::Sas]);
+                }
                 let (key, modifiers) = keys.split_last().unwrap();
                 let mut inputs: Vec<Input> = modifiers.iter().map(|m| Input::KeyDown(m.to_string())).collect();
                 inputs.push(Input::Key(key.to_string()));
@@ -226,4 +230,34 @@ impl Executor {
 
 fn find(displays: &[DisplayInfo], index: u32) -> Result<&DisplayInfo, Error> {
     displays.iter().find(|d| d.index == index).ok_or_else(|| error("invalid_action", format!("no display {index}")))
+}
+
+/// Whether the key combination is Ctrl+Alt+Del, in any order and spelling (`ctrl+alt+del`, `alt+control+delete`).
+fn is_sas(keys: &[&str]) -> bool {
+    let mut has = (false, false, false);
+    for key in keys {
+        match key.to_lowercase().as_str() {
+            "ctrl" | "control" => has.0 = true,
+            "alt" | "option" => has.1 = true,
+            "del" | "delete" => has.2 = true,
+            _ => return false,
+        }
+    }
+    has == (true, true, true) && keys.len() == 3
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ctrl_alt_del_is_the_secure_attention_sequence_not_three_keys() {
+        assert!(is_sas(&["ctrl", "alt", "del"]));
+        assert!(is_sas(&["alt", "control", "delete"]));
+        assert!(is_sas(&["Ctrl", "Alt", "Delete"]));
+        assert!(!is_sas(&["ctrl", "alt"]), "two keys are an ordinary combination");
+        assert!(!is_sas(&["ctrl", "alt", "shift"]));
+        assert!(!is_sas(&["ctrl", "alt", "del", "shift"]));
+        assert!(!is_sas(&["ctrl", "del"]));
+    }
 }
