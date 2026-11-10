@@ -12,6 +12,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 VERSION=${RCLI_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n 1)}
 ARCH=${RCLI_ARCH:-$(rpm --eval '%{_arch}')}
 OUT=${RCLI_OUT:-$ROOT/packaging/linux/out}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 TOP=$(mktemp -d)
 trap 'rm -rf "$TOP"' EXIT
 
@@ -36,7 +37,7 @@ run commands and shells, and manage power. The Device registers itself with the 
 %prep
 %build
 %install
-install -D -m 0755 $ROOT/target/release/rcli %{buildroot}/usr/bin/rcli
+install -D -m 0755 $TARGET_DIR/release/rcli %{buildroot}/usr/bin/rcli
 %files
 /usr/bin/rcli
 %post

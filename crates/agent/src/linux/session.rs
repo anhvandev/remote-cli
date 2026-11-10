@@ -323,10 +323,15 @@ impl ConsoleSession {
             stop(&mut child);
             self.sessions.clear_helpers();
         }
-        let Some(target) = target else { return };
-        if let Some(uid) = target.uid {
+        // Only the session on the console may drive the screen: forget the previous user as well as its helper.
+        let Some(target) = target else {
+            self.trusted.lock().unwrap().clear();
+            return;
+        };
+        {
             let mut trusted = self.trusted.lock().unwrap();
-            if !trusted.contains(&uid) {
+            trusted.clear();
+            if let Some(uid) = target.uid {
                 trusted.push(uid);
             }
         }

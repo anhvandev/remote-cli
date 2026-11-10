@@ -12,6 +12,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 VERSION=${RCLI_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n 1)}
 ARCH=${RCLI_ARCH:-$(dpkg --print-architecture)}
 OUT=${RCLI_OUT:-$ROOT/packaging/linux/out}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -19,7 +20,7 @@ echo "building rcli $VERSION for $ARCH"
 cargo build --release --manifest-path "$ROOT/Cargo.toml" -p rcli
 
 mkdir -p "$STAGE/usr/bin" "$STAGE/DEBIAN"
-install -m 0755 "$ROOT/target/release/rcli" "$STAGE/usr/bin/rcli"
+install -m 0755 "$TARGET_DIR/release/rcli" "$STAGE/usr/bin/rcli"
 for hook in postinst prerm postrm; do
     install -m 0755 "$ROOT/packaging/linux/scripts/$hook" "$STAGE/DEBIAN/$hook"
 done

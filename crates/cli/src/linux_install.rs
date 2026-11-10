@@ -184,12 +184,14 @@ pub fn install_files(layout: &Layout, opts: &Options, exe: &Path, _run: Run) -> 
     Ok(())
 }
 
-/// Writes the unit and the root-only key file, then enables and starts the service (a reinstall replaces it).
+/// Writes the unit and the root-only key file, then enables and (re)starts the service. `restart` also covers an
+/// upgrade: it starts a first install and replaces the running binary's process on a reinstall.
 pub fn install_service(layout: &Layout, opts: &Options, run: Run) -> anyhow::Result<()> {
     write(&layout.unit(), &unit(layout, opts), 0o644)?;
     write(&layout.env_file(), &environment_file(opts), 0o600)?;
     run("systemctl", &["daemon-reload"])?;
-    run("systemctl", &["enable", "--now", UNIT])
+    run("systemctl", &["enable", UNIT])?;
+    run("systemctl", &["restart", UNIT])
 }
 
 /// Stops and removes the service, the binary, the key file and the Device's local data (credentials, settings and
@@ -347,7 +349,11 @@ mod tests {
         assert_eq!(recorded_server(&layout).as_deref(), Some("rcli.example.com:7443"));
         assert_eq!(
             calls,
-            vec!["systemctl daemon-reload".to_owned(), "systemctl enable --now rcli-agent.service".to_owned()]
+            vec![
+                "systemctl daemon-reload".to_owned(),
+                "systemctl enable rcli-agent.service".to_owned(),
+                "systemctl restart rcli-agent.service".to_owned()
+            ]
         );
 
         calls.clear();
