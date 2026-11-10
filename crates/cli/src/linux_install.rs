@@ -252,7 +252,7 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     let password = secrets.get(rcli_agent::ipc::DEVICE_PASSWORD)?.unwrap_or_default();
     writeln!(
         out,
-        "installed {UNIT} and {} \nDevice ID: {}\nDevice Password: {password}\n\
+        "installed {UNIT} and {}\nDevice ID: {}\nDevice Password: {password}\n\
          The root service captures the lock screen and the display-manager greeter over X11; a Wayland \
          greeter or session is not visible until it runs an X11 session. On a headless server, metrics, \
          exec, shell and power work without a display.",
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(std::fs::read_link(root.join("usr/local/bin/rcli")).unwrap(), layout.exe());
         let settings = DeviceSettings::load(&layout.state_dir());
         assert_eq!((settings.terminal_user.as_str(), settings.root), ("alice", RootAccess::Always));
-        assert_eq!(std::fs::metadata(&layout.state_dir()).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(layout.state_dir()).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(std::fs::metadata(layout.env_file()).unwrap().permissions().mode() & 0o777, 0o600, "it holds the Server Key");
         assert_eq!(std::fs::metadata(layout.install_file()).unwrap().permissions().mode() & 0o777, 0o600);
         let env = std::fs::read_to_string(layout.env_file()).unwrap();

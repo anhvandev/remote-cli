@@ -247,7 +247,7 @@ enum AgentCommand {
     Install(agent::Install),
     /// Remove the background service and this Device's local data (root).
     Uninstall(agent::Uninstall),
-    /// macOS: the GUI-session helper the LaunchAgent starts.
+    /// The console-session helper the root service starts (macOS LaunchAgent, Linux systemd service).
     #[command(hide = true)]
     Session(agent::Session),
     /// Show the Device ID and connection status (any local user).

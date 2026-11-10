@@ -608,7 +608,7 @@ impl Uninstall {
     }
 }
 
-/// `rcli agent session` (macOS, started by the LaunchAgent): does the root daemon's screen work in this GUI session.
+/// `rcli agent session` (started by the root service): does the daemon's screen work in this console session.
 #[derive(Args)]
 pub struct Session {
     /// The daemon's session socket.

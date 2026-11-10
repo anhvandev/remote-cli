@@ -116,7 +116,7 @@ pub fn systemd_creds_available() -> bool {
 #[cfg(target_os = "linux")]
 impl SystemdCredsSecretStore {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self::with_runner(dir, |args, input| run_systemd_creds(args, input))
+        Self::with_runner(dir, run_systemd_creds)
     }
 
     /// `new` with the command runner given (tests: no systemd, no TPM).
@@ -149,6 +149,7 @@ impl SecretStore for SystemdCredsSecretStore {
         std::fs::create_dir_all(&self.dir)?;
         let path = self.path(name);
         let temp = self.dir.join(format!(".{name}.new"));
+        let _ = std::fs::remove_file(&temp);
         let args = ["encrypt", "--name", name, "--with-key", "auto", "-", &temp.display().to_string()];
         (self.run)(&args, Some(secret.as_bytes()))?;
         std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
@@ -305,7 +306,7 @@ mod tests {
                     std::fs::write(args.last().unwrap(), input.unwrap_or_default())?;
                     Ok(vec![])
                 }
-                "decrypt" => Ok(std::fs::read(&args[args.len() - 2])?),
+                "decrypt" => Ok(std::fs::read(args[args.len() - 2])?),
                 other => anyhow::bail!("unexpected systemd-creds {other}"),
             }
         });

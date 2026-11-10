@@ -103,12 +103,11 @@ pub fn state_from(session: Option<&SessionInfo>) -> SessionState {
 
 /// Where a display manager keeps its X server's cookie, newest first, for `display` (`:0`, `:1`).
 fn greeter_auths(root: &Path, display: &str) -> Vec<PathBuf> {
-    let n = display.trim_start_matches(':');
     let base = |p: &str| root.join(p.trim_start_matches('/'));
     let mut out = vec![
         base(&format!("/run/lightdm/root/{display}")),
         base(&format!("/var/run/lightdm/root/{display}")),
-        base(&format!("/run/gdm/authority")),
+        base("/run/gdm/authority"),
         base("/run/gdm3/authority"),
         base("/var/lib/gdm/.Xauthority"),
         base("/var/lib/gdm3/.Xauthority"),
@@ -126,7 +125,6 @@ fn greeter_auths(root: &Path, display: &str) -> Vec<PathBuf> {
         }
     }
     // A numbered file for another display is not this display's cookie.
-    let _ = n;
     out.into_iter().filter(|p| p.is_file()).collect()
 }
 
@@ -143,7 +141,7 @@ pub fn xorg_auth(root: &Path, display: &str) -> Option<PathBuf> {
             continue;
         }
         // Xorg argv: /usr/lib/xorg/Xorg :0 -seat seat0 -auth /run/lightdm/root/:0 …
-        let on_display = args.iter().any(|a| *a == display);
+        let on_display = args.contains(&display);
         let names_a_display = args.iter().any(|a| a.starts_with(':'));
         let auth = args.iter().position(|a| *a == "-auth").and_then(|i| args.get(i + 1)).map(Path::new);
         if let Some(auth) = auth.filter(|a| a.is_file() && (on_display || !names_a_display)) {
@@ -295,6 +293,11 @@ impl ConsoleSession {
 
     fn target(&self) -> Option<Target> {
         let session = seat_session(self.loginctl.as_ref())?;
+        // A Wayland session (including a Wayland greeter) cannot be served: Xwayland only shows individual X11
+        // clients, not the desktop or the greeter. Report "no X11 session" rather than a misleading half-screen.
+        if session.session_type == "wayland" {
+            return None;
+        }
         let display = match session.display.is_empty() {
             true => socket_display(&self.root)?,
             false => session.display.clone(),
@@ -388,7 +391,17 @@ impl Platform for ConsoleSession {
         Ok(self.login_state())
     }
     fn inventory(&self) -> anyhow::Result<Inventory> {
-        self.inner.inventory()
+        let mut inventory = self.inner.inventory()?;
+        // The daemon has no DISPLAY of its own; take the displays from the console session when it has one.
+        if self.sessions.helper_count() > 0 {
+            if let Ok(displays) = self.sessions.displays() {
+                inventory.displays = displays
+                    .into_iter()
+                    .map(|d| crate::platform::Display { name: d.index.to_string(), width: d.width, height: d.height })
+                    .collect();
+            }
+        }
+        Ok(inventory)
     }
     fn metrics(&self) -> anyhow::Result<Resources> {
         self.inner.metrics()
@@ -545,7 +558,7 @@ mod tests {
         let run = |args: &[&str]| -> Option<String> {
             match args {
                 ["show-seat", "seat0", "-p", "ActiveSession", "--value"] => Some("c1\n".into()),
-                a if a.starts_with(&["show-session", "c1"]) => Some("lightdm\n111\ngreeter\nx11\n:0\nno\n".into()),
+                ["show-session", "c1", ..] => Some("lightdm\n111\ngreeter\nx11\n:0\nno\n".into()),
                 _ => None,
             }
         };
