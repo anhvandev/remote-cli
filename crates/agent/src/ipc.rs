@@ -46,6 +46,12 @@ pub enum Request {
     #[serde(rename = "info")]
     Info,
     /// The prompts waiting for the person at the Device (any user).
+    // shortcut: the spec's IPC split lets any local user see only the ID, connection status, who is controlling and
+    // disconnect. Story 27 needs the person at the Device — whoever that is, not only root — to see a prompt naming
+    // who asks for root, and story 28 lets them grant or refuse it, so this listing is deliberately open. It exposes
+    // requester names and pending requests to any local user; seeing a request does not grant it (accepting one
+    // stays root-only, refusing is like `disconnect`), and gating the list on root would leave the prompt
+    // unanswerable when nobody is an Administrator at that moment. Revisit if the split is enforced literally.
     #[serde(rename = "prompts")]
     Prompts,
     /// Answers a waiting prompt: anyone may refuse, only root may accept.
@@ -199,7 +205,7 @@ impl Prompts {
     }
 }
 
-/// What the IPC clients see of the running Agent.
+/// What the local callers see of the running Agent: `rcli agent …`, the GUI and scripts.
 pub struct Status {
     device_id: RwLock<String>,
     /// The Server the Agent connects to; a change reconnects it without a restart.
@@ -548,7 +554,7 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
     };
     match parsed {
         Request::Info => status.info(is_root),
-        // Who is asking is status-adjacent: any local user may list the waiting prompts.
+        // Who is asking is status-adjacent: any local user may list the waiting prompts (see the `Prompts` variant).
         Request::Prompts => status.prompts().list(),
         Request::PromptAnswer { id, accept } => {
             // Anyone at the Device may refuse a prompt (like `disconnect`); only root may accept one,
