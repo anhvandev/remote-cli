@@ -130,7 +130,7 @@ async fn download(State(state): State<super::State>, Path((os, arch)): Path<(Str
 // The last step installs the service: macOS (ticket 24) and Windows (ticket 22, install.ps1 below) do it today;
 // Linux waits for ticket 16's systemd unit, where this line fails with "not available on this OS yet".
 const INSTALL_SH: &str = r#"#!/bin/sh
-# Installs the rcli Agent on this Device and registers it with the Server.
+# Installs rcli: makes this machine a Device (prints its Device ID and Device Password) that can also control others.
 # Usage: curl -fsSL {{ORIGIN}}/install.sh | sudo sh -s -- --key <Server Key>
 set -eu
 key=""
@@ -164,14 +164,14 @@ if ! curl -fsSL "{{ORIGIN}}/download/$os/$arch" -o "$dir/rcli"; then
     exit 1
 fi
 chmod +x "$dir/rcli"
-"$dir"/rcli agent install --server {{SERVER}} --key "$key"
+"$dir"/rcli install --server {{SERVER}} --key "$key"
 "#;
 
 // The PowerShell one-liner (ticket 22): download, then install elevated. An unelevated shell re-launches the same
-// exe through UAC and waits, so a failed install still sets a non-zero exit code. The Server Key never goes into
+// install through UAC and waits, so a failed install still sets a non-zero exit code. The Server Key never goes into
 // the installed service's arguments; it is read by the installer here and written to a SYSTEM-only config file.
 // Usage: iwr {{ORIGIN}}/install.ps1 -OutFile install.ps1; .\install.ps1 -Key <Server Key>
-const INSTALL_PS1: &str = r#"# Installs the rcli Agent on this Device and registers it with the Server.
+const INSTALL_PS1: &str = r#"# Installs rcli: makes this machine a Device (prints its Device ID and Device Password) that can also control others.
 # Usage: .\install.ps1 -Key <Server Key>
 param([string]$Key = "")
 $ErrorActionPreference = "Stop"
@@ -187,15 +187,19 @@ New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $exe = Join-Path $dir "rcli.exe"
 Invoke-WebRequest -Uri $url -OutFile $exe
 # Installing a service needs Administrator. Ask for elevation once and wait for that install, so the exit code and
-# any error text are the elevated install's.
+# any error text are the elevated install's. The elevated process cannot write to this console, so a hidden cmd.exe
+# writes its output (the Device ID and Device Password) to a file printed here.
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "elevating (accept the UAC prompt)"
-    $elevated = Start-Process -FilePath $exe -Verb RunAs -Wait -PassThru -ArgumentList @(
-        "agent", "install", "--server", "{{SERVER}}", "--key", $Key
+    $log = Join-Path $dir "install.log"
+    $elevated = Start-Process -FilePath "cmd.exe" -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList @(
+        "/c", "`"`"$exe`" install --server {{SERVER}} --key $Key > `"$log`" 2>&1`""
     )
+    Get-Content $log
+    Remove-Item $log
     exit $elevated.ExitCode
 }
-& $exe agent install --server {{SERVER}} --key $Key
+& $exe install --server {{SERVER}} --key $Key
 exit $LASTEXITCODE
 "#;
