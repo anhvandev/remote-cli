@@ -17,7 +17,7 @@ Toàn bộ hệ thống chạy bằng một file Docker Compose trên một VPS:
 | 49160–49200 | UDP | Dải cổng relay của coturn |
 
 - Chỉ cổng Dashboard và cổng Agent ra internet. Dashboard chuyển tiếp toàn bộ Controller API (`/api/v1/*`) vào Server, nên `rcli` và `rcli mcp` dùng chính URL của Dashboard. Cổng Controller API (8080) chỉ nằm trong mạng Docker, **không** mở ra ngoài.
-- Đặt TLS (reverse proxy như Caddy/nginx) trước cổng 3080 và chỉ cho vào 3080 qua proxy đó (firewall chặn 3080 từ ngoài). Proxy phải thêm IP của client vào `X-Forwarded-For` (Caddy làm sẵn; nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`): Dashboard chuyển header này nguyên trạng cho Server, nên ai gọi thẳng vào 3080 có thể tự chọn IP của mình. Cổng 8443 đã là TLS sẵn, **không** đặt proxy trước nó. Nếu proxy bật gzip hoặc buffer, tắt cho các đường stream (`/api/v1/devices/*/shell`, `/api/v1/devices/*/lock/watch`, `/api/devices/*/shell`, `/api/devices/*/lock/watch`), nếu không shell và Control Lock sẽ bị đứng.
+- Đặt TLS (reverse proxy như Caddy/nginx) trước cổng 3080 và chỉ cho vào 3080 qua proxy đó (firewall chặn 3080 từ ngoài). Proxy phải thêm IP của Controller vào `X-Forwarded-For` (Caddy làm sẵn; nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`): Dashboard chuyển header này nguyên trạng cho Server, nên ai gọi thẳng vào 3080 có thể tự chọn IP của mình. Cổng 8443 đã là TLS sẵn, **không** đặt proxy trước nó. Nếu proxy bật gzip hoặc buffer, tắt cho các đường stream (`/api/v1/devices/*/shell`, `/api/v1/devices/*/lock/watch`, `/api/devices/*/shell`, `/api/devices/*/lock/watch`), nếu không shell và Control Lock sẽ bị đứng.
 
 ## 2. Biến môi trường
 
