@@ -291,14 +291,7 @@ async fn audit_device_event(
     params: serde_json::Value,
     result: serde_json::Value,
 ) -> anyhow::Result<()> {
-    let actor = crate::auth::User {
-        id: uuid::Uuid::nil(),
-        name: controller.to_owned(),
-        role: "controller".into(),
-        disabled_at: None,
-        device_scope: None,
-    };
-    crate::audit::record(state, &actor, device, action, params, result).await.map_err(|e| anyhow::anyhow!("{e:#}"))
+    crate::audit::record_named(state, controller, device, action, params, result).await
 }
 
 /// A Device that uninstalled itself. The Device has no Server User, so the audit names the Agent; otherwise this is
@@ -306,17 +299,8 @@ async fn audit_device_event(
 /// filter shows both, plus `self: true` to tell them apart.
 async fn self_unregister(state: &AppState, device: uuid::Uuid) -> anyhow::Result<()> {
     let name = registry::get(state, device).await?.name;
-    let actor = crate::auth::User {
-        id: uuid::Uuid::nil(),
-        name: "agent (uninstall)".into(),
-        role: "admin".into(),
-        disabled_at: None,
-        device_scope: None,
-    };
     let params = serde_json::json!({ "name": name, "self": true });
-    crate::audit::record(state, &actor, device, "device.delete", params, serde_json::json!({ "error": null }))
-        .await
-        .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+    crate::audit::record_named(state, "agent (uninstall)", device, "device.delete", params, serde_json::json!({ "error": null })).await?;
     registry::delete(state, device).await
 }
 
