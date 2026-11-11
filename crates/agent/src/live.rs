@@ -11,11 +11,6 @@ use std::{
 };
 
 use image::{imageops, RgbaImage};
-use openh264::{
-    encoder::{BitRate, Encoder, EncoderConfig, FrameRate, RateControlMode},
-    formats::{RgbaSliceU8, YUVBuffer},
-    OpenH264API,
-};
 use rcli_protocol::agent::{Error, LiveAnswer, LiveOffer};
 use webrtc::{
     api::{
@@ -37,7 +32,7 @@ use webrtc::{
     track::track_local::track_local_static_sample::TrackLocalStaticSample,
 };
 
-use crate::platform::Platform;
+use crate::{encoder::H264, platform::Platform};
 
 /// A viewer that has not connected by then is gone (e.g. closed the tab before ICE finished).
 const CONNECT_WITHIN: Duration = Duration::from_secs(30);
@@ -194,7 +189,7 @@ impl Live {
         let (me, session, platform) = (Arc::downgrade(self), offer.session, self.platform.clone());
         let rt = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            if let Err(e) = stream(platform.as_ref(), display, &level, &pc, &track, &stop, &keyframe, &rt) {
+            if let Err(e) = stream(platform.as_ref(), &session, display, &level, &pc, &track, &stop, &keyframe, &rt) {
                 tracing::warn!("live stream {session} ended: {e:#}");
             }
             if let Some(me) = me.upgrade() {
@@ -228,6 +223,7 @@ pub(crate) async fn peer_connection(ice_servers: &[rcli_protocol::agent::IceServ
 #[allow(clippy::too_many_arguments)]
 fn stream(
     p: &dyn Platform,
+    session: &str,
     display: u32,
     level: &Mutex<Level>,
     pc: &RTCPeerConnection,
@@ -245,26 +241,12 @@ fn stream(
         std::thread::sleep(Duration::from_millis(20));
     }
     let mut current = None;
-    let (mut encoder, mut every) = (None, Duration::ZERO);
+    let mut encoder: Option<H264> = None;
     let mut last = Instant::now();
     while !stop.load(Ordering::SeqCst) {
         let tick = Instant::now();
         let wanted = *level.lock().unwrap();
-        if current != Some(wanted) {
-            // A new encoder starts with a keyframe, so the switch shows at once.
-            let (bps, fps) = wanted.encoding();
-            // Camera usage, not screen content: openh264's screen-content rate control never spends more than its
-            // starting quality, so Quality would look like Balanced. No frame skipping: the level's frame rate holds.
-            let config = EncoderConfig::new()
-                .rate_control_mode(RateControlMode::Bitrate)
-                .bitrate(BitRate::from_bps(bps))
-                .skip_frames(false)
-                .max_frame_rate(FrameRate::from_hz(fps));
-            encoder = Some(Encoder::with_api_config(OpenH264API::from_source(), config)?);
-            every = Duration::from_secs_f32(1.0 / fps);
-            current = Some(wanted);
-        }
-        let encoder = encoder.as_mut().expect("set above");
+        let (bps, fps) = wanted.encoding();
         let frame = p.capture(display)?;
         // Native pixels, but H.264 4:2:0 needs even dimensions: an odd last row or column is dropped.
         let (w, h) = (frame.width & !1, frame.height & !1);
@@ -273,15 +255,21 @@ fn stream(
         if (w, h) != rgba.dimensions() {
             rgba = imageops::crop_imm(&rgba, 0, 0, w, h).to_image();
         }
-        if keyframe.swap(false, Ordering::SeqCst) {
-            encoder.force_intra_frame();
+        // A new encoder starts with a keyframe: on a level switch, a new display size, or when the viewer asks.
+        if keyframe.swap(false, Ordering::SeqCst) || current != Some(wanted) || encoder.as_ref().is_some_and(|e| e.size() != (w, h)) {
+            let e = H264::open(w, h, bps, fps, p.hardware_encoder())?;
+            tracing::info!("live stream {session}: H.264 through {} at {wanted:?}", e.name());
+            encoder = Some(e);
+            current = Some(wanted);
         }
-        let data = encoder.encode(&YUVBuffer::from_rgba8_source(RgbaSliceU8::new(&rgba, (w as usize, h as usize))))?.to_vec();
+        let encoder = encoder.as_mut().expect("set above");
+        let data = encoder.encode(&rgba)?;
         if !data.is_empty() {
             let sample = Sample { data: data.into(), duration: last.elapsed(), ..Default::default() };
             last = Instant::now();
             rt.block_on(track.write_sample(&sample))?;
         }
+        let every = Duration::from_secs_f32(1.0 / fps);
         std::thread::sleep(every.saturating_sub(tick.elapsed()));
     }
     Ok(())
