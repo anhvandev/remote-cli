@@ -118,6 +118,16 @@ rcli devices                             # cột AGENT / UPDATE cho biết tiế
 
 Server không giữ private key và không tự kiểm chữ ký; chính Agent kiểm bằng public key đã pin lúc đăng ký (`RCLI_UPDATE_PUBLIC_KEY` của Server). "--all" chỉ gồm các Device đã có lúc rollout.
 
+Mục Tải xuống của trang Connect guide: `rcli.exe` là bản build đã rollout cho `windows-x86_64`; `.dmg`, `.deb` và
+`.rpm` là package do Admin upload (build bằng `packaging/macos/build-dmg.sh`, `packaging/linux/build-deb.sh`,
+`build-rpm.sh`). Mỗi loại và mỗi kiến trúc giữ một bản, upload lại là thay:
+
+```bash
+rcli package publish rcli.dmg --arch aarch64
+rcli package publish rcli_0.1.0_amd64.deb --arch x86_64
+rcli package publish rcli-0.1.0-1.x86_64.rpm --arch x86_64
+```
+
 ## 8. Vận hành
 
 - **Dữ liệu:** tất cả nằm trong volume Postgres `pgdata`. Sao lưu bằng `docker compose exec postgres pg_dump -U rcli rcli > backup.sql`.

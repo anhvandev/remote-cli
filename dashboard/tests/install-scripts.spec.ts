@@ -48,3 +48,20 @@ test("the download endpoint serves the rolled-out build for an OS/arch", async (
   expect(await dl.body()).toEqual(Buffer.from(update.build));
   expect(dl.headers()["x-rcli-version"]).toBe("1.0.0");
 });
+
+// The Connect guide's .dmg/.deb/.rpm links: the package an Admin uploaded, under its own file name.
+test("the package download serves the uploaded package with its file name", async ({ request }) => {
+  const { api, admin_token } = await devstack();
+  const missing = await request.get("/download/package/rpm/aarch64");
+  expect(missing.status()).toBe(404);
+  const res = await fetch(`${api}/api/v1/packages/deb/x86_64`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${admin_token}`, "content-type": "application/octet-stream" },
+    body: "a deb",
+  });
+  expect(res.ok).toBeTruthy();
+  const dl = await request.get("/download/package/deb/x86_64");
+  expect(dl.ok()).toBeTruthy();
+  expect(await dl.text()).toBe("a deb");
+  expect(dl.headers()["content-disposition"]).toBe('attachment; filename="rcli-x86_64.deb"');
+});

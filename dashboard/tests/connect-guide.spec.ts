@@ -29,9 +29,9 @@ test("a signed-in User sees every block of the Connect guide", async ({ page }) 
   const downloads = page.getByRole("region", { name: "Tải xuống" });
   for (const [name, href] of [
     ["rcli.exe", "/download/windows/x86_64"],
-    ["rcli.dmg", "/download/macos/aarch64"],
-    ["rcli.deb", "/download/linux/x86_64"],
-    ["rcli.rpm", "/download/linux/x86_64"],
+    ["rcli.dmg", "/download/package/dmg/aarch64"],
+    ["rcli.deb", "/download/package/deb/x86_64"],
+    ["rcli.rpm", "/download/package/rpm/x86_64"],
   ]) {
     await expect(downloads.getByRole("link", { name })).toHaveAttribute("href", href);
   }

@@ -111,6 +111,9 @@ enum Command {
     /// Manage users (admin).
     #[command(subcommand)]
     User(UserCommand),
+    /// Install packages for the Connect guide's downloads (admin).
+    #[command(subcommand)]
+    Package(PackageCommand),
     /// Signed Agent builds and rollouts (admin): `rollout keygen`, `rollout publish`, `rollout <version>`.
     Rollout {
         #[command(subcommand)]
@@ -492,6 +495,17 @@ enum RolloutCommand {
         /// Private key file from `rcli rollout keygen`.
         #[arg(long)]
         key: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PackageCommand {
+    /// Upload a .dmg, .deb or .rpm for the Connect guide's downloads; replaces the one for that kind and arch.
+    Publish {
+        file: String,
+        /// The CPU it is for: x86_64 or aarch64.
+        #[arg(long)]
+        arch: String,
     },
 }
 
@@ -1024,6 +1038,12 @@ where
             let req = api.http.put(url).query(&[("signature", hex::encode(signature))]).body(build);
             let published = api.send(req, None).await?;
             (published, format!("published {version} for {target}\n"))
+        }
+        Command::Package(PackageCommand::Publish { file, arch }) => {
+            let kind = std::path::Path::new(&file).extension().and_then(|e| e.to_str()).unwrap_or_default().to_owned();
+            let url = format!("{}/api/v1/packages/{kind}/{arch}", api.base.trim_end_matches('/'));
+            let published = api.send(api.http.put(url).body(std::fs::read(&file)?), None).await?;
+            (published, format!("published the .{kind} for {arch}\n"))
         }
         Command::Rollout { command: None, version: Some(version), all, device } => {
             anyhow::ensure!(all || !device.is_empty(), "give --all or at least one --device");

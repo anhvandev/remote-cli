@@ -72,3 +72,28 @@ async fn install_ps1_is_a_powershell_script_that_installs_the_agent() {
     // The Server Key comes in as -Key, never baked into a public script.
     assert!(!script.contains("rk_"), "{script}");
 }
+
+/// The Connect guide's .dmg/.deb/.rpm: an Admin uploads each package, anyone downloads it, a newer upload replaces it.
+#[tokio::test]
+async fn an_admin_publishes_install_packages_that_anyone_downloads() {
+    let sys = TestSystem::start().await;
+    let (status, _) = sys.api.with_token(None).get_bytes("/download/package/deb/x86_64").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "nothing uploaded yet");
+
+    let dir = rcli_testkit::temp_dir("packages");
+    let deb = dir.join("rcli_0.1.0_amd64.deb");
+    std::fs::write(&deb, b"first deb").unwrap();
+    let out = sys.rcli(&["package", "publish", deb.to_str().unwrap(), "--arch", "x86_64"]).await.unwrap();
+    assert!(out.contains("deb"), "{out}");
+    std::fs::write(&deb, b"second deb").unwrap();
+    sys.rcli(&["package", "publish", deb.to_str().unwrap(), "--arch", "x86_64"]).await.unwrap();
+    let (status, bytes) = sys.api.with_token(None).get_bytes("/download/package/deb/x86_64").await;
+    assert_eq!((status, bytes.as_slice()), (StatusCode::OK, b"second deb".as_slice()));
+
+    // Only an Admin uploads, and only the package kinds the guide offers.
+    let operator = sys.create_user("olga", "operator").await;
+    let (status, _) = sys.api.with_token(Some(&operator)).put_bytes("/api/v1/packages/deb/x86_64", b"x".to_vec()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = sys.api.put_bytes("/api/v1/packages/zip/x86_64", b"x".to_vec()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

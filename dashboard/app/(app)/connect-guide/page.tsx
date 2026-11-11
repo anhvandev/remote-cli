@@ -76,8 +76,8 @@ export default async function ConnectGuidePage() {
             <h3 className={title}>Tải xuống</h3>
           </div>
           <div className="grid gap-3 p-5 text-sm">
-            {/* shortcut: the exe/dmg/deb/rpm packages land with tickets 16/22/24; until then every row serves the
-                raw rolled-out build from /download/<os>/<arch> (ticket 17's endpoint). */}
+            {/* The exe is the rolled-out build itself (it installs itself); the packages are what an Admin uploaded
+                with `rcli package publish`. */}
             <ul className="grid gap-1.5">
               <li>
                 <a className="font-medium text-foreground underline underline-offset-4" href="/download/windows/x86_64">
@@ -86,19 +86,19 @@ export default async function ConnectGuidePage() {
                 <span className="text-muted-foreground">— Windows</span>
               </li>
               <li>
-                <a className="font-medium text-foreground underline underline-offset-4" href="/download/macos/aarch64">
+                <a className="font-medium text-foreground underline underline-offset-4" href="/download/package/dmg/aarch64">
                   rcli.dmg
                 </a>{" "}
                 <span className="text-muted-foreground">— macOS (Apple silicon)</span>
               </li>
               <li>
-                <a className="font-medium text-foreground underline underline-offset-4" href="/download/linux/x86_64">
+                <a className="font-medium text-foreground underline underline-offset-4" href="/download/package/deb/x86_64">
                   rcli.deb
                 </a>{" "}
                 <span className="text-muted-foreground">— Debian/Ubuntu</span>
               </li>
               <li>
-                <a className="font-medium text-foreground underline underline-offset-4" href="/download/linux/x86_64">
+                <a className="font-medium text-foreground underline underline-offset-4" href="/download/package/rpm/x86_64">
                   rcli.rpm
                 </a>{" "}
                 <span className="text-muted-foreground">— Fedora/RHEL</span>
