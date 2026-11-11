@@ -1,4 +1,4 @@
-//! Server Settings: the Server Key and the Server Address, stored in Postgres and edited by Admins.
+//! Server Settings: the Server Key, the Server Address and the API Address, stored in Postgres and edited by Admins.
 
 use sqlx::PgPool;
 use tokio::sync::RwLock;
@@ -9,13 +9,16 @@ use crate::{pki::Ca, server_key};
 pub struct Settings {
     key: RwLock<String>,
     address: RwLock<String>,
+    /// Empty until learned (`learn_api_address`) or set by an Admin.
+    api_address: RwLock<String>,
 }
 
 impl Settings {
     /// Loads the settings, seeding the address from `default_address` (`RCLI_AGENT_HOSTNAMES`) on first start.
     pub async fn load(db: &PgPool, ca: &Ca, default_address: &str) -> anyhow::Result<Self> {
         let key = server_key::load_or_create(db, ca).await?;
-        let stored: String = sqlx::query_scalar("SELECT server_address FROM server_ca").fetch_one(db).await?;
+        let (stored, api_address): (String, String) =
+            sqlx::query_as("SELECT server_address, api_address FROM server_ca").fetch_one(db).await?;
         let address = match stored.is_empty() {
             true => {
                 sqlx::query("UPDATE server_ca SET server_address = $1").bind(default_address).execute(db).await?;
@@ -23,7 +26,7 @@ impl Settings {
             }
             false => stored,
         };
-        Ok(Self { key: RwLock::new(key), address: RwLock::new(address) })
+        Ok(Self { key: RwLock::new(key), address: RwLock::new(address), api_address: RwLock::new(api_address) })
     }
 
     pub async fn key(&self) -> String {
@@ -39,6 +42,30 @@ impl Settings {
         let key = server_key::rotate(db, ca).await?;
         *self.key.write().await = key.clone();
         Ok(key)
+    }
+
+    pub async fn api_address(&self) -> String {
+        self.api_address.read().await.clone()
+    }
+
+    pub async fn set_api_address(&self, db: &PgPool, url: &str) -> anyhow::Result<()> {
+        let mut current = self.api_address.write().await;
+        sqlx::query("UPDATE server_ca SET api_address = $1").bind(url).execute(db).await?;
+        *current = url.to_owned();
+        Ok(())
+    }
+
+    /// Records `url` only while no API Address is set, so a later visit never overrides an Admin's correction.
+    pub async fn learn_api_address(&self, db: &PgPool, url: &str) -> anyhow::Result<()> {
+        if !self.api_address.read().await.is_empty() {
+            return Ok(());
+        }
+        let mut current = self.api_address.write().await;
+        if current.is_empty() {
+            sqlx::query("UPDATE server_ca SET api_address = $1").bind(url).execute(db).await?;
+            *current = url.to_owned();
+        }
+        Ok(())
     }
 
     pub async fn set_address(&self, db: &PgPool, address: &str) -> anyhow::Result<()> {

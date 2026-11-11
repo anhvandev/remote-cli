@@ -47,6 +47,34 @@ export default async function SettingsPage() {
           </p>
         </div>
       </section>
+
+      <section className={card} aria-label="API Address">
+        <div className={cardHead}>
+          <h3 className={title}>API Address</h3>
+        </div>
+        <div className="grid gap-3 p-5 text-sm">
+          <Form action={act.setApiAddress} className="grid gap-2">
+            <Input
+              name="address"
+              aria-label="API Address"
+              defaultValue={settings.api_address}
+              placeholder="https://rcli.example.com"
+              required
+              className="h-8"
+            />
+            <div>
+              <Button size="sm" variant="secondary">
+                Lưu API Address
+              </Button>
+            </div>
+          </Form>
+          <p className="text-muted-foreground">
+            Địa chỉ https:// công khai của Dashboard, nơi Controller gọi tới Server. Server tự ghi lại lần đầu Admin mở
+            Dashboard qua https:// (không tính http://, localhost hay IP nội bộ). Sửa ở đây nếu nó sai hoặc Dashboard
+            đổi địa chỉ: mọi Agent nhận địa chỉ mới ở lần kết nối sau.
+          </p>
+        </div>
+      </section>
     </div>
   );
 }

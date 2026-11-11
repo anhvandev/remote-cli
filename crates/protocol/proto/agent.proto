@@ -57,7 +57,14 @@ message ServerMessage {
     IdentityUpdated identity_updated = 20;
     // An Admin changed the Device ID or set a new Device Password from the Dashboard: the Device must apply it.
     IdentityUpdate identity_change = 22;
+    // Sent at the start of every session, so an Admin's correction reaches every Device on its next connection.
+    ApiAddress api_address = 30;
   }
+}
+
+// The API Address (the Dashboard's public https:// URL Controllers call); empty until the Server has learned it.
+message ApiAddress {
+  string url = 1;
 }
 
 // Sent on a connection without a client certificate. The Server checks the Server Key's
@@ -78,6 +85,8 @@ message RegisterResponse {
   string ca_pem = 4;
   // The Device Password generated at registration; the Device keeps it in its Secret Store, the Server only its hash.
   string device_password = 5;
+  // The API Address; empty until the Server has learned it.
+  string api_address = 6;
 }
 
 // Sent by a registered Agent so the Server can detect half-open connections.

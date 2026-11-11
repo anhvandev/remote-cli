@@ -199,6 +199,7 @@ impl Prompts {
 /// What the local callers see of the running Agent: `rcli agent …`, the GUI and scripts.
 pub struct Status {
     device_id: RwLock<String>,
+    api_address: RwLock<String>,
     /// The Server the Agent connects to; a change reconnects it without a restart.
     server_access: watch::Sender<ServerAccess>,
     connected: AtomicBool,
@@ -228,6 +229,7 @@ impl Status {
         let (disconnects, disconnects_rx) = mpsc::unbounded_channel();
         Self {
             device_id: RwLock::new(device_id.into()),
+            api_address: RwLock::default(),
             server_access: watch::channel(server_access).0,
             connected: AtomicBool::new(false),
             secrets,
@@ -283,6 +285,15 @@ impl Status {
 
     pub fn server_access(&self) -> ServerAccess {
         self.server_access.borrow().clone()
+    }
+
+    /// The API Address the Server sent on the current connection; empty before that, or while it has none.
+    pub fn api_address(&self) -> String {
+        self.api_address.read().unwrap().clone()
+    }
+
+    pub fn set_api_address(&self, url: &str) {
+        *self.api_address.write().unwrap() = url.to_owned();
     }
 
     pub fn subscribe(&self) -> watch::Receiver<ServerAccess> {
@@ -359,6 +370,7 @@ impl Status {
         let mut info = json!({
             "device_id": self.device_id(),
             "server": self.server_access.borrow().addr,
+            "api_address": self.api_address(),
             "connected": self.connected.load(Ordering::Relaxed),
             "controllers": self.controllers.list(),
         });

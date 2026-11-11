@@ -104,7 +104,8 @@ impl TestSystem {
             ice_urls: turn.iter().map(|t| format!("turn:{}?transport=udp", t.addr)).collect(),
             turn_secret: turn.as_ref().map(|_| TURN_SECRET.into()),
             update_public_key: Some(update_public_key),
-            trusted_proxies: Vec::new(),
+            // The Dashboard calls the Server from this host, as a trusted proxy (`ApiClient::via_proxy`).
+            trusted_proxies: vec![std::net::Ipv4Addr::LOCALHOST.into()],
         };
         let server = rcli_server::start(config.clone(), clock.clone()).await.expect("start server");
         let mut sys = Self {
@@ -588,6 +589,16 @@ impl ApiClient {
         Self::new(self.base.clone(), token)
     }
 
+    /// This client's requests as the Dashboard forwards them from behind a reverse proxy: they arrived over `proto`
+    /// at `host`. They count as forwarded only from a trusted proxy (the test Server trusts `127.0.0.1`).
+    pub fn via_proxy(&self, proto: &str, host: &str) -> Self {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-forwarded-proto", proto.parse().unwrap());
+        headers.insert("x-forwarded-host", host.parse().unwrap());
+        let http = reqwest::Client::builder().default_headers(headers).build().unwrap();
+        Self { base: self.base.clone(), token: self.token.clone(), http }
+    }
+
     pub async fn get(&self, path: &str) -> (StatusCode, Value) {
         self.send(self.http.get(format!("{}{path}", self.base))).await
     }
@@ -606,6 +617,10 @@ impl ApiClient {
 
     pub async fn patch_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
         self.send(self.http.patch(format!("{}{path}", self.base)).json(body)).await
+    }
+
+    pub async fn put_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
+        self.send(self.http.put(format!("{}{path}", self.base)).json(body)).await
     }
 
     pub async fn put_bytes(&self, path: &str, body: Vec<u8>) -> (StatusCode, Value) {

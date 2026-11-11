@@ -27,7 +27,7 @@ nhớ mật khẩu (OS keychain: Keychain trên macOS, Credential Manager trên 
 `0600` khi không có keychain hoặc khi dùng `--config-dir`), nên các lệnh sau chỉ cần Device ID.
 `rcli forget <Device ID>` xoá mật khẩu đã nhớ. `RCLI_SERVER`/`RCLI_TOKEN` không còn dùng.
 
-Lệnh quản trị Server (`user`, `rollout`, `audit`, `server-key`, `server-address`, đổi tên/xoá Device, `lock force-release`)
+Lệnh quản trị Server (`user`, `rollout`, `audit`, `server-key`, `server-address`, `api-address`, đổi tên/xoá Device, `lock force-release`)
 cần một phiên User: `rcli login <tên>` (mật khẩu Dashboard + mã TOTP), `rcli logout` để xoá.
 Operator đăng nhập được nhưng các lệnh đó trả `admin_required`. Các lệnh trên Device vẫn dùng `rcli connect`.
 
@@ -190,6 +190,8 @@ rcli server-key show                          # Server Key (rk_<CA fingerprint>_
 rcli server-key rotate                        # đổi secret: Device đã đăng ký vẫn Online, bản cài mới cần key mới
 rcli server-address show                      # Server Address Agent dùng
 rcli server-address set vps.example.com       # cấp lại chứng chỉ TLS cho tên mới
+rcli api-address show                         # API Address (rỗng tới khi Admin mở Dashboard qua https://)
+rcli api-address set https://rcli.example.com # sửa API Address; Agent nhận ở lần kết nối sau
 rcli device rename demo-pc may-ke-toan
 rcli device revoke <id>                       # Agent bị cắt và không kết nối lại được
 rcli device merge <id-cũ> --into <id-mới>     # gộp lịch sử sau khi cài lại máy

@@ -54,6 +54,30 @@ test("an admin changes the Server Address and it persists", async ({ page }) => 
   );
 });
 
+test("an admin reads the API Address and corrects it", async ({ page }) => {
+  await openSettings(page);
+  const card = page.getByRole("region", { name: "API Address" });
+  const input = card.getByRole("textbox", { name: "API Address" });
+  // The devstack Dashboard is plain http on 127.0.0.1, which never teaches the Server its API Address.
+  await expect(input).toHaveValue("");
+
+  await input.fill("https://rcli.example.com");
+  await card.getByRole("button", { name: "Lưu API Address" }).click();
+  await expect(card.getByRole("status")).toContainText("Đã đặt API Address: https://rcli.example.com");
+
+  await page.reload();
+  await expect(page.getByRole("region", { name: "API Address" }).getByRole("textbox", { name: "API Address" })).toHaveValue(
+    "https://rcli.example.com",
+  );
+  expect((await adminApi("/api/v1/server-settings")).api_address).toBe("https://rcli.example.com");
+
+  // Only an https:// origin is accepted.
+  await page.getByRole("region", { name: "API Address" }).getByRole("textbox", { name: "API Address" }).fill("http://rcli.example.com");
+  await page.getByRole("region", { name: "API Address" }).getByRole("button", { name: "Lưu API Address" }).click();
+  await expect(page.getByRole("region", { name: "API Address" }).getByRole("alert")).toContainText("https://");
+  expect((await adminApi("/api/v1/server-settings")).api_address).toBe("https://rcli.example.com");
+});
+
 test("operators cannot see the Server Settings page", async ({ page }) => {
   await signIn(page, await newUser("operator"));
   const nav = page.getByRole("navigation");

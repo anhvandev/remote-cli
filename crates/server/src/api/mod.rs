@@ -159,6 +159,30 @@ fn client_ip(peer: Option<std::net::IpAddr>, forwarded: Option<&str>, trusted: &
     }
 }
 
+/// The API Address a request reveals: the `https://` origin a trusted proxy (the Dashboard) says it arrived at.
+/// `http`, localhost and private, loopback or link-local IPs never count, so a test visit on an internal port
+/// cannot set it.
+fn api_address_of(
+    peer: Option<std::net::IpAddr>,
+    proto: Option<&str>,
+    host: Option<&str>,
+    trusted: &[std::net::IpAddr],
+) -> Option<String> {
+    use std::net::IpAddr;
+    if !trusted.contains(&peer?) || !proto?.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let authority: axum::http::uri::Authority = host?.parse().ok()?;
+    let name = authority.host().trim_start_matches('[').trim_end_matches(']');
+    let internal = match name.parse::<IpAddr>().map(|ip| ip.to_canonical()) {
+        Ok(IpAddr::V4(ip)) => ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified(),
+        Ok(IpAddr::V6(ip)) => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local() || ip.is_unspecified(),
+        Err(_) => name.eq_ignore_ascii_case("localhost") || name.to_ascii_lowercase().ends_with(".localhost"),
+    };
+    // A `user@host` authority is not an address anyone serves the Dashboard at.
+    (!internal && !authority.as_str().contains('@')).then(|| format!("https://{authority}"))
+}
+
 /// Extractor: the request is either a User session (bearer token) or a password connection
 /// (`X-Rcli-Server-Key`, `X-Rcli-Device`, `X-Rcli-Device-Password`, `X-Rcli-Controller`).
 pub struct Caller(pub crate::auth::User);
@@ -169,11 +193,16 @@ impl FromRequestParts<State> for Caller {
     async fn from_request_parts(parts: &mut Parts, state: &State) -> Result<Self, Self::Rejection> {
         let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok());
         let token = header("authorization").and_then(|v| v.strip_prefix("Bearer "));
+        let peer = parts.extensions.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip());
         if let Some(t) = token {
-            return crate::auth::authenticate(state, t)
+            let user = crate::auth::authenticate(state, t)
                 .await?
-                .map(Caller)
-                .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"));
+                .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"))?;
+            let (proto, host) = (header("x-forwarded-proto"), header("x-forwarded-host"));
+            if let Some(url) = user.is_admin().then(|| api_address_of(peer, proto, host, &state.config.trusted_proxies)).flatten() {
+                state.settings.learn_api_address(&state.db, &url).await?;
+            }
+            return Ok(Caller(user));
         }
         let (Some(server_key), Some(device), Some(password)) =
             (header("x-rcli-server-key"), header("x-rcli-device"), header("x-rcli-device-password"))
@@ -181,7 +210,6 @@ impl FromRequestParts<State> for Caller {
             return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"));
         };
         let controller = header("x-rcli-controller").unwrap_or("unknown");
-        let peer = parts.extensions.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip());
         let forwarded = parts.headers.get_all("x-forwarded-for").iter().next_back().and_then(|v| v.to_str().ok());
         let ip = client_ip(peer, forwarded, &state.config.trusted_proxies);
         crate::auth::authenticate_controller(state, server_key, device, password, controller, &ip)
