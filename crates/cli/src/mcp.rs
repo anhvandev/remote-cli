@@ -37,6 +37,8 @@ struct Mcp {
 const INSTRUCTIONS: &str = "Drive remote Devices. Take the Control Lock (lock_acquire) before act/batch; \
 observe needs no lock. Coordinates are in the pixel space of the returned images. Observe with marks=true to \
 get numbered Marks, then target them with {\"mark\": N, \"observation\": ID} or {\"text\": \"OK\"}. \
+At a lock or login screen, type the OS password the user gave you yourself as {\"type\":\"type\",\"text\":\"..\",\
+\"secret\":true} then press enter: rcli does not store it and cannot unlock the Device for you. \
 Release the lock when done.";
 
 const ACTION: &str = "An Action: {\"type\":\"move|click|double_click|right_click\", TARGET} | \

@@ -88,6 +88,17 @@ async fn an_agent_lists_devices_takes_the_lock_acts_and_observes_with_marks() {
 }
 
 #[tokio::test]
+async fn the_instructions_say_to_type_the_os_password_as_a_secret_type_action() {
+    let sys = TestSystem::start().await;
+    let mcp = sys.mcp_as(&sys.admin_token).await;
+    let instructions = mcp.peer_info().and_then(|i| i.instructions.clone()).unwrap_or_default();
+    assert!(
+        instructions.contains("lock or login screen") && instructions.contains("\"secret\":true") && instructions.contains("does not store"),
+        "{instructions}"
+    );
+}
+
+#[tokio::test]
 async fn a_held_control_lock_is_a_readable_tool_error() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;

@@ -358,8 +358,8 @@ mod dpapi_tests {
         assert!(store.get("device_password").unwrap().is_none());
         store.set("device_password", "hunter2xyz").unwrap();
         assert_eq!(store.get("device_password").unwrap().as_deref(), Some("hunter2xyz"));
-        store.set("unlock_password", "s3cret pässword").unwrap();
-        assert_eq!(store.get("unlock_password").unwrap().as_deref(), Some("s3cret pässword"));
+        store.set("second_secret", "s3cret pässword").unwrap();
+        assert_eq!(store.get("second_secret").unwrap().as_deref(), Some("s3cret pässword"));
         let raw = std::fs::read(dir.join("device_password")).unwrap();
         assert!(!raw.windows(10).any(|w| w == b"hunter2xyz"), "the password is not stored in plaintext");
         // A blob moved to another name does not decrypt: the name is the DPAPI entropy.

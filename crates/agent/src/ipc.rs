@@ -24,8 +24,6 @@ use crate::{secret_store::SecretStore, settings, ServerAccess};
 
 /// The Device Password's name in the Secret Store.
 pub const DEVICE_PASSWORD: &str = "device_password";
-/// The unlock password's name in the Secret Store.
-pub const UNLOCK_PASSWORD: &str = "unlock_password";
 
 /// How long a change may wait for the Server's answer.
 const CHANGE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -75,13 +73,6 @@ pub enum Request {
         #[serde(default)]
         password: String,
     },
-    #[serde(rename = "unlock-password.set")]
-    UnlockPasswordSet {
-        #[serde(default)]
-        password: String,
-    },
-    #[serde(rename = "unlock-password.clear")]
-    UnlockPasswordClear,
     #[serde(rename = "id.set")]
     IdSet {
         #[serde(default)]
@@ -262,7 +253,7 @@ impl Status {
         self.settings.clone()
     }
 
-    /// The Secret Store, for the Server's `unlock` (the password is read here, never sent to the Server).
+    /// The Secret Store.
     pub fn secrets(&self) -> Arc<dyn SecretStore> {
         self.secrets.clone()
     }
@@ -328,11 +319,6 @@ impl Status {
         self.secrets.set(DEVICE_PASSWORD, password)
     }
 
-    /// The unlock password set at this Device; None = none set.
-    pub fn unlock_password(&self) -> anyhow::Result<Option<String>> {
-        self.secrets.get(UNLOCK_PASSWORD)
-    }
-
     pub fn set_device_id(&self, device_id: &str) {
         *self.device_id.write().unwrap() = device_id.to_owned();
         let path = self.credentials.lock().unwrap().clone();
@@ -377,12 +363,10 @@ impl Status {
             "controllers": self.controllers.list(),
         });
         // Everything outside the ID, status and controllers is root-only: the Device Settings and the Server Key (the
-        // GUI reveals them elevated). The unlock password is only set at the Device, never read back: just whether
-        // one is set.
+        // GUI reveals them elevated).
         if is_root {
             info["settings"] = json!(self.settings.get());
             info["server_key"] = self.server_access.borrow().server_key.clone().into();
-            info["unlock_password_set"] = matches!(self.unlock_password(), Ok(Some(_))).into();
         }
         info
     }
@@ -583,19 +567,6 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
             Ok(None) => json!({ "error": "no Device Password is stored" }),
             Err(e) => json!({ "error": format!("{e:#}") }),
         },
-        Request::UnlockPasswordSet { password } => {
-            if password.is_empty() {
-                return json!({ "error": "the unlock password must not be empty" });
-            }
-            match status.secrets.set(UNLOCK_PASSWORD, &password) {
-                Ok(()) => json!({ "message": "the unlock password was set" }),
-                Err(e) => json!({ "error": format!("cannot store the unlock password: {e:#}") }),
-            }
-        }
-        Request::UnlockPasswordClear => match status.secrets.remove(UNLOCK_PASSWORD) {
-            Ok(()) => json!({ "message": "the unlock password was cleared" }),
-            Err(e) => json!({ "error": format!("cannot clear the unlock password: {e:#}") }),
-        },
         Request::PasswordSet { password } => {
             if password.chars().count() < MIN_LENGTH {
                 return json!({ "error": format!("the Device Password must be at least {MIN_LENGTH} characters") });
@@ -747,7 +718,6 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rcli-ipc-prompts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = FileSecretStore::new(&dir);
-        store.set(UNLOCK_PASSWORD, "at-the-lock-screen").unwrap();
         let status = Status::new(
             "123456789",
             ServerAccess { addr: "localhost:1".into(), server_key: "rk_deadbeef_secret".into() },
@@ -782,18 +752,12 @@ mod tests {
         assert!(accept["message"].as_str().is_some(), "{accept}");
         assert!(asker.join().unwrap());
 
-        // The Device Settings, the Server Key and whether an unlock password is set appear in `info` only for root.
+        // The Device Settings and the Server Key appear in `info` only for root.
         let as_user = block.block_on(dispatch(&status, &json!({ "command": "info" }), false));
-        assert!(
-            as_user.get("settings").is_none() && as_user.get("server_key").is_none() && as_user.get("unlock_password_set").is_none(),
-            "{as_user}"
-        );
+        assert!(as_user.get("settings").is_none() && as_user.get("server_key").is_none(), "{as_user}");
         let as_root = block.block_on(dispatch(&status, &json!({ "command": "info" }), true));
         assert!(as_root.get("settings").is_some(), "{as_root}");
         assert_eq!(as_root["server_key"], "rk_deadbeef_secret");
-        // The unlock password itself is never read back, not even by root.
-        assert_eq!(as_root["unlock_password_set"], true);
-        assert!(!as_root.to_string().contains("at-the-lock-screen"), "{as_root}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
