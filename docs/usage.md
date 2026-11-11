@@ -10,7 +10,10 @@ Từ ngữ (Device, Action, Observation, Mark, Control Lock, Wake Relay…) theo
 
 > Agent hiện chạy FakePlatform: mọi lệnh bên dưới chạy được, nhưng màn hình, input và shell là giả (shell chỉ hiểu `echo`, `whoami`, `sleep`).
 
-## Cài CLI
+## Cài rcli
+
+Mỗi máy chỉ cài một lần, bằng một lệnh: máy đó thành một Device và điều khiển được các Device khác ngay (ADR 0006).
+Trang **Hướng dẫn kết nối** của Dashboard hiện sẵn các lệnh cài với Server Address và Server Key điền sẵn.
 
 > **Build trên macOS**: build dev và `cargo test` không cần gì thêm, Live View mã hoá bằng openh264. Bản release
 > (`packaging/macos/build-dmg.sh`) bật feature `hwcodec`: Live View mã hoá H.264 bằng VideoToolbox qua `hwcodec` của
@@ -31,14 +34,25 @@ Từ ngữ (Device, Action, Observation, Mark, Control Lock, Wake Relay…) theo
 ```bash
 cargo build --release -p rcli
 # binary: target/release/rcli (Controller và Agent trong cùng một binary)
-rcli setup --server http://localhost:8080 --key rk_xxxxxxxx_yyyyyyyy   # một lần
-rcli connect 123456789                                                  # hỏi Device Password một lần
+sudo rcli install --server vps.example.com:8443 --key rk_xxxxxxxx_yyyyyyyy   # một lần cho mỗi máy
+rcli connect 123456789                                                        # hỏi Device Password một lần
 ```
 
-`rcli setup` lưu Server Address, Server Key và update key đã pin vào thư mục cấu hình của bạn (thiếu `--server` hoặc
-`--key` thì lệnh hỏi, Server Key nhập không hiện ra màn hình). Server Address phải là
-`https://` (TLS ở reverse proxy); `http://` chỉ được nhận khi trỏ tới chính máy này (localhost, cho test hoặc Server
-chạy cùng máy) — không có cờ nào cho phép http tới máy khác. `rcli connect` kiểm tra Device ID + Device Password rồi
+`rcli install` (root/Administrator) cài Agent, đăng ký Device, in Device ID và Device Password, rồi ghi cấu hình
+Controller dùng chung cho cả máy (`/etc/rcli/controller.json`, trên Windows `%ProgramData%\rcli\controller.json`):
+Server Address, Server Key, update key đã pin và API Address. Mọi user trên máy đọc được file này nhưng không sửa được,
+nên ai cũng chạy được `rcli connect` và `rcli mcp` mà không cài lại. Server Address là `host:port` của cổng Agent
+(8443). Không cần nhập URL nào khác: Server gửi API Address (URL của Dashboard) lúc đăng ký và mỗi lần Agent kết nối.
+Server tự ghi lại API Address lần đầu một Admin mở Dashboard qua `https://`. Trước đó cài vẫn thành công, nhưng các
+lệnh Controller báo `the Server has no API Address yet`. Server Key sai thì lệnh cài thất bại ngay và không để lại gì.
+
+API Address phải là `https://`; `http://` chỉ được nhận khi trỏ tới chính máy này (localhost, cho test hoặc Server
+chạy cùng máy) — không có cờ nào cho phép http tới máy khác. Chạy thử trên một máy, Dashboard ở `http://localhost:3080`:
+Admin đặt API Address ở Server Settings của Dashboard, hoặc
+`rcli --server http://localhost:3080 api-address set http://localhost:3080` (sau `rcli --server http://localhost:3080 login <tên>`).
+
+`rcli uninstall` (root/Administrator) gỡ Device khỏi Server, gỡ Agent và cấu hình dùng chung; Device Password đã nhớ
+của từng user được giữ lại cho lần cài sau. `rcli connect` kiểm tra Device ID + Device Password rồi
 nhớ mật khẩu (OS keychain: Keychain trên macOS, Credential Manager trên Windows, Secret Service trên Linux; file
 `0600` khi không có keychain hoặc khi dùng `--config-dir`), nên các lệnh sau chỉ cần Device ID.
 `rcli forget <Device ID>` xoá mật khẩu đã nhớ. `RCLI_SERVER`/`RCLI_TOKEN` không còn dùng.
@@ -56,7 +70,7 @@ Agent chạy như một Windows service tên `rcli-agent` (tài khoản LocalSys
 # 2. Một dòng trong PowerShell bình thường (script tự xin quyền qua UAC):
 iwr https://<server>/install.ps1 -OutFile install.ps1; .\install.ps1 -Key <Server Key>
 # 3. Trong PowerShell "Run as administrator", với binary đã tải:
-rcli agent install --server <server>:<port> --key <Server Key>
+rcli install --server <server>:8443 --key <Server Key>
 ```
 
 Cài xong in ra Device ID và Device Password. Binary ở `%ProgramFiles%\rcli\rcli.exe`; dữ liệu Device (credentials, Device Settings, Secret Store) ở `%ProgramData%\rcli`, chỉ SYSTEM và Administrators đọc được. Server Key nằm trong `%ProgramData%\rcli\service.json`, **không** nằm trên command line của service (`sc qc rcli-agent` không thấy nó). Secret Store dùng DPAPI machine scope (`CryptProtectData` + `CRYPTPROTECT_LOCAL_MACHINE`), nên copy ổ đĩa hay bản backup sang máy khác không đọc được Device Password.
@@ -79,7 +93,7 @@ Rồi từ Controller: `rcli lock acquire <Device ID>` và `rcli act <Device ID>
 **Gỡ cài đặt** (PowerShell "Run as administrator"):
 
 ```powershell
-rcli agent uninstall
+rcli uninstall
 ```
 
 Lệnh này gỡ Device khỏi Server (nếu Server không tới được thì chỉ cảnh báo, phần cài đặt cục bộ vẫn được xoá), dừng và xoá service, xoá `%ProgramFiles%\rcli` và `%ProgramData%\rcli` (kể cả Secret Store) — giống macOS/Linux. Log của service ở `%ProgramData%\rcli\agent.log`.
@@ -230,12 +244,11 @@ Mở `http://<server>:3080`, đăng nhập bằng tên + mật khẩu + mã TOTP
 ## Dùng với Claude Code (MCP)
 
 ```bash
-rcli setup --server http://localhost:8080 --key rk_xxxxxxxx_yyyyyyyy
-rcli connect 123456789
+rcli connect 123456789                        # trên máy đã `rcli install`
 claude mcp add rcli -- /đường/dẫn/rcli mcp
 ```
 
-`rcli mcp` dùng cùng cấu hình và Device Password đã nhớ, nên không cần biến môi trường.
+`rcli mcp` dùng cấu hình của bản cài và Device Password đã nhớ, nên không cần biến môi trường hay bước thiết lập nào khác.
 
 Tools: `devices`, `device`, `lock_acquire`, `lock_release`, `lock_status`, `observe` (shot / frames / clip / marks), `act`, `batch`, `exec`, `wake`, `power`. Ảnh trả về inline, bảng Mark nằm trong kết quả có cấu trúc. Mỗi AI agent nên dùng một user Dashboard riêng (qua `rcli login`) để audit tách bạch.
 
@@ -244,7 +257,9 @@ Tools: `devices`, `device`, `lock_acquire`, `lock_release`, `lock_status`, `obse
 ## Thử nhanh trên một máy
 
 ```bash
-# 1. Dựng stack theo docs/deploy.md với RCLI_TURN_HOST=localhost, rồi tạo admin `me`.
+# 1. Dựng stack theo docs/deploy.md với RCLI_TURN_HOST=localhost, tạo admin `me`, đặt API Address
+#    http://localhost:3080 (mục Cài rcli), rồi cài máy này:
+sudo rcli install --server localhost:8443 --key <Server Key>
 # 2. Enroll một Agent giả:
 rcli server-key show                              # Server Key (rk_<CA fingerprint>_<secret>)
 rcli agent run --server localhost:8443 --key <server-key> \

@@ -20,7 +20,7 @@ test("a signed-in User sees every block of the Connect guide", async ({ page }) 
   await expect(page.getByRole("region", { name: "Server Address" }).locator("code")).toHaveText("localhost");
 
   // Install commands per OS with the key filled in.
-  const install = page.getByRole("region", { name: "Cài đặt Agent" });
+  const install = page.getByRole("region", { name: "Cài đặt rcli" });
   await expect(install).toContainText("curl -fsSL");
   await expect(install).toContainText(`/install.sh | sudo sh -s -- --key ${key}`);
   await expect(install).toContainText(`install.ps1 -Key ${key}`);
@@ -38,16 +38,19 @@ test("a signed-in User sees every block of the Connect guide", async ({ page }) 
 
   // Headless install.
   await expect(page.getByRole("region", { name: "Cài đặt không giao diện" })).toContainText(
-    `sudo rcli agent install --server localhost --key ${key}`,
+    `sudo rcli install --server localhost --key ${key}`,
   );
 
-  // Controller setup.
-  const controller = page.getByRole("region", { name: "Thiết lập Controller" });
-  await expect(controller).toContainText("rcli setup");
-  await expect(controller).toContainText("rcli connect");
+  // One install makes every machine a Controller too: the guide only adds `rcli connect`, no Controller setup.
+  await expect(page.getByRole("region", { name: "Kết nối Device" })).toContainText("rcli connect <Device ID>");
+  await expect(page.getByRole("region", { name: "Thiết lập Controller" })).toHaveCount(0);
+  await expect(page.getByRole("main")).not.toContainText("Controller API URL");
+  await expect(page.getByRole("main")).not.toContainText("rcli setup");
 
-  // MCP snippet for Claude Code.
-  await expect(page.getByRole("region", { name: "MCP cho Claude Code" })).toContainText("claude mcp add rcli -- rcli mcp");
+  // MCP snippet for Claude Code, needing only `rcli connect` first.
+  const mcp = page.getByRole("region", { name: "MCP cho Claude Code" });
+  await expect(mcp).toContainText("claude mcp add rcli -- rcli mcp");
+  await expect(mcp).toContainText("rcli connect");
 
   // SmartScreen and Gatekeeper for unsigned builds.
   const unsigned = page.getByRole("region", { name: "SmartScreen và Gatekeeper" });

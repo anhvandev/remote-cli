@@ -60,48 +60,44 @@ Lần build đầu mất vài phút (biên dịch Rust và `next build`).
 
 ## 4. Tạo admin đầu tiên
 
-Cần binary `rcli` trên máy của bạn (xem `docs/usage.md`, mục Cài CLI).
+Cần binary `rcli` trên máy của bạn (xem `docs/usage.md`, mục Cài rcli). Máy này chưa cài nên các lệnh dưới đây chỉ
+thẳng URL của Dashboard bằng `--server`:
 
 ```bash
-rcli setup --server https://vps.example.com --key rk_xxxxxxxx_yyyyyyyy   # Server Key (bước 5)
-rcli --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user create me --role admin
-rcli --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user set-password me --password '<mật khẩu Dashboard>'
+rcli --server https://vps.example.com --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user create me --role admin
+rcli --server https://vps.example.com --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user set-password me --password '<mật khẩu Dashboard>'
 #   → in ra totp_secret và otpauth_url: quét otpauth_url bằng app Authenticator
-rcli login me                       # mật khẩu Dashboard + mã TOTP; phiên được lưu vào config
+rcli --server https://vps.example.com login me   # mật khẩu Dashboard + mã TOTP; phiên được lưu vào config
 ```
 
 Từ lúc admin `me` đăng nhập, bootstrap token hết tác dụng. Nó chỉ hoạt động lại nếu mọi admin bị vô hiệu hoá hoặc phiên đã hết hạn (đường cứu hộ).
 
 Mở `https://vps.example.com`, đăng nhập bằng `me` + mật khẩu + mã TOTP. Sai 5 lần liên tiếp thì tài khoản bị khoá 15 phút.
+Lần đầu một Admin mở Dashboard qua `https://`, Server ghi lại URL này làm API Address và gửi nó cho mọi bản cài (xem
+và sửa ở Server Settings hoặc `rcli api-address`).
 
-## 5. Thêm Device (Agent tự đăng ký)
+## 5. Thêm Device
+
+Trên mỗi máy, kể cả máy của bạn, chạy một lệnh cài từ trang **Hướng dẫn kết nối** của Dashboard (Server Address và
+Server Key đã điền sẵn): `curl … | sudo sh` trên Linux/macOS, script PowerShell hoặc `rcli.exe` tải về trên Windows,
+hoặc với binary có sẵn:
 
 ```bash
-rcli server-key show                          # đã `rcli login me` ở bước 4
-#   rk_f90a7c21b8..._3f9c...                                ← Server Key: fingerprint CA + secret
+sudo rcli install --server vps.example.com:8443 --key rk_f90a7c21b8..._3f9c...
+#   Device ID: 123456789
+#   Device Password: abcdEFGH12
 ```
 
-Trên máy cần quản lý:
-
-```bash
-rcli agent run \
-  --server vps.example.com:8443 \
-  --key rk_f90a7c21b8..._3f9c... \
-  --state-dir /var/lib/rcli \
-  --name ten-may
-```
-
-`--socket` (mặc định `/run/rcli/agent.sock`, trên macOS `/var/run/rcli/agent.sock`) là socket IPC nội bộ.
+Máy đó thành một Device và điều khiển được Device khác ngay (`rcli connect <Device ID>`, `rcli mcp`); không có bước
+thiết lập Controller riêng. Server Key lấy ở trang Hướng dẫn kết nối hoặc `rcli server-key show`.
 Trên chính Device đó: `rcli agent info` xem Device ID + trạng thái kết nối (mọi user); `sudo rcli agent password show` xem
-Device Password (chỉ root). Device Password được sinh lúc đăng ký và lưu mã hoá trong `--state-dir`.
+Device Password (chỉ root). Device Password được sinh lúc đăng ký và lưu mã hoá trên Device.
 
 - Agent từ chối kết nối nếu CA của Server không khớp fingerprint trong Server Key (chống giả Server).
 - Agent tự đăng ký, nhận chứng chỉ mTLS, **Device ID 9 chữ số** và public key cập nhật (pin lại). Không cần tạo mã enroll.
-- Sau lần đầu, credential nằm trong `--state-dir`; các lần chạy sau chỉ cần `--server` và `--key`.
 - Cài lại Agent luôn tạo Device mới. Muốn giữ lịch sử: `rcli device merge <cũ> --into <mới>` (dùng Device ID nếu hai Device trùng tên).
 - Muốn Agent nhận bản cập nhật tự động (mục 7): đặt `RCLI_UPDATE_PUBLIC_KEY=<public key hex>` cho Server
-
-> Hiện `rcli agent run` dùng FakePlatform: Device hiện Online, có inventory/metrics giả, nhận Action nhưng không điều khiển Device thật.
+- `rcli uninstall` gỡ Device khỏi Server, gỡ Agent và cấu hình dùng chung của máy.
 
 ## 6. Wake qua Wake Relay
 
@@ -158,7 +154,7 @@ người dùng. Nên cài `tesseract-ocr` (OCR); `systemd-creds` có sẵn trong
 ```bash
 # Trên máy Linux, với binary rcli đã build/tải về:
 sudo install -m 755 ./rcli /usr/local/bin/rcli
-sudo rcli agent install --server vps.example.com:8443 --key rk_<fingerprint>_<secret>   # thêm --allow-root nếu muốn
+sudo rcli install --server vps.example.com:8443 --key rk_<fingerprint>_<secret>   # thêm --allow-root nếu muốn
 ```
 
 Kết quả mong đợi:
@@ -251,7 +247,7 @@ packaging/linux/build-deb.sh     # → packaging/linux/out/rcli_0.1.0_amd64.deb
 packaging/linux/build-rpm.sh     # → packaging/linux/out/rcli-0.1.0-1.x86_64.rpm
 ```
 
-Cài package (package chỉ đặt `/usr/bin/rcli`; hook `postinst` chạy đúng một lệnh `rcli agent install`):
+Cài package (package chỉ đặt `/usr/bin/rcli`; hook `postinst` chạy đúng một lệnh `rcli install`):
 
 ```bash
 sudo install -m 600 /dev/null /etc/rcli/agent.conf
@@ -269,11 +265,11 @@ systemctl status rcli-agent.service --no-pager
 Nếu chưa có `/etc/rcli/agent.conf`, package vẫn cài nhưng in hướng dẫn; sau đó chạy tay:
 
 ```bash
-sudo rcli agent install --server "$(sed -n 's/^RCLI_SERVER=//p' /etc/rcli/agent.conf)" \
+sudo rcli install --server "$(sed -n 's/^RCLI_SERVER=//p' /etc/rcli/agent.conf)" \
      --key "$(sed -n 's/^RCLI_SERVER_KEY=//p' /etc/rcli/agent.conf)"
 ```
 
-Gỡ package: hook `prerm` gọi `rcli agent uninstall` trước, nên Device bị xoá khỏi Server và dữ liệu cục bộ biến mất:
+Gỡ package: hook `prerm` gọi `rcli uninstall` trước, nên Device bị xoá khỏi Server và dữ liệu cục bộ biến mất:
 
 ```bash
 sudo apt remove rcli        # hoặc sudo dnf remove rcli
@@ -289,7 +285,7 @@ sudo apt purge rcli         # Debian: xoá luôn /etc/rcli/agent.conf
 
 ### 10.6. Headless server
 
-Cùng một lệnh `sudo rcli agent install --server … --key …`; không có DISPLAY cũng không sao:
+Cùng một lệnh `sudo rcli install --server … --key …`; không có DISPLAY cũng không sao:
 
 - service vẫn chạy và tự kết nối lại sau reboot;
 - `rcli metrics`, `rcli exec`, `rcli shell`, `rcli power` hoạt động;

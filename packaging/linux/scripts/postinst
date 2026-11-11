@@ -1,5 +1,5 @@
 #!/bin/sh
-# Package hook: install the Agent through the same `rcli agent install` path the curl one-liner uses. The
+# Package hook: install the Agent through the same `rcli install` path the curl one-liner uses. The
 # Server Address and Server Key come from /etc/rcli/agent.conf (mode 0600, root), never from the package itself.
 set -e
 
@@ -20,7 +20,7 @@ rcli: installed, but this Device is not registered yet.
 
       then rerun the install step:
 
-        sudo /usr/bin/rcli agent install --server "$(sed -n 's/^RCLI_SERVER=//p' /etc/rcli/agent.conf)" \
+        sudo /usr/bin/rcli install --server "$(sed -n 's/^RCLI_SERVER=//p' /etc/rcli/agent.conf)" \
              --key "$(sed -n 's/^RCLI_SERVER_KEY=//p' /etc/rcli/agent.conf)"
 MSG
     exit 0
@@ -28,7 +28,7 @@ fi
 
 # The Server Key goes through the environment, so it is not an argument during the install either.
 export RCLI_SERVER_KEY
-set -- agent install --server "$RCLI_SERVER"
+set -- install --server "$RCLI_SERVER"
 if [ -n "${RCLI_TERMINAL_USER:-}" ]; then
     set -- "$@" --terminal-user "$RCLI_TERMINAL_USER"
 fi
