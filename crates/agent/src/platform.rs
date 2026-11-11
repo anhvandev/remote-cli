@@ -304,7 +304,7 @@ impl Platform for FakePlatform {
         let pixel = [s.session as u8 * 60 + flicker, (s.inputs.len() * 40) as u8, (frame_no % 6 * 40) as u8, 255];
         let mut rgba = pixel.repeat((d.width * d.height) as usize);
         if s.noise {
-            for (i, p) in rgba.chunks_exact_mut(4).enumerate() {
+            for (i, p) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let (x, y) = (i as u64 % d.width as u64 / 8, i as u64 / d.width as u64 / 8);
                 // Hash of (capture, 8x8 block): a fresh random colour per block and capture.
                 let h = (s.captures << 40 ^ y << 20 ^ x).wrapping_mul(0x9E37_79B9_7F4A_7C15);
