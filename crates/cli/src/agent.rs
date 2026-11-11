@@ -422,7 +422,8 @@ pub enum RootCommand {
     Always,
     /// Allow root to `who` for the current session only, without changing the setting.
     Grant {
-        /// The Controller as shown at the Device, e.g. `alice` or `dev-laptop (10.0.0.5)`.
+        /// The Controller as shown at the Device, e.g. `alice (Dashboard)` (or just `alice`) or, for a password
+        /// connection, its full name `dev-laptop (10.0.0.5)`.
         who: String,
     },
 }

@@ -146,6 +146,27 @@ async fn a_session_grant_lasts_until_the_session_ends() {
     restarted.stop();
 }
 
+/// A password connection names its own machine, so it cannot pick a name that borrows a Dashboard User's grant.
+#[tokio::test]
+async fn a_password_connection_cannot_borrow_a_grant_by_its_machine_name() {
+    let sys = TestSystem::start().await;
+    let (agent, dir) = online(&sys, "grant-spoof", FakePlatform::new("lab-pc")).await;
+    let dev = agent.device_id().to_owned();
+    let password = agent.device_password().unwrap();
+    let socket = dir.join("agent.sock");
+
+    // The person grants alice by either name the GUI and docs use; a machine named like her gets nothing from it.
+    for host in ["alice", "alice (Dashboard)"] {
+        sys.agent_rcli(&socket, &["agent", "root", "grant", host]).await.unwrap();
+        let device = sys.device_client(&dev, &password).with_controller(host);
+        let (status, out) =
+            device.post_json(&format!("/api/v1/devices/{dev}/exec"), &json!({ "command": "whoami", "as": "root" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{host}: {out}");
+    }
+    assert_eq!(agent.platform.root_prompts().len(), 2, "asked instead of using alice's grant");
+    assert!(agent.platform.root_prompts().iter().all(|(who, _)| !who.contains("(Dashboard)")), "{:?}", agent.platform.root_prompts());
+}
+
 /// A disconnected Controller loses its root grant: reconnecting with the password does not bring root back.
 #[tokio::test]
 async fn a_session_grant_ends_when_its_controller_is_disconnected() {

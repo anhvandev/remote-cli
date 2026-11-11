@@ -670,25 +670,32 @@ fn names(name: &str, who: &str) -> bool {
     name == who || name.strip_prefix(who).is_some_and(|rest| rest.starts_with(" ("))
 }
 
+/// Whether a root grant given as `who` covers the Controller display name `controller`. Unlike `names`, a bare name
+/// covers only the Dashboard User of that name (the Server authenticated it): a password connection picks its own
+/// machine name, so only its full display name `<host> (<IP>)` covers it.
+fn granted(controller: &str, who: &str) -> bool {
+    controller == who || controller == format!("{who} (Dashboard)")
+}
+
 /// Root granted to the current session: one Controller, for as long as the Agent's connection to the Server lasts
 /// or until the person at the Device disconnects that Controller. The person at the Device (or its GUI) gives it.
 #[derive(Default)]
 pub struct Grant(Mutex<Option<String>>);
 
 impl Grant {
-    /// Grants root to the Controller the person calls `who` (see `names`) for this session only.
+    /// Grants root to the Controller the person calls `who` (see `granted`) for this session only.
     pub fn grant(&self, who: &str) {
         *self.0.lock().unwrap() = Some(who.to_owned());
     }
 
     fn holds(&self, controller: &str) -> bool {
-        self.0.lock().unwrap().as_deref().is_some_and(|who| names(controller, who))
+        self.0.lock().unwrap().as_deref().is_some_and(|who| granted(controller, who))
     }
 
     /// Ends the grant if `controller` holds it: a disconnected Controller does not keep root when it reconnects.
     pub fn revoke(&self, controller: &str) {
         let mut grant = self.0.lock().unwrap();
-        if grant.as_deref().is_some_and(|who| names(controller, who)) {
+        if grant.as_deref().is_some_and(|who| granted(controller, who)) {
             *grant = None;
         }
     }

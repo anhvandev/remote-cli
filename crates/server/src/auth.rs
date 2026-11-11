@@ -66,9 +66,10 @@ fn dummy_password_check(password: &str) {
 }
 
 /// The principal a password connection authenticates as: `<controller hostname> (<IP>)`, with a stable id per
-/// (name, IP) so the Control Lock holder survives reconnects.
+/// (name, IP) so the Control Lock holder survives reconnects. The hostname is the client's word, so its brackets are
+/// dropped: it cannot pass for another display name such as `alice (Dashboard)`.
 fn controller_user(controller: &str, ip: &str) -> User {
-    let name = format!("{} ({ip})", controller.trim());
+    let name = format!("{} ({ip})", controller.replace(['(', ')'], "").trim());
     let digest = Sha256::digest(name.as_bytes());
     let id_bytes = <[u8; 16]>::try_from(&digest[..16]).expect("16 bytes");
     User { id: Uuid::from_bytes(id_bytes), name, role: "controller".into(), disabled_at: None, device_scope: None }
