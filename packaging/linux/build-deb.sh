@@ -18,7 +18,9 @@ trap 'rm -rf "$STAGE"' EXIT
 
 echo "building rcli $VERSION for $ARCH"
 # The GUI window answers the root and accept prompts; it loads the display libraries only when it opens.
-cargo build --release --manifest-path "$ROOT/Cargo.toml" -p rcli --features gui
+# hwcodec: Live View on the GPU through VA-API (libva is loaded at run time, openh264 without it); needs VCPKG_ROOT
+# with RustDesk's FFmpeg, see docs/usage.md.
+cargo build --release --manifest-path "$ROOT/Cargo.toml" -p rcli --features gui,hwcodec
 
 mkdir -p "$STAGE/usr/bin" "$STAGE/DEBIAN"
 install -m 0755 "$TARGET_DIR/release/rcli" "$STAGE/usr/bin/rcli"
@@ -33,7 +35,7 @@ Maintainer: Remote CLI <dev@remotecli.invalid>
 Section: admin
 Priority: optional
 Depends: systemd
-Recommends: tesseract-ocr, xauth
+Recommends: tesseract-ocr, xauth, libva-drm2, libva-x11-2, va-driver-all
 Description: remote CLI Agent and Controller
  One binary for both sides: the Agent runs as a root systemd service and lets
  Controllers see and use the screen, run commands and shells, and manage power;
