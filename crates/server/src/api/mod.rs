@@ -184,7 +184,7 @@ impl FromRequestParts<State> for Caller {
         };
         let controller = header("x-rcli-controller").unwrap_or("unknown");
         let peer = parts.extensions.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip());
-        let forwarded = parts.headers.get_all("x-forwarded-for").iter().last().and_then(|v| v.to_str().ok());
+        let forwarded = parts.headers.get_all("x-forwarded-for").iter().next_back().and_then(|v| v.to_str().ok());
         let ip = client_ip(peer, forwarded, &state.config.trusted_proxies);
         crate::auth::authenticate_controller(state, server_key, device, password, controller, &ip)
             .await?
