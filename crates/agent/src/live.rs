@@ -12,7 +12,7 @@ use std::{
 
 use image::{imageops, RgbaImage};
 use openh264::{
-    encoder::{Encoder, EncoderConfig, FrameRate},
+    encoder::{BitRate, Encoder, EncoderConfig, FrameRate, RateControlMode},
     formats::{RgbaSliceU8, YUVBuffer},
     OpenH264API,
 };
@@ -24,6 +24,7 @@ use webrtc::{
         setting_engine::SettingEngine,
         APIBuilder,
     },
+    data_channel::data_channel_init::RTCDataChannelInit,
     ice_transport::ice_server::RTCIceServer,
     interceptor::registry::Registry,
     media::Sample,
@@ -38,9 +39,37 @@ use webrtc::{
 
 use crate::platform::Platform;
 
-const FRAME_EVERY: Duration = Duration::from_millis(100);
 /// A viewer that has not connected by then is gone (e.g. closed the tab before ICE finished).
 const CONNECT_WITHIN: Duration = Duration::from_secs(30);
+
+/// Live View Quality: what one viewer trades between sharpness and smoothness. Every level streams native pixels;
+/// they differ only in bitrate and frame rate. The viewer picks it on the stream's `quality` data channel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Level {
+    Quality,
+    Balanced,
+    Speed,
+}
+
+impl Level {
+    fn parse(name: &[u8]) -> Option<Self> {
+        match name {
+            b"quality" => Some(Self::Quality),
+            b"balanced" => Some(Self::Balanced),
+            b"speed" => Some(Self::Speed),
+            _ => None,
+        }
+    }
+
+    /// Target bitrate in bits per second and frame rate: the one place each level is tuned, for every encoder.
+    fn encoding(self) -> (u32, f32) {
+        match self {
+            Self::Quality => (8_000_000, 10.0),
+            Self::Balanced => (4_000_000, 15.0),
+            Self::Speed => (2_000_000, 25.0),
+        }
+    }
+}
 
 struct Stream {
     pc: Arc<RTCPeerConnection>,
@@ -112,6 +141,18 @@ impl Live {
         };
         let track = Arc::new(TrackLocalStaticSample::new(codec, "screen".into(), "rcli".into()));
         let sender = pc.add_track(track.clone()).await.map_err(fail("live"))?;
+        // Negotiated like the media channel: the viewer creates the same id, so no extra signaling.
+        let init = RTCDataChannelInit { negotiated: Some(0), ..Default::default() };
+        let picker = pc.create_data_channel("quality", Some(init)).await.map_err(fail("live"))?;
+        // A new session starts at Balanced; nothing is remembered.
+        let level = Arc::new(Mutex::new(Level::Balanced));
+        let picked = level.clone();
+        picker.on_message(Box::new(move |msg| {
+            if let Some(l) = Level::parse(&msg.data) {
+                *picked.lock().unwrap() = l;
+            }
+            Box::pin(async {})
+        }));
         if let Err(e) = pc.set_remote_description(remote).await {
             let _ = pc.close().await;
             return Err(fail("invalid_offer")(e));
@@ -153,7 +194,7 @@ impl Live {
         let (me, session, platform) = (Arc::downgrade(self), offer.session, self.platform.clone());
         let rt = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            if let Err(e) = stream(platform.as_ref(), display, &pc, &track, &stop, &keyframe, &rt) {
+            if let Err(e) = stream(platform.as_ref(), display, &level, &pc, &track, &stop, &keyframe, &rt) {
                 tracing::warn!("live stream {session} ended: {e:#}");
             }
             if let Some(me) = me.upgrade() {
@@ -183,10 +224,12 @@ pub(crate) async fn peer_connection(ice_servers: &[rcli_protocol::agent::IceServ
     api.new_peer_connection(RTCConfiguration { ice_servers, ..Default::default() }).await
 }
 
-/// Captures `display` every 100 ms at its native size and sends it as H.264 until `stop`.
+/// Captures `display` at its native size and sends it as H.264 at the viewer's `level` until `stop`.
+#[allow(clippy::too_many_arguments)]
 fn stream(
     p: &dyn Platform,
     display: u32,
+    level: &Mutex<Level>,
     pc: &RTCPeerConnection,
     track: &TrackLocalStaticSample,
     stop: &AtomicBool,
@@ -201,12 +244,27 @@ fn stream(
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    // shortcut: openh264 defaults (quality rate control, no bitrate cap); tune if VPS/TURN bandwidth matters.
-    let config = EncoderConfig::new().skip_frames(false).max_frame_rate(FrameRate::from_hz(10.0));
-    let mut encoder = Encoder::with_api_config(OpenH264API::from_source(), config)?;
+    let mut current = None;
+    let (mut encoder, mut every) = (None, Duration::ZERO);
     let mut last = Instant::now();
     while !stop.load(Ordering::SeqCst) {
         let tick = Instant::now();
+        let wanted = *level.lock().unwrap();
+        if current != Some(wanted) {
+            // A new encoder starts with a keyframe, so the switch shows at once.
+            let (bps, fps) = wanted.encoding();
+            // Camera usage, not screen content: openh264's screen-content rate control never spends more than its
+            // starting quality, so Quality would look like Balanced. No frame skipping: the level's frame rate holds.
+            let config = EncoderConfig::new()
+                .rate_control_mode(RateControlMode::Bitrate)
+                .bitrate(BitRate::from_bps(bps))
+                .skip_frames(false)
+                .max_frame_rate(FrameRate::from_hz(fps));
+            encoder = Some(Encoder::with_api_config(OpenH264API::from_source(), config)?);
+            every = Duration::from_secs_f32(1.0 / fps);
+            current = Some(wanted);
+        }
+        let encoder = encoder.as_mut().expect("set above");
         let frame = p.capture(display)?;
         // Native pixels, but H.264 4:2:0 needs even dimensions: an odd last row or column is dropped.
         let (w, h) = (frame.width & !1, frame.height & !1);
@@ -224,7 +282,7 @@ fn stream(
             last = Instant::now();
             rt.block_on(track.write_sample(&sample))?;
         }
-        std::thread::sleep(FRAME_EVERY.saturating_sub(tick.elapsed()));
+        std::thread::sleep(every.saturating_sub(tick.elapsed()));
     }
     Ok(())
 }

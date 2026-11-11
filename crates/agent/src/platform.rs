@@ -175,6 +175,9 @@ pub struct FakeState {
     pub screen_text: Vec<UiElement>,
     /// Every capture differs from the previous one by a little (below what counts as a change), like a blinking caret.
     pub flicker: bool,
+    /// Every capture is fresh noise (8x8 blocks of random colour) instead of one colour, like a playing video:
+    /// what a bitrate limit bites on.
+    pub noise: bool,
     /// Root prompts shown, in order: who asked, and the timeout the Agent allowed.
     pub root_prompts: Vec<(String, Duration)>,
     /// The scripted person's answers: true = Accept, false = Reject. An empty queue = nobody answers, which
@@ -208,6 +211,7 @@ impl FakePlatform {
             accessibility: None,
             screen_text: vec![],
             flicker: false,
+            noise: false,
             root_prompts: vec![],
             root_answers: Default::default(),
             accept_prompts: vec![],
@@ -298,7 +302,16 @@ impl Platform for FakePlatform {
         // Steps of 40 so every change is noticeable to `frames`.
         let flicker = if s.flicker { (s.captures % 2 * 8) as u8 } else { 0 };
         let pixel = [s.session as u8 * 60 + flicker, (s.inputs.len() * 40) as u8, (frame_no % 6 * 40) as u8, 255];
-        Ok(Frame { width: d.width, height: d.height, rgba: pixel.repeat((d.width * d.height) as usize) })
+        let mut rgba = pixel.repeat((d.width * d.height) as usize);
+        if s.noise {
+            for (i, p) in rgba.chunks_exact_mut(4).enumerate() {
+                let (x, y) = (i as u64 % d.width as u64 / 8, i as u64 / d.width as u64 / 8);
+                // Hash of (capture, 8x8 block): a fresh random colour per block and capture.
+                let h = (s.captures << 40 ^ y << 20 ^ x).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                p[..3].copy_from_slice(&h.to_be_bytes()[..3]);
+            }
+        }
+        Ok(Frame { width: d.width, height: d.height, rgba })
     }
 
     fn input(&self, input: Input) -> anyhow::Result<()> {
