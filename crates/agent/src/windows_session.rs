@@ -268,6 +268,69 @@ fn spawn_helper(exe: &Path, pipe: &str, session: u32) -> anyhow::Result<HelperPr
     }
 }
 
+/// A process the service started on the console user's desktop (the GUI window).
+pub struct UserProcess(HANDLE);
+
+// The handle is only waited on and closed; neither depends on the thread.
+unsafe impl Send for UserProcess {}
+
+impl UserProcess {
+    pub fn running(&self) -> bool {
+        matches!(unsafe { WaitForSingleObject(self.0, 0) }, WAIT_TIMEOUT)
+    }
+}
+
+impl Drop for UserProcess {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// Starts `exe` (no arguments) as the user logged into the console session, with that user's environment and on
+/// their desktop: the SYSTEM service's way to open the GUI window. Unlike the helper it never runs as SYSTEM, so the
+/// window's root-only actions still go through UAC. Fails when nobody is logged in.
+pub fn spawn_as_console_user(exe: &Path) -> anyhow::Result<UserProcess> {
+    let session = unsafe { WTSGetActiveConsoleSessionId() };
+    anyhow::ensure!(session != u32::MAX, "there is no console session");
+    anyhow::ensure!(console_user(session).is_some_and(|u| !u.is_empty()), "nobody is logged in at the console");
+    unsafe {
+        for privilege in [SE_TCB_NAME, SE_ASSIGNPRIMARYTOKEN_NAME, SE_INCREASE_QUOTA_NAME] {
+            if let Err(e) = enable_privilege(privilege) {
+                tracing::debug!("cannot enable a service privilege: {e:#}");
+            }
+        }
+        let mut token = HANDLE::default();
+        WTSQueryUserToken(session, &mut token)?;
+        let mut environment: *mut core::ffi::c_void = std::ptr::null_mut();
+        if let Err(e) = windows::Win32::System::Environment::CreateEnvironmentBlock(&mut environment, Some(token), false) {
+            let _ = CloseHandle(token);
+            return Err(e.into());
+        }
+        let mut command: Vec<u16> = format!("\"{}\"", exe.display()).encode_utf16().chain(std::iter::once(0)).collect();
+        let mut desktop: Vec<u16> = "winsta0\\default\0".encode_utf16().collect();
+        let startup = STARTUPINFOW { cb: size_of::<STARTUPINFOW>() as u32, lpDesktop: PWSTR(desktop.as_mut_ptr()), ..Default::default() };
+        let mut process = PROCESS_INFORMATION::default();
+        let created = CreateProcessAsUserW(
+            Some(token),
+            PCWSTR::null(),
+            Some(PWSTR(command.as_mut_ptr())),
+            None,
+            None,
+            false,
+            windows::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT,
+            Some(environment),
+            PCWSTR::null(),
+            &startup,
+            &mut process,
+        );
+        let _ = windows::Win32::System::Environment::DestroyEnvironmentBlock(environment);
+        let _ = CloseHandle(token);
+        created?;
+        let _ = CloseHandle(process.hThread);
+        Ok(UserProcess(process.hProcess))
+    }
+}
+
 /// The token to start the helper with: a duplicate of this SYSTEM service token moved into `session`, i.e. the token
 /// winlogon runs with in that session. A user token cannot open the `Winlogon` desktop or the UAC secure desktop, so
 /// it would lose the lock, sign-in and UAC screens; `WTSQueryUserToken` is only the fallback for a service that is

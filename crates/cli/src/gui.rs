@@ -669,20 +669,39 @@ pub fn wrap(
 /// opens it as the logged-in user, never as root: as root its password reveal would skip the elevation prompt.
 /// With nobody logged in there is nobody to show it to.
 fn opener(socket: PathBuf, platform: Arc<dyn rcli_agent::platform::Platform>) -> Box<dyn Fn() + Send + Sync> {
-    let child: Arc<Mutex<Option<std::process::Child>>> = Default::default();
+    let window: Arc<Mutex<Option<Window>>> = Default::default();
     let service_is_root = crate::upgrade::is_root();
     Box::new(move || {
-        let mut child = child.lock().unwrap();
-        if let Some(running) = child.as_mut() {
-            if running.try_wait().ok().flatten().is_none() {
-                return;
-            }
+        let mut window = window.lock().unwrap();
+        if window.as_mut().is_some_and(|running| running()) {
+            return;
         }
         let exe = std::env::current_exe().unwrap_or_else(|_| "rcli".into());
-        if let Some(mut cmd) = gui_command(&socket, &exe, service_is_root, &platform) {
-            *child = cmd.spawn().ok();
-        }
+        *window = launch(&socket, &exe, service_is_root, &platform);
     })
+}
+
+/// A started GUI window process: says whether it is still running.
+type Window = Box<dyn FnMut() -> bool + Send>;
+
+/// Starts the GUI window in the session that can show it, if this process can reach one.
+fn launch(
+    socket: &std::path::Path,
+    exe: &std::path::Path,
+    service_is_root: bool,
+    platform: &Arc<dyn rcli_agent::platform::Platform>,
+) -> Option<Window> {
+    // A SYSTEM service in session 0 cannot show a window: it starts one as the console user (the service listens on
+    // the default pipe, which the window uses too).
+    #[cfg(windows)]
+    if service_is_root {
+        let process = rcli_agent::windows_session::spawn_as_console_user(exe)
+            .map_err(|e| tracing::debug!("cannot open the window in the console session: {e:#}"))
+            .ok()?;
+        return Some(Box::new(move || process.running()));
+    }
+    let mut child = gui_command(socket, exe, service_is_root, platform)?.spawn().ok()?;
+    Some(Box::new(move || child.try_wait().ok().flatten().is_none()))
 }
 
 /// The command that opens the GUI window in the session that can show it, if this process can reach one.
@@ -697,19 +716,22 @@ fn gui_command(
         cmd.env("RCLI_AGENT_SOCKET", socket);
         return Some(cmd);
     }
-    let user = platform.metrics().ok().and_then(|r| r.logged_in_user).filter(|u| !u.is_empty() && u != "root");
-    let user = user?;
-    // shortcut: plain `sudo -u`; the session's display environment (DISPLAY / WAYLAND_DISPLAY) comes with the Linux
-    // service installer of ticket 16.
-    #[cfg(not(any(target_os = "macos", windows)))]
+    // The console session the screen helper serves: its user, display and X cookie or Wayland socket and session bus.
+    #[cfg(target_os = "linux")]
     {
-        let mut cmd = std::process::Command::new("sudo");
-        cmd.args(["-n", "-u", &user, "--", "env"]).arg(format!("RCLI_AGENT_SOCKET={}", socket.display())).arg(exe);
+        let _ = platform;
+        let target = rcli_agent::linux::session::console_target().filter(|t| !t.greeter && t.user != "root")?;
+        let mut cmd = std::process::Command::new("runuser");
+        cmd.args(["-u", &target.user, "--", "env"])
+            .args(rcli_agent::linux::session::session_env(&target))
+            .arg(format!("RCLI_AGENT_SOCKET={}", socket.display()))
+            .arg(exe);
         Some(cmd)
     }
     // A launchd daemon sits outside every GUI session: `launchctl asuser` puts the window in the user's.
     #[cfg(target_os = "macos")]
     {
+        let user = platform.metrics().ok().and_then(|r| r.logged_in_user).filter(|u| !u.is_empty() && u != "root")?;
         let uid = std::process::Command::new("id").args(["-u", &user]).output().ok();
         let uid = uid.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).filter(|u| !u.is_empty())?;
         let mut cmd = std::process::Command::new("launchctl");
@@ -719,12 +741,10 @@ fn gui_command(
             .arg(exe);
         Some(cmd)
     }
-    // shortcut: a SYSTEM service cannot put a window on the console user's desktop without a `CreateProcessAsUser`
-    // round trip through the session helper. Until that exists, prompts (root "ask", "password+accept") reject at
-    // the Device because nobody can answer them; the control indicator is the tray-less window the person opens.
+    // The SYSTEM service is handled by `launch` (`CreateProcessAsUser`, which a Command cannot express).
     #[cfg(windows)]
     {
-        let _ = user;
+        let _ = platform;
         None
     }
 }

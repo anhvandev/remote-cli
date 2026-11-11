@@ -255,10 +255,51 @@ pub fn console_uid(run: &dyn Fn(&[&str]) -> Option<String>) -> Option<u32> {
     seat_session(run).and_then(|s| s.uid)
 }
 
+/// The graphical session on the console that a helper (or the GUI window) can be put into, if any.
+fn target_at(root: &Path, loginctl: &dyn Fn(&[&str]) -> Option<String>) -> Option<Target> {
+    let session = seat_session(loginctl)?;
+    if session.is_wayland() {
+        // A Wayland greeter (GNOME's login screen) has no screen-cast portal to share its screen with: there is
+        // nothing a helper could capture, so report "unavailable" instead of a dead helper.
+        if session.is_greeter() {
+            return None;
+        }
+        return Some(wayland_target(&session, wayland_display(root, session.uid)?));
+    }
+    let display = match session.display.is_empty() {
+        true => socket_display(root)?,
+        false => session.display.clone(),
+    };
+    target_for(root, &session, &display)
+}
+
+/// `target_at` on this machine: the root service uses it to open the GUI window in the console session.
+pub fn console_target() -> Option<Target> {
+    target_at(Path::new("/"), &loginctl)
+}
+
 /// The real `loginctl` reader: `None` when it fails or prints nothing.
 fn loginctl(args: &[&str]) -> Option<String> {
     let out = std::process::Command::new("loginctl").args(args).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The `VAR=value` pairs that put a process into `target`'s graphical session.
+pub fn session_env(target: &Target) -> Vec<String> {
+    match target.session {
+        SessionKind::X11 => vec![
+            format!("DISPLAY={}", target.display),
+            format!("XAUTHORITY={}", target.xauthority.as_ref().map(|p| p.display().to_string()).unwrap_or_default()),
+        ],
+        SessionKind::Wayland => {
+            let mut env = vec!["XDG_SESSION_TYPE=wayland".to_owned(), format!("WAYLAND_DISPLAY={}", target.display)];
+            if let Some(uid) = target.uid {
+                env.push(format!("XDG_RUNTIME_DIR=/run/user/{uid}"));
+                env.push(format!("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus"));
+            }
+            env
+        }
+    }
 }
 
 /// `runuser -u <user> -- env <session variables> <exe> agent session --socket <socket>`.
@@ -267,22 +308,9 @@ fn loginctl(args: &[&str]) -> Option<String> {
 /// session bus) and the stored portal restore token, so the helper does not prompt again.
 pub fn helper_args(exe: &Path, socket: &Path, target: &Target, restore_token: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["-u".into(), target.user.clone(), "--".into(), "env".into()];
-    match target.session {
-        SessionKind::X11 => {
-            args.push(format!("DISPLAY={}", target.display));
-            args.push(format!("XAUTHORITY={}", target.xauthority.as_ref().map(|p| p.display().to_string()).unwrap_or_default()));
-        }
-        SessionKind::Wayland => {
-            args.push("XDG_SESSION_TYPE=wayland".to_owned());
-            args.push(format!("WAYLAND_DISPLAY={}", target.display));
-            if let Some(uid) = target.uid {
-                args.push(format!("XDG_RUNTIME_DIR=/run/user/{uid}"));
-                args.push(format!("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus"));
-            }
-            if let Some(token) = restore_token {
-                args.push(format!("{TOKEN_ENV}={token}"));
-            }
-        }
+    args.extend(session_env(target));
+    if let (SessionKind::Wayland, Some(token)) = (&target.session, restore_token) {
+        args.push(format!("{TOKEN_ENV}={token}"));
     }
     args.extend([
         exe.display().to_string(),
@@ -374,20 +402,7 @@ impl ConsoleSession {
     }
 
     fn target(&self) -> Option<Target> {
-        let session = seat_session(self.loginctl.as_ref())?;
-        if session.is_wayland() {
-            // A Wayland greeter (GNOME's login screen) has no screen-cast portal to share its screen with: there is
-            // nothing a helper could capture, so report "unavailable" instead of a dead helper.
-            if session.is_greeter() {
-                return None;
-            }
-            return Some(wayland_target(&session, wayland_display(&self.root, session.uid)?));
-        }
-        let display = match session.display.is_empty() {
-            true => socket_display(&self.root)?,
-            false => session.display.clone(),
-        };
-        target_for(&self.root, &session, &display)
+        target_at(&self.root, self.loginctl.as_ref())
     }
 
     /// Why there is no helper for the session on the console. A Wayland session is served now, so the difference is
