@@ -642,10 +642,7 @@ where
         config::check_transport(server.trim().trim_end_matches('/'))?;
     }
     if let Command::Login { name, password, totp } = &cli.command {
-        let base = match cli.server.clone() {
-            Some(server) => server,
-            None => config::api_address(&config::installed(&machine)?)?,
-        };
+        let base = api_base(cli.server.clone(), &machine)?;
         let password = match password {
             Some(p) => p.clone(),
             None => prompt_password("Dashboard password: ")?,
@@ -692,12 +689,8 @@ where
         };
     }
     if let Command::Connect { device, password } = &cli.command {
-        let installed = config::installed(&machine)?;
-        let server = match cli.server.clone() {
-            Some(server) => server,
-            None => config::api_address(&installed)?,
-        };
-        let key = installed.server_key;
+        let key = config::installed(&machine)?.server_key;
+        let server = api_base(cli.server.clone(), &machine)?;
         let password = match password {
             Some(p) => p.clone(),
             None => prompt_password("Device Password: ")?,
@@ -1225,17 +1218,17 @@ fn api_target(dir: &Path, machine: &Path, server: Option<String>, token: Option<
     let session = || anyhow::Ok(config::load_at(dir)?.and_then(|c| c.session));
     let (base, token, server_key) = match (server, token) {
         (Some(base), Some(token)) => (base, Some(token), None),
-        (Some(base), None) => (base, session()?, config::load_machine(machine)?.map(|m| m.server_key)),
-        (None, token) => {
-            let installed = config::installed(machine)?;
-            let token = match token {
-                Some(token) => Some(token),
-                None => session()?,
-            };
-            (config::api_address(&installed)?, token, Some(installed.server_key))
+        (server, token) => {
+            let server_key = config::load_machine(machine)?.map(|m| m.server_key);
+            (api_base(server, machine)?, token.map_or_else(session, |t| Ok(Some(t)))?, server_key)
         }
     };
     Ok((base, Connection { token, server_key, controller }))
+}
+
+/// `--server`, else this machine's installed API Address.
+fn api_base(server: Option<String>, machine: &Path) -> anyhow::Result<String> {
+    server.map_or_else(|| config::api_address(&config::installed(machine)?), Ok)
 }
 
 /// Asks for the Device Password without echoing it.
