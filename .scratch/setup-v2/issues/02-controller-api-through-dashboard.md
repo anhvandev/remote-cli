@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `rcli` commands, `rcli mcp` tools and the shell stream work against the Dashboard URL
 - [ ] Holding the Control Lock through the Dashboard URL still frees the lock 60 s after the holder disconnects

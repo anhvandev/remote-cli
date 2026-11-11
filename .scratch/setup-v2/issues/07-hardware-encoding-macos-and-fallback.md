@@ -4,7 +4,7 @@
 
 **Blocked by:** 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] On a Mac, Live View uses VideoToolbox (manual check; record the machine and macOS version)
 - [x] With the hardware encoder forced unavailable, Live View still works through openh264 (test)

@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] No unlock-password storage, command, endpoint, IPC request, GUI section or protocol field remains; the field number is reserved
 - [ ] An Agent that starts with a leftover unlock password in its Secret Store removes it

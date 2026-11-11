@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Live View frames have the display's native size for a display larger than 1280 px
 - [ ] Observations still have a 1280 px long edge

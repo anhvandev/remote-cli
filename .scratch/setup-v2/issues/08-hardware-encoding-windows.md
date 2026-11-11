@@ -4,7 +4,7 @@
 
 **Blocked by:** 07
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] On Windows with a GPU, Live View uses a hardware encoder (manual check; record GPU and Windows version)
 - [ ] Live View works at the lock screen, login screen and UAC prompt (manual check; record which encoder ran)

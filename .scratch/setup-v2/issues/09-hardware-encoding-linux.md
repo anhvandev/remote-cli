@@ -4,7 +4,7 @@
 
 **Blocked by:** 07
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] On Linux with a VA-API GPU, Live View uses it on X11 and on Wayland (manual check; record GPU, distro and session type)
 - [ ] Live View works at the greeter and lock screen (manual check; record which encoder ran)

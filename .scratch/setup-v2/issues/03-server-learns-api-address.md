@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] An Admin's `https` request with a public host sets the API Address
 - [ ] `http`, localhost, private-IP and untrusted-proxy requests leave it unchanged

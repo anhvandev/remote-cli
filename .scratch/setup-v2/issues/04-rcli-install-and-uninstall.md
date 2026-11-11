@@ -4,7 +4,7 @@
 
 **Blocked by:** 02, 03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] After `rcli install`, `rcli connect` and `rcli mcp` work for any local user without further setup
 - [ ] One local user cannot read another's remembered Device Passwords

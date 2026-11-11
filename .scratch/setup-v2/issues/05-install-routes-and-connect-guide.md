@@ -4,7 +4,7 @@
 
 **Blocked by:** 04
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Both install scripts and the GUI Install button run `rcli install` and print the Device ID and Device Password
 - [ ] After a scripted install, `rcli connect` works on that machine
