@@ -376,15 +376,13 @@ impl Status {
             "connected": self.connected.load(Ordering::Relaxed),
             "controllers": self.controllers.list(),
         });
-        // Everything outside the ID, status and controllers is root-only: the Device Settings and the secrets (the
-        // GUI reveals them elevated).
+        // Everything outside the ID, status and controllers is root-only: the Device Settings and the Server Key (the
+        // GUI reveals them elevated). The unlock password is only set at the Device, never read back: just whether
+        // one is set.
         if is_root {
             info["settings"] = json!(self.settings.get());
             info["server_key"] = self.endpoint.borrow().server_key.clone().into();
-            info["unlock_password"] = match self.unlock_password() {
-                Ok(Some(password)) => password.into(),
-                _ => Value::Null,
-            };
+            info["unlock_password_set"] = matches!(self.unlock_password(), Ok(Some(_))).into();
         }
         info
     }
@@ -784,16 +782,18 @@ mod tests {
         assert!(accept["message"].as_str().is_some(), "{accept}");
         assert!(asker.join().unwrap());
 
-        // The Device Settings, the Server Key and the unlock password appear in `info` only for root.
+        // The Device Settings, the Server Key and whether an unlock password is set appear in `info` only for root.
         let as_user = block.block_on(dispatch(&status, &json!({ "command": "info" }), false));
         assert!(
-            as_user.get("settings").is_none() && as_user.get("server_key").is_none() && as_user.get("unlock_password").is_none(),
+            as_user.get("settings").is_none() && as_user.get("server_key").is_none() && as_user.get("unlock_password_set").is_none(),
             "{as_user}"
         );
         let as_root = block.block_on(dispatch(&status, &json!({ "command": "info" }), true));
         assert!(as_root.get("settings").is_some(), "{as_root}");
         assert_eq!(as_root["server_key"], "rk_deadbeef_secret");
-        assert_eq!(as_root["unlock_password"], "at-the-lock-screen");
+        // The unlock password itself is never read back, not even by root.
+        assert_eq!(as_root["unlock_password_set"], true);
+        assert!(!as_root.to_string().contains("at-the-lock-screen"), "{as_root}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

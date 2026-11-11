@@ -29,7 +29,7 @@ struct App {
     password: String,
     /// The Device Password after a reveal (root), for the Copy button.
     shown: Option<String>,
-    /// The Server Key and unlock password after an elevated reveal.
+    /// The Server Key and whether an unlock password is set, after an elevated reveal.
     secrets: Option<Value>,
     /// The Device Settings as the Agent last reported them (root-only), once the person loaded them. `None` until
     /// then, so the editors never start from made-up defaults.
@@ -226,7 +226,8 @@ impl App {
         self.note = note(&reply);
     }
 
-    /// The Server Key and the unlock password: root-only fields of `info`, so this asks the OS when not root.
+    /// The Server Key and whether an unlock password is set: root-only fields of `info`, so this asks the OS when not
+    /// root.
     fn reveal_secrets(&mut self) {
         match self.root_info() {
             Ok(reply) if reply.get("server_key").is_some() => self.secrets = Some(reply),
@@ -322,7 +323,7 @@ impl eframe::App for App {
                 ui.label(format!("Device ID: {}", self.info["device_id"].as_str().unwrap_or("-")));
                 ui.label(format!("Connection: {}", if self.info["connected"] == true { "connected" } else { "disconnected" }));
                 ui.label(format!("Server: {}", self.info["server"].as_str().unwrap_or("-")));
-                if ui.button("Reveal Server Key and unlock password").clicked() {
+                if ui.button("Reveal Server Key").clicked() {
                     self.reveal_secrets();
                 }
                 if let Some(secrets) = &self.secrets {
@@ -394,7 +395,7 @@ impl eframe::App for App {
                 ui.separator();
                 ui.label("Unlock password");
                 if let Some(secrets) = &self.secrets {
-                    ui.label(format!("Unlock password: {}", secrets["unlock_password"].as_str().unwrap_or("(not set)")));
+                    ui.label(if secrets["unlock_password_set"] == true { "an unlock password is set" } else { "no unlock password is set" });
                 }
                 ui.horizontal(|ui| {
                     ui.label("New:");
