@@ -162,6 +162,8 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
             state.agents.senders.lock().unwrap().insert(id, tx.clone());
             registry::agent_connected(&state, id).await?;
             control_lock::push_indicator(&state, id).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            let api_address = rcli_protocol::agent::ApiAddress { url: state.settings.api_address().await };
+            state.agents.send(id, server_message::Msg::ApiAddress(api_address));
             let result = session(&mut conn, rx, &state, id).await;
             {
                 let mut senders = state.agents.senders.lock().unwrap();

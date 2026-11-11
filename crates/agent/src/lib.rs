@@ -88,6 +88,10 @@ pub struct Credentials {
     /// Secret Store and the Server only its hash.
     #[serde(default, skip_serializing)]
     pub device_password: String,
+    /// The API Address returned at registration (empty until the Server has learned it). Not written to
+    /// `credentials.json`: the Server sends the current one on every connection (`ipc::Status::api_address`).
+    #[serde(default, skip_serializing)]
+    pub api_address: String,
 }
 
 fn parse_server_key(key: &str) -> anyhow::Result<ServerKey> {
@@ -219,6 +223,7 @@ pub async fn register(server: &ServerAccess, platform: &dyn Platform) -> anyhow:
                 ca_der,
                 update_key: r.update_key,
                 device_password: r.device_password,
+                api_address: r.api_address,
             })
         }
         Some(server_message::Msg::Error(e)) => anyhow::bail!("registration rejected: {}: {}", e.code, e.message),
@@ -607,6 +612,11 @@ async fn session(
                     }
                     Some(server_message::Msg::ControlIndicator(c)) => {
                         agent.live.set_lock_indicator(c.on);
+                    }
+                    Some(server_message::Msg::ApiAddress(a)) => {
+                        if let Some(s) = status {
+                            s.set_api_address(&a.url);
+                        }
                     }
                     Some(server_message::Msg::IdentityChange(u)) => {
                         let reply = server_identity_change(&u, status, creds);

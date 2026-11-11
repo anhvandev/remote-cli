@@ -1,6 +1,6 @@
 //! The API Address: the Server learns it from an Admin's Dashboard visit over `https://` and hands it to Agents.
 
-use rcli_testkit::{ApiClient, StatusCode, TestSystem};
+use rcli_testkit::{eventually, temp_dir, ApiClient, FakePlatform, StatusCode, TestSystem};
 
 async fn api_address(sys: &TestSystem) -> String {
     let (status, body) = sys.api.get("/api/v1/server-settings").await;
@@ -40,6 +40,31 @@ async fn an_admin_corrects_it_and_later_visits_keep_the_correction() {
     let err = sys.rcli_as(&op, &["api-address", "set", "https://evil.example.com"]).await.unwrap_err();
     assert!(err.to_string().contains("admin_required"), "{err}");
     assert_eq!(api_address(&sys).await, "https://rcli.example.com:8443");
+}
+
+#[tokio::test]
+async fn a_registering_agent_gets_it_and_a_connected_agent_gets_a_correction_on_its_next_connection() {
+    let sys = TestSystem::start().await;
+    let creds = sys.register(&FakePlatform::new("early")).await.unwrap();
+    assert_eq!(creds.api_address, "", "an install before any https visit still registers, with no API Address");
+
+    sys.api.via_proxy("https", "rcli.example.com").get("/api/v1/devices").await;
+    let creds = sys.register(&FakePlatform::new("lab-pc")).await.unwrap();
+    assert_eq!(creds.api_address, "https://rcli.example.com");
+
+    let dir = temp_dir("api-address");
+    let mut agent = sys.start_agent_with_socket("lab-pc", &dir).await;
+    let socket = dir.join("agent.sock");
+    let info = || async {
+        let out = sys.agent_rcli(&socket, &["agent", "info", "--json"]).await.ok()?;
+        serde_json::from_str::<serde_json::Value>(&out).ok()
+    };
+    eventually(|| async { info().await.filter(|i| i["api_address"] == "https://rcli.example.com") }).await;
+
+    sys.rcli(&["api-address", "set", "https://moved.example.com"]).await.unwrap();
+    agent.stop();
+    agent.start();
+    eventually(|| async { info().await.filter(|i| i["api_address"] == "https://moved.example.com") }).await;
 }
 
 #[tokio::test]
