@@ -19,7 +19,8 @@ rcli setup --server http://localhost:8080 --key rk_xxxxxxxx_yyyyyyyy   # một l
 rcli connect 123456789                                                  # hỏi Device Password một lần
 ```
 
-`rcli setup` lưu Server Address, Server Key và update key đã pin vào thư mục cấu hình của bạn. Server Address phải là
+`rcli setup` lưu Server Address, Server Key và update key đã pin vào thư mục cấu hình của bạn (thiếu `--server` hoặc
+`--key` thì lệnh hỏi, Server Key nhập không hiện ra màn hình). Server Address phải là
 `https://` (TLS ở reverse proxy); `http://` chỉ được nhận khi trỏ tới chính máy này (localhost, cho test hoặc Server
 chạy cùng máy) — không có cờ nào cho phép http tới máy khác. `rcli connect` kiểm tra Device ID + Device Password rồi
 nhớ mật khẩu (OS keychain: Keychain trên macOS, Credential Manager trên Windows, Secret Service trên Linux; file

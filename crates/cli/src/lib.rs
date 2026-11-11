@@ -53,14 +53,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Save the Server Address and Server Key (once per Controller).
+    /// Save the Server Address and Server Key (once per Controller); asks for any not given.
     Setup {
         /// Server Address, e.g. https://server.example.com:8080.
         #[arg(long)]
-        server: String,
+        server: Option<String>,
         /// Server Key, rk_<CA fingerprint>_<secret>.
         #[arg(long, hide_env_values = true)]
-        key: String,
+        key: Option<String>,
     },
     /// Sign in with a Dashboard account and save the session (Admin commands need it).
     Login {
@@ -628,7 +628,15 @@ where
     }
     let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);
     if let Command::Setup { server, key } = &cli.command {
-        let text = config::setup(&dir, server, key).await?;
+        let server = match server {
+            Some(s) => s.clone(),
+            None => prompt_line("Server Address (https://...): ")?,
+        };
+        let key = match key {
+            Some(k) => k.clone(),
+            None => prompt_password("Server Key: ")?,
+        };
+        let text = config::setup(&dir, &server, &key).await?;
         let body = config::load_at(&dir)?.map(|c| config::json(&c)).unwrap_or(serde_json::Value::Null);
         return match cli.json {
             true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),
