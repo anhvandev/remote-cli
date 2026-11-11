@@ -551,7 +551,12 @@ pub fn capture_logs() {
 
 /// Whether anything logged since `capture_logs` contains `text`.
 pub fn logged(text: &str) -> bool {
-    String::from_utf8_lossy(&LOGS.lock().unwrap()).contains(text)
+    logged_times(text) > 0
+}
+
+/// How many times `text` appears in the captured logs.
+pub fn logged_times(text: &str) -> usize {
+    String::from_utf8_lossy(&LOGS.lock().unwrap()).matches(text).count()
 }
 
 /// Retries `f` until it returns `Some`, for up to 10 seconds of real time.
@@ -656,12 +661,25 @@ impl ApiClient {
         Self::new(self.base.clone(), token)
     }
 
-    /// This client's requests as the Dashboard forwards them from behind a reverse proxy: they arrived over `proto`
-    /// at `host`. They count as forwarded only from a trusted proxy (the test Server trusts `127.0.0.1`).
+    /// This client's requests as the Dashboard makes them for a page an Admin opened behind a reverse proxy: they
+    /// arrived over `proto` at `host`. They count as forwarded only from a trusted proxy (the test Server trusts
+    /// `127.0.0.1`).
     pub fn via_proxy(&self, proto: &str, host: &str) -> Self {
+        self.forwarded(proto, host, true)
+    }
+
+    /// This client's requests as a Controller (the CLI) sends them to the Dashboard URL, which passes them on.
+    pub fn via_dashboard_url(&self, proto: &str, host: &str) -> Self {
+        self.forwarded(proto, host, false)
+    }
+
+    fn forwarded(&self, proto: &str, host: &str, dashboard: bool) -> Self {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("x-forwarded-proto", proto.parse().unwrap());
         headers.insert("x-forwarded-host", host.parse().unwrap());
+        if dashboard {
+            headers.insert("x-rcli-dashboard", "1".parse().unwrap());
+        }
         let http = reqwest::Client::builder().default_headers(headers).build().unwrap();
         Self { base: self.base.clone(), token: self.token.clone(), http }
     }

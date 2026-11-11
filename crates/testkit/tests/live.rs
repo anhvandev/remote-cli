@@ -1,4 +1,4 @@
-use rcli_testkit::{capture_logs, eventually, logged, DisplayInfo, FakePlatform, LiveViewer, StatusCode, TestSystem};
+use rcli_testkit::{capture_logs, eventually, logged, logged_times, DisplayInfo, FakePlatform, LiveViewer, StatusCode, TestSystem};
 use serde_json::json;
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 
@@ -147,6 +147,51 @@ async fn each_viewer_switches_live_view_quality_mid_stream_and_balanced_is_the_d
 
     mine.close(&sys.api).await;
     theirs.close(&sys.api).await;
+}
+
+/// The payload type a stream arrives on names the H.264 profile its frames are in, so the browser decodes them per the
+/// standard: High from a hardware encoder, Constrained Baseline from openh264. A viewer that takes only Constrained
+/// Baseline (Firefox) gets openh264 even where a hardware encoder starts.
+#[tokio::test]
+async fn the_negotiated_h264_profile_is_the_one_the_frames_are_encoded_in() {
+    let sys = TestSystem::start().await;
+    for hardware in [true, false] {
+        let device = FakePlatform::new("profiles");
+        device.update(|s| s.hardware_encoder = hardware);
+        let agent = sys.start_agent_on(device).await;
+        let dev = agent.device_id();
+        sys.wait_device(dev, |d| d["status"] == "Online").await;
+
+        let live = LiveViewer::open(&sys.api, dev, false).await.expect("open live view");
+        let (negotiated, sent) = live.profiles().await;
+        assert_eq!(negotiated, sent, "hardware allowed: {hardware}");
+        live.close(&sys.api).await;
+
+        let live = LiveViewer::open_baseline_only(&sys.api, dev).await.expect("open a baseline-only live view");
+        assert_eq!(live.profiles().await, (0x42, 0x42), "hardware allowed: {hardware}");
+        live.close(&sys.api).await;
+    }
+}
+
+/// openh264 answers a lost picture with a keyframe from the encoder it has, not a new one.
+#[tokio::test]
+async fn a_lost_picture_gets_a_keyframe_from_the_running_software_encoder() {
+    capture_logs();
+    let sys = TestSystem::start().await;
+    let vm = FakePlatform::new("pli");
+    vm.update(|s| s.hardware_encoder = false);
+    let agent = sys.start_agent_on(vm).await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online").await;
+
+    let live = LiveViewer::open(&sys.api, dev, false).await.expect("open live view");
+    let opened = format!("live stream {}: H.264 through", live.session);
+    eventually(|| async { (live.keyframes() >= 1).then_some(()) }).await;
+    let before = live.keyframes();
+    live.picture_lost().await;
+    eventually(|| async { (live.keyframes() > before).then_some(()) }).await;
+    assert_eq!(logged_times(&opened), 1, "the encoder was opened again");
+    live.close(&sys.api).await;
 }
 
 #[tokio::test]
