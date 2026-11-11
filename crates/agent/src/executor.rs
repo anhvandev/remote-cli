@@ -192,8 +192,13 @@ impl Executor {
     fn at(&mut self, p: &dyn Platform, controller: &str, displays: &[DisplayInfo], pt: &Point) -> Result<Input, Error> {
         let pt = &self.resolve(p, controller, displays, pt)?;
         let d = find(displays, pt.display)?;
-        let (x, y) = coords::to_real(d, pt.x, pt.y).ok_or_else(|| {
-            let (w, h) = coords::observed_size(d.width, d.height);
+        // Native points (Live View direct control) are real pixels already.
+        let real = match pt.native {
+            true => (pt.x < d.width && pt.y < d.height).then_some((pt.x, pt.y)),
+            false => coords::to_real(d, pt.x, pt.y),
+        };
+        let (x, y) = real.ok_or_else(|| {
+            let (w, h) = if pt.native { (d.width, d.height) } else { coords::observed_size(d.width, d.height) };
             error("invalid_action", format!("({}, {}) is outside display {} ({w}x{h})", pt.x, pt.y, pt.display))
         })?;
         self.last_display = Some(d.index);

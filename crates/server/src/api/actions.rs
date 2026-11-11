@@ -69,12 +69,14 @@ enum AllDisplays {
     All,
 }
 
-/// A target on `display` (default 0): a point in Observation image space, a Mark number from Observation
-/// `observation`, or a Mark's visible text.
+/// A target on `display` (default 0): a point in Observation image space (real pixels with `native`, as Live View
+/// direct control sends), a Mark number from Observation `observation`, or a Mark's visible text.
 #[derive(Deserialize)]
 struct Point {
     #[serde(default)]
     display: u32,
+    #[serde(default)]
+    native: bool,
     #[serde(flatten)]
     target: Target,
 }
@@ -127,7 +129,7 @@ impl From<Point> for proto::Point {
     fn from(p: Point) -> Self {
         let display = p.display;
         match p.target {
-            Target::Xy { x, y } => Self { display, x, y, ..Default::default() },
+            Target::Xy { x, y } => Self { display, x, y, native: p.native, ..Default::default() },
             Target::Mark { mark, observation } => Self { display, mark: Some(mark), observation, ..Default::default() },
             Target::Text { text } => Self { display, text: Some(text), ..Default::default() },
         }

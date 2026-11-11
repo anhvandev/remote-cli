@@ -251,6 +251,8 @@ message Point {
   uint64 observation = 11;
   // Visible text of a Mark on `display`, detected now.
   optional string text = 12;
+  // `x` and `y` are real pixels of the display (Live View direct control), not Observation image space.
+  bool native = 13;
 }
 
 message Action {
