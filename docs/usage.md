@@ -59,6 +59,15 @@ Nếu Server Key sai, lệnh cài thất bại ngay và không để lại servi
 
 **Màn khoá, màn đăng nhập và UAC.** Service chạy trong session 0 nên không thấy desktop của người dùng. Nó chạy một helper (`rcli agent session`) trong phiên console bằng token SYSTEM của chính nó, chuyển vào phiên đó (`DuplicateTokenEx` + `SetTokenInformation(TokenSessionId)`, cần `SeTcbPrivilege`) — đúng token mà winlogon dùng, nên mở được cả desktop `Winlogon` (màn khoá, màn đăng nhập) và secure desktop của UAC (`WTSQueryUserToken` chỉ là phương án dự phòng). Helper chuyển sang input desktop trước mỗi lần chụp/gõ. Vì vậy `shot` và `act` chạy được ở màn khoá, màn đăng nhập và hộp thoại UAC. Helper được chạy lại khi phiên console hoặc người đăng nhập đổi (đăng nhập, đăng xuất, chuyển user). Không cần cấp quyền Screen Recording như macOS. Lưu ý: vì helper chạy dưới SYSTEM, OCR (Windows.Media.Ocr) dùng profile của SYSTEM; nếu `--text` không nhận được chữ ở màn khoá, cài thêm gói ngôn ngữ OCR cho máy.
 
+**Live View và GPU.** Bản `rcli.exe` release build trên máy Windows với feature `hwcodec`: Live View mã hoá H.264 bằng
+NVENC (NVIDIA), AMF (AMD) hoặc QSV (Intel) qua `hwcodec` của RustDesk. Cần FFmpeg tĩnh của RustDesk (một lần cho mỗi máy
+build, như mục Build trên macOS): `vcpkg install ffmpeg[amf,nvcodec,qsv] --triplet x64-windows-static --overlay-ports=<rustdesk>\res\vcpkg`,
+rồi trong PowerShell `$env:VCPKG_ROOT='C:\vcpkg'; $env:RUSTFLAGS='-C target-feature=+crt-static'; cargo build --release -p rcli --features gui,hwcodec`
+(CRT tĩnh vì `hwcodec` và triplet `x64-windows-static` dùng `/MT`). FFmpeg của RustDesk không có Media Foundation
+(`h264_mf`). Service (session 0) mã hoá, helper chỉ chụp, nên màn khoá, màn đăng nhập và UAC dùng cùng encoder; máy
+không có GPU encoder (máy ảo) hoặc encoder không khởi động được thì Agent tự chuyển sang openh264, log Agent ghi tên
+encoder (`live stream …: H.264 through h264_nvenc` hoặc `… through openh264`).
+
 **Ctrl+Alt+Del.** Windows chỉ cho tiến trình SYSTEM gửi secure attention sequence qua `SendSAS` (sas.dll), và phải bật policy một lần trên mỗi Device (mặc định là tắt):
 
 ```powershell
