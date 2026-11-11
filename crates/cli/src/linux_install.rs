@@ -1,4 +1,4 @@
-//! `rcli agent install|uninstall` on Linux (ticket 16): the binary in /usr/local/lib/rcli, a root systemd
+//! `rcli install|uninstall` on Linux (ticket 16): the binary in /usr/local/lib/rcli, a root systemd
 //! service that comes back after a reboot, and the Device's Device Settings. The Server Key travels in a
 //! root-only `EnvironmentFile`, never on the command line (`ps` shows every process's arguments to every user).
 //! Every path hangs off `Layout::root` and every external command goes through `run`, so the layout, the unit
@@ -11,7 +11,7 @@ pub use crate::install::{Options, Run};
 
 pub const UNIT: &str = "rcli-agent.service";
 const KEY_ENV: &str = "RCLI_SERVER_KEY";
-/// The app-menu entry `rcli agent install` places; running it opens the GUI window (ticket 14).
+/// The app-menu entry `rcli install` places; running it opens the GUI window (ticket 14).
 const DESKTOP: &str = include_str!("../../../packaging/linux/rcli.desktop");
 
 pub struct Layout {
@@ -56,6 +56,10 @@ impl Layout {
     /// The app-menu entry: running `rcli` with no arguments opens the window.
     pub fn desktop_file(&self) -> PathBuf {
         self.at("/usr/share/applications/rcli.desktop")
+    }
+    /// The machine-wide Controller configuration, readable by every local user (the state directory is root-only).
+    pub fn controller_config(&self) -> PathBuf {
+        crate::config::machine_path(Some(&self.root))
     }
 }
 
@@ -166,7 +170,7 @@ pub fn install_service(layout: &Layout, opts: &Options, run: Run) -> anyhow::Res
 pub fn uninstall_files(layout: &Layout, run: Run) -> anyhow::Result<()> {
     // A missing unit is not an error: a first install that failed after copying files must still be removable.
     let _ = run("systemctl", &["disable", "--now", UNIT]);
-    for file in [layout.unit(), layout.env_file(), layout.session_socket(), layout.link(), layout.desktop_file()] {
+    for file in [layout.unit(), layout.env_file(), layout.session_socket(), layout.link(), layout.desktop_file(), layout.controller_config()] {
         let _ = std::fs::remove_file(file);
     }
     // `disable --now` stops it; the reload forgets the removed unit.
@@ -193,24 +197,43 @@ fn recorded_server(layout: &Layout) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(&text).ok()?["server"].as_str().map(str::to_owned)
 }
 
-/// `sudo rcli agent install`: files, Device Settings, registration, then the systemd service. Registering first
-/// makes a wrong Server Key fail at the install and lets the Device ID and Device Password be printed.
+/// `sudo rcli install`: files, Device Settings, registration and the machine-wide Controller configuration, then the
+/// systemd service. Registering first makes a wrong Server Key fail at the install and lets the Device ID and Device
+/// Password be printed.
 pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-    anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli agent install --server … --key …");
-    let layout = Layout { root: "/".into() };
-    let exe = std::env::current_exe()?;
-    install_files(&layout, &opts, &exe, &mut system)?;
+    anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli install --server … --key …");
     let platform = rcli_agent::linux::LinuxPlatform::new(opts.name.clone())?;
-    let (creds, password) = crate::install::register(&opts, &platform, &layout.state_dir()).await?;
-    install_service(&layout, &opts, &mut system)?;
-    writeln!(
+    install_at(&Layout { root: "/".into() }, opts, &platform, &mut system, out).await
+}
+
+/// `install` on `layout`, registering with `platform`'s inventory; the `--root` test seam calls it directly.
+pub async fn install_at(
+    layout: &Layout,
+    opts: Options,
+    platform: &dyn rcli_agent::platform::Platform,
+    run: Run<'_>,
+    out: &mut dyn std::io::Write,
+) -> anyhow::Result<()> {
+    // A reinstall must not destroy a working install when the new Server Key is wrong.
+    let reinstall = layout.state_dir().join("credentials.json").exists();
+    install_files(layout, &opts, &std::env::current_exe()?, run)?;
+    let registered = match crate::install::register(&opts, platform, &layout.state_dir(), &layout.controller_config()).await {
+        Ok(registered) => registered,
+        Err(e) => {
+            if !reinstall {
+                let _ = uninstall_files(layout, run);
+            }
+            return Err(e.context("cannot register this Device; is the Server Address and Server Key right?"));
+        }
+    };
+    install_service(layout, &opts, run)?;
+    write!(
         out,
-        "installed {UNIT} and {}\nDevice ID: {}\nDevice Password: {password}\n\
+        "installed {UNIT} and {}\n{registered}\
          The root service captures the lock screen and the display-manager greeter over X11; a Wayland \
          greeter or session is not visible until it runs an X11 session. On a headless server, metrics, \
-         exec, shell and power work without a display.",
+         exec, shell and power work without a display.\n",
         layout.exe().display(),
-        creds.device_id,
     )?;
     if !rcli_agent::secret_store::systemd_creds_available() {
         writeln!(
@@ -222,13 +245,16 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     Ok(())
 }
 
-/// `sudo rcli agent uninstall`: removes the Device from the Server (see `install::unregister`), then stops and removes
-/// the service and deletes the Device's local data.
+/// `sudo rcli uninstall`: removes the Device from the Server (see `install::unregister`), then stops and removes the
+/// service and deletes the Device's local data and the machine-wide Controller configuration.
 pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-    anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli agent uninstall");
-    let layout = Layout { root: "/".into() };
-    crate::install::unregister(recorded_server(&layout), &layout.state_dir(), out).await?;
-    uninstall_files(&layout, &mut system)?;
+    anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli uninstall");
+    uninstall_at(&Layout { root: "/".into() }, &mut system, out).await
+}
+
+pub async fn uninstall_at(layout: &Layout, run: Run<'_>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    crate::install::unregister(recorded_server(layout), &layout.state_dir(), out).await?;
+    uninstall_files(layout, run)?;
     writeln!(out, "removed {UNIT}, {} and the Device's local data", layout.exe().display())?;
     Ok(())
 }
@@ -282,7 +308,7 @@ mod tests {
         assert_eq!(std::fs::metadata(layout.state_dir()).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(std::fs::metadata(layout.env_file()).unwrap().permissions().mode() & 0o777, 0o600, "it holds the Server Key");
         assert_eq!(std::fs::metadata(layout.install_file()).unwrap().permissions().mode() & 0o777, 0o600);
-        // The app menu launches the window with no arguments; `rcli agent install` puts the entry there.
+        // The app menu launches the window with no arguments; `rcli install` puts the entry there.
         let desktop = std::fs::read_to_string(layout.desktop_file()).unwrap();
         assert!(desktop.contains("Exec=/usr/local/bin/rcli\n"), "{desktop}");
         assert!(desktop.contains("[Desktop Entry]") && desktop.contains("Terminal=false"), "{desktop}");

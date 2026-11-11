@@ -1,24 +1,83 @@
-//! Controller configuration: the per-user config directory holds the Server Address, the Server Key and the pinned
-//! update key; remembered Device Passwords live in the OS keychain (Keychain, Credential Manager, Secret Service),
-//! with a `0600` file fallback.
+//! Controller configuration (ADR 0006): `rcli install` writes the machine-wide part, read-only for every local user
+//! (Server Address, Server Key, pinned update key, API Address). Each user's config directory holds their User
+//! session; their remembered Device Passwords live in the OS keychain (Keychain, Credential Manager, Secret
+//! Service), with a `0600` file fallback.
 
 use std::path::{Path, PathBuf};
 
 use rcli_agent::secret_store::SecretStore;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
-/// `<config dir>/config.json`.
+/// `<config dir>/config.json`: this user's own part.
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Config {
-    pub server: String,
-    pub server_key: String,
-    /// Hex Ed25519 update key pinned at `rcli setup`.
-    #[serde(default)]
-    pub update_key: String,
     /// User session from `rcli login` (ticket 05).
     #[serde(default)]
     pub session: Option<String>,
+}
+
+/// The machine-wide Controller configuration `rcli install` writes. The Agent keeps `api_address` current.
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct Machine {
+    /// The Server Address the Agent dials, host:port.
+    pub server: String,
+    pub server_key: String,
+    /// Hex Ed25519 update key the Device pinned at registration.
+    #[serde(default)]
+    pub update_key: String,
+    /// Where Controllers call the Server; empty until the Server has one.
+    #[serde(default)]
+    pub api_address: String,
+}
+
+/// The machine-wide configuration file, under `root` instead of `/` for the `--root` test seam.
+pub fn machine_path(root: Option<&Path>) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let program_data = match root {
+            Some(root) => root.join("ProgramData"),
+            None => std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData")),
+        };
+        program_data.join("rcli").join("controller.json")
+    }
+    #[cfg(not(windows))]
+    crate::install::at(root.unwrap_or(Path::new("/")), "/etc/rcli/controller.json")
+}
+
+/// Writes the machine-wide configuration readable by every local user (Windows: `windows_install` sets the ACL).
+pub fn save_machine(path: &Path, machine: &Machine) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(machine)?)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
+    Ok(())
+}
+
+pub fn load_machine(path: &Path) -> anyhow::Result<Option<Machine>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The machine-wide configuration, or the message to install first.
+pub fn installed(path: &Path) -> anyhow::Result<Machine> {
+    load_machine(path)?.ok_or_else(|| {
+        anyhow::anyhow!("rcli is not installed on this machine: run `sudo rcli install --server <Server Address> --key <Server Key>`")
+    })
+}
+
+/// Where Controller commands call the Server, or why they cannot yet.
+pub fn api_address(machine: &Machine) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        !machine.api_address.is_empty(),
+        "the Server has no API Address yet: an Admin must open the Dashboard over https:// once (or set it in Server \
+         Settings); this machine picks it up when its Agent next connects"
+    );
+    Ok(machine.api_address.clone())
 }
 
 /// The platform's per-user config directory; `RCLI_CONFIG_DIR` overrides it (tests).
@@ -59,7 +118,7 @@ fn save(dir: &Path, config: &Config) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join("config.json");
     std::fs::write(&path, serde_json::to_vec_pretty(config)?)?;
-    // The file holds the User session, so keep it private even if an older `rcli setup` created it world-readable.
+    // The file holds the User session: private to this user.
     #[cfg(unix)]
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     Ok(())
@@ -67,7 +126,7 @@ fn save(dir: &Path, config: &Config) -> anyhow::Result<()> {
 
 /// Stores (or with `None` clears) the User session from `rcli login` / `rcli logout`.
 pub fn set_session(dir: &Path, session: Option<String>) -> anyhow::Result<Config> {
-    let mut config = load_at(dir)?.ok_or_else(|| anyhow::anyhow!("run `rcli setup` first (no saved Server Address)"))?;
+    let mut config = load_at(dir)?.unwrap_or_default();
     config.session = session;
     save(dir, &config)?;
     Ok(config)
@@ -109,42 +168,6 @@ pub(crate) fn check_transport(base: &str) -> anyhow::Result<()> {
         ),
         other => anyhow::bail!("the Server Address must start with https:// (not {other}://)"),
     }
-}
-
-/// `rcli setup`: saves the Server Address, Server Key and the pinned update key.
-pub async fn setup(dir: &Path, server: &str, key: &str) -> anyhow::Result<String> {
-    let server_key = rcli_protocol::server_key::ServerKey::parse(key)
-        .ok_or_else(|| anyhow::anyhow!("the Server Key must look like rk_<fingerprint>_<secret>"))?;
-    let base = server.trim().trim_end_matches('/');
-    check_transport(base)?;
-    let http = reqwest::Client::new();
-    // A key for another Server is caught here. The CA is public, so this proves nothing about who answers: the
-    // update key's HMAC under the secret does that, and https protects the secret on the way (see ADR 0003).
-    let ca = http.get(format!("{base}/api/v1/server-ca")).send().await?.error_for_status()?.text().await?;
-    anyhow::ensure!(
-        rcli_agent::ca_fingerprint(&ca)? == server_key.fingerprint,
-        "the Server's CA fingerprint does not match the Server Key"
-    );
-    let update: serde_json::Value = http.get(format!("{base}/api/v1/update-key")).send().await?.error_for_status()?.json().await?;
-    let update_key = update["update_key"].as_str().unwrap_or_default().to_owned();
-    check_pin(&server_key.secret, &update_key, update["mac"].as_str())?;
-    let config = Config {
-        server: base.to_owned(),
-        server_key: key.trim().to_owned(),
-        update_key,
-        session: None,
-    };
-    save(dir, &config)?;
-    Ok(format!("saved the Server {} and its key\n", config.server))
-}
-
-/// The update key must come with the HMAC under the Server Key's secret, or an impostor could swap it in.
-fn check_pin(server_key_secret: &str, update_key_hex: &str, mac: Option<&str>) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        mac == Some(hex::encode(rcli_protocol::update::pin_mac(server_key_secret, update_key_hex)).as_str()),
-        "the Server did not prove the update key with this Server Key; refusing to pin it"
-    );
-    Ok(())
 }
 
 /// A remembered Device Password and the Controller's name it was saved with.
@@ -300,11 +323,6 @@ pub async fn verify(server: &str, key: &str, device: &str, password: &str, contr
         anyhow::bail!("{message}");
     }
     anyhow::bail!("the Device ID or Device Password is wrong: {message}")
-}
-
-/// The JSON `rcli setup --json` prints.
-pub fn json(config: &Config) -> serde_json::Value {
-    json!({ "server": config.server, "server_key": config.server_key, "update_key": config.update_key })
 }
 
 #[cfg(test)]

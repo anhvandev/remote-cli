@@ -1,10 +1,10 @@
 //! `rcli upgrade`: fetch the build the Server is rolling out for this OS/arch, verify it with the update key pinned
-//! at `rcli setup`, and replace the running binary. As root/Administrator on an installed Device the Agent service is
+//! at `rcli install`, and replace the running binary. As root/Administrator on an installed Device the Agent service is
 //! restarted onto it too.
 
 use std::path::{Path, PathBuf};
 
-use crate::config::Config;
+use crate::config::Machine;
 
 pub struct Upgraded {
     pub version: String,
@@ -13,15 +13,15 @@ pub struct Upgraded {
     pub restarted: bool,
 }
 
-pub async fn run(config: &Config, path: &Path, socket: Option<PathBuf>) -> anyhow::Result<Upgraded> {
+pub async fn run(config: &Machine, path: &Path, socket: Option<PathBuf>) -> anyhow::Result<Upgraded> {
     let key = hex::decode(config.update_key.trim()).unwrap_or_default();
-    anyhow::ensure!(!key.is_empty(), "no update key is pinned; run `rcli setup` again");
+    anyhow::ensure!(!key.is_empty(), "no update key is pinned; run `sudo rcli install` again");
 
     let target = rcli_agent::target();
     // A running Agent names this Device, so the Server serves the build rolled out to it; a Controller-only install
     // has no Device row and gets the newest published build.
     let device = local_device(&socket.unwrap_or_else(rcli_agent::ipc::default_socket)).await;
-    let url = format!("{}/api/v1/agent-builds/{target}", config.server.trim_end_matches('/'));
+    let url = format!("{}/api/v1/agent-builds/{target}", crate::config::api_address(config)?.trim_end_matches('/'));
     let url = match &device {
         Some(device) => format!("{url}?device={device}"),
         None => url,
@@ -156,7 +156,7 @@ fn service_to_restart() -> anyhow::Result<bool> {
 /// upgrade can refuse before replacing anything), stop it for the swap when needed, and start it onto the new binary.
 #[cfg(target_os = "linux")]
 mod service {
-    /// The same unit `rcli agent install` wrote (ticket 16 owns the name).
+    /// The same unit `rcli install` wrote (ticket 16 owns the name).
     const UNIT: &str = crate::linux_install::UNIT;
 
     pub fn installed() -> anyhow::Result<()> {
@@ -183,7 +183,7 @@ mod service {
 mod service {
     use std::path::Path;
 
-    /// The root LaunchDaemon `rcli agent install` wrote (ticket 24 owns the label).
+    /// The root LaunchDaemon `rcli install` wrote (ticket 24 owns the label).
     const DAEMON: &str = crate::macos_install::DAEMON;
 
     pub fn installed() -> anyhow::Result<()> {
@@ -223,7 +223,7 @@ mod service {
         },
     };
 
-    /// The same SCM service `rcli agent install` created (ticket 22 owns the name).
+    /// The same SCM service `rcli install` created (ticket 22 owns the name).
     const NAME: &str = crate::windows_install::SERVICE;
     /// How long the SCM may take to report STOPPED after a stop request (it applies the request asynchronously).
     const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);

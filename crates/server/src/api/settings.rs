@@ -68,7 +68,8 @@ async fn set_address(
     Ok(Json(json!({ "server_address": body.address })))
 }
 
-/// An Admin's correction of the API Address: an `https://` origin, no path. Agents get it on their next connection.
+/// An Admin's correction of the API Address: an `https://` origin (or `http://` to loopback), no path. Agents get it
+/// on their next connection.
 async fn set_api_address(
     Admin(_): Admin,
     State(state): State<super::State>,
@@ -76,11 +77,17 @@ async fn set_api_address(
 ) -> Result<Json<Value>, ApiError> {
     let Json(body) = body.map_err(|e| bad_request(e.body_text()))?;
     let uri: axum::http::Uri = body.address.trim().parse().map_err(|_| bad_request("the API Address must be an https:// URL"))?;
-    let authority = match (uri.scheme_str(), uri.authority(), uri.path_and_query().map(|p| p.as_str())) {
-        (Some("https"), Some(a), None | Some("/")) if !a.as_str().contains('@') => a,
+    // Plain http only to this computer, the rule the CLI applies too: a Server and its Controllers on one machine.
+    let loopback = |host: &str| {
+        let host = host.trim_matches(['[', ']']);
+        host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    };
+    let (scheme, authority) = match (uri.scheme_str(), uri.authority(), uri.path_and_query().map(|p| p.as_str())) {
+        (Some(scheme @ "https"), Some(a), None | Some("/")) if !a.as_str().contains('@') => (scheme, a),
+        (Some(scheme @ "http"), Some(a), None | Some("/")) if !a.as_str().contains('@') && loopback(a.host()) => (scheme, a),
         _ => return Err(bad_request("the API Address must be an https:// origin such as https://rcli.example.com")),
     };
-    let url = format!("https://{authority}");
+    let url = format!("{scheme}://{authority}");
     state.settings.set_api_address(&state.db, &url).await?;
     Ok(Json(json!({ "api_address": url })))
 }

@@ -1,4 +1,4 @@
-//! `rcli agent install|uninstall` on macOS (ticket 24): the app bundle in /Applications (TCC grants stick to it),
+//! `rcli install|uninstall` on macOS (ticket 24): the app bundle in /Applications (TCC grants stick to it),
 //! a root LaunchDaemon running the Agent, and a LaunchAgent in the LoginWindow and Aqua sessions doing its screen
 //! work (ADR 0001). Every path hangs off `Layout::root`, and every external command goes through `run`, so the
 //! file layout and the `launchctl` calls are tested without touching the Device.
@@ -47,6 +47,10 @@ impl Layout {
     }
     fn log(&self) -> PathBuf {
         self.at("/Library/Logs/rcli-agent.log")
+    }
+    /// The machine-wide Controller configuration, readable by every local user (the state directory is root-only).
+    pub fn controller_config(&self) -> PathBuf {
+        crate::config::machine_path(Some(&self.root))
     }
 }
 
@@ -161,7 +165,7 @@ pub fn uninstall_files(layout: &Layout, console_uid: Option<u32>, run: Run) -> a
     if let Some(uid) = console_uid.filter(|&uid| uid != 0) {
         let _ = run("/bin/launchctl", &["bootout", &format!("gui/{uid}/{SESSION}")]);
     }
-    for file in [layout.daemon_plist(), layout.session_plist(), layout.link(), layout.session_socket()] {
+    for file in [layout.daemon_plist(), layout.session_plist(), layout.link(), layout.session_socket(), layout.controller_config()] {
         let _ = std::fs::remove_file(file);
     }
     for dir in [layout.state_dir(), layout.app()] {
@@ -177,37 +181,61 @@ fn console_uid() -> Option<u32> {
     Some(std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/dev/console").ok()?))
 }
 
-/// `sudo rcli agent install`: app, settings, registration, then both launchd jobs.
+/// `sudo rcli install`: app, settings, registration and the machine-wide Controller configuration, then both launchd
+/// jobs.
 pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-    anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli agent install --server … --key …");
-    let layout = Layout { root: "/".into() };
-    install_files(&layout, &opts, &std::env::current_exe()?, &mut system)?;
-    // Register now, so a wrong Server Key fails here and the Device ID can be shown; the service finds the credentials.
+    anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli install --server … --key …");
     let platform = rcli_agent::macos::MacPlatform::new(opts.name.clone())?;
-    let (creds, password) = crate::install::register(&opts, &platform, &layout.state_dir()).await?;
-    install_jobs(&layout, &opts, console_uid(), &mut system)?;
-    writeln!(
+    install_at(&Layout { root: "/".into() }, opts, &platform, console_uid(), &mut system, out).await
+}
+
+/// `install` on `layout`, registering with `platform`'s inventory; the `--root` test seam calls it directly.
+pub async fn install_at(
+    layout: &Layout,
+    opts: Options,
+    platform: &dyn rcli_agent::platform::Platform,
+    console_uid: Option<u32>,
+    run: Run<'_>,
+    out: &mut dyn std::io::Write,
+) -> anyhow::Result<()> {
+    // A reinstall must not destroy a working install when the new Server Key is wrong.
+    let reinstall = layout.state_dir().join("credentials.json").exists();
+    install_files(layout, &opts, &std::env::current_exe()?, run)?;
+    // Register now, so a wrong Server Key fails here and the Device ID can be shown; the service finds the credentials.
+    let registered = match crate::install::register(&opts, platform, &layout.state_dir(), &layout.controller_config()).await {
+        Ok(registered) => registered,
+        Err(e) => {
+            if !reinstall {
+                let _ = uninstall_files(layout, console_uid, run);
+            }
+            return Err(e.context("cannot register this Device; is the Server Address and Server Key right?"));
+        }
+    };
+    install_jobs(layout, &opts, console_uid, run)?;
+    write!(
         out,
-        "installed {} with the launchd jobs {DAEMON} and {SESSION}\nDevice ID: {}\nDevice Password: {password}\n\
+        "installed {} with the launchd jobs {DAEMON} and {SESSION}\n{registered}\
          Next: open rcli from Applications and allow it Screen Recording and Accessibility \
-         (System Settings > Privacy & Security), so Controllers can see and use the screen.",
+         (System Settings > Privacy & Security), so Controllers can see and use the screen.\n",
         layout.app().display(),
-        creds.device_id,
     )?;
     Ok(())
 }
 
-/// `sudo rcli agent uninstall`: removes the Device from the Server (see `install::unregister`), then stops and removes
-/// both jobs, the app and the Device's local data.
+/// `sudo rcli uninstall`: removes the Device from the Server (see `install::unregister`), then stops and removes both
+/// jobs, the app, the Device's local data and the machine-wide Controller configuration.
 pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-    anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli agent uninstall");
-    let layout = Layout { root: "/".into() };
+    anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli uninstall");
+    uninstall_at(&Layout { root: "/".into() }, console_uid(), &mut system, out).await
+}
+
+pub async fn uninstall_at(layout: &Layout, console_uid: Option<u32>, run: Run<'_>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     let server = std::fs::read_to_string(layout.state_dir().join("install.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .and_then(|v| v["server"].as_str().map(str::to_owned));
     crate::install::unregister(server, &layout.state_dir(), out).await?;
-    uninstall_files(&layout, console_uid(), &mut system)?;
+    uninstall_files(layout, console_uid, run)?;
     writeln!(out, "removed the launchd jobs {DAEMON} and {SESSION}, {} and the Device's local data", layout.app().display())?;
     Ok(())
 }

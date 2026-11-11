@@ -196,6 +196,22 @@ impl Prompts {
     }
 }
 
+/// Sets `api_address` in the machine-wide Controller configuration at `path`, if `rcli install` wrote one and it
+/// differs. Rewritten in place, so the file keeps the read-only-for-users permissions the install gave it.
+fn write_api_address(path: &Path, url: &str) -> anyhow::Result<()> {
+    let mut config: Value = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    if config["api_address"] == url {
+        return Ok(());
+    }
+    config["api_address"] = url.into();
+    std::fs::write(path, serde_json::to_vec_pretty(&config)?)?;
+    Ok(())
+}
+
 /// What the local callers see of the running Agent: `rcli agent …`, the GUI and scripts.
 pub struct Status {
     device_id: RwLock<String>,
@@ -206,6 +222,8 @@ pub struct Status {
     secrets: Arc<dyn SecretStore>,
     /// Where `rcli agent run` keeps its credentials, so a new Device ID survives a restart (None in tests).
     credentials: Mutex<Option<PathBuf>>,
+    /// The machine-wide Controller configuration `rcli install` wrote; the Agent keeps its API Address current.
+    controller_config: Mutex<Option<PathBuf>>,
     changes: mpsc::UnboundedSender<Change>,
     changes_rx: Mutex<Option<mpsc::UnboundedReceiver<Change>>>,
     /// Controllers the person at the Device disconnected, forwarded to the Server over the live connection.
@@ -234,6 +252,7 @@ impl Status {
             connected: AtomicBool::new(false),
             secrets,
             credentials: Mutex::new(None),
+            controller_config: Mutex::new(None),
             changes,
             changes_rx: Mutex::new(Some(changes_rx)),
             disconnects,
@@ -294,6 +313,17 @@ impl Status {
 
     pub fn set_api_address(&self, url: &str) {
         *self.api_address.write().unwrap() = url.to_owned();
+        if let Some(path) = self.controller_config.lock().unwrap().as_deref() {
+            if let Err(e) = write_api_address(path, url) {
+                tracing::warn!("cannot record the API Address in {}: {e:#}", path.display());
+            }
+        }
+    }
+
+    /// The machine-wide Controller configuration whose `api_address` this Agent keeps current. A machine where
+    /// `rcli install` wrote none (a development `rcli agent run`) keeps none.
+    pub fn set_controller_config(&self, path: PathBuf) {
+        *self.controller_config.lock().unwrap() = Some(path);
     }
 
     pub fn subscribe(&self) -> watch::Receiver<ServerAccess> {
