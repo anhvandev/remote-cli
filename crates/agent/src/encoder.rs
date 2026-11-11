@@ -12,6 +12,10 @@ use openh264::{
 /// `hwcodec` encoders to try, best first. An OS without an entry encodes in software.
 #[cfg(all(feature = "hwcodec", target_os = "macos"))]
 const HARDWARE: &[&str] = &["h264_videotoolbox"];
+/// Windows: the GPU vendor's encoder (NVIDIA, AMD, Intel), then Media Foundation. RustDesk's FFmpeg build has no
+/// `h264_mf`, so that one starts only with an FFmpeg configured `--enable-mediafoundation --enable-encoder=h264_mf`.
+#[cfg(all(feature = "hwcodec", windows))]
+const HARDWARE: &[&str] = &["h264_nvenc", "h264_amf", "h264_qsv", "h264_mf"];
 
 /// An H.264 encoder for one stream at a fixed size, bitrate and frame rate.
 pub struct H264 {
@@ -22,14 +26,14 @@ pub struct H264 {
 
 enum Inner {
     Software(Box<Encoder>),
-    #[cfg(all(feature = "hwcodec", target_os = "macos"))]
+    #[cfg(all(feature = "hwcodec", any(target_os = "macos", windows)))]
     Hardware(Box<hardware::Encoder>),
 }
 
 impl H264 {
     /// Opens a hardware encoder if `hardware` allows and one starts, else openh264. `width` and `height` are even.
     pub fn open(width: u32, height: u32, bps: u32, fps: f32, hardware: bool) -> anyhow::Result<Self> {
-        #[cfg(all(feature = "hwcodec", target_os = "macos"))]
+        #[cfg(all(feature = "hwcodec", any(target_os = "macos", windows)))]
         if hardware {
             for name in HARDWARE {
                 match hardware::Encoder::open(name, width, height, bps, fps) {
@@ -46,7 +50,7 @@ impl H264 {
     pub fn name(&self) -> &'static str {
         match &self.inner {
             Inner::Software(_) => "openh264",
-            #[cfg(all(feature = "hwcodec", target_os = "macos"))]
+            #[cfg(all(feature = "hwcodec", any(target_os = "macos", windows)))]
             Inner::Hardware(e) => e.name,
         }
     }
@@ -62,7 +66,7 @@ impl H264 {
         let yuv = YUVBuffer::from_rgba8_source(RgbaSliceU8::new(rgba, (self.width as usize, self.height as usize)));
         match &mut self.inner {
             Inner::Software(e) => Ok(e.encode(&yuv)?.to_vec()),
-            #[cfg(all(feature = "hwcodec", target_os = "macos"))]
+            #[cfg(all(feature = "hwcodec", any(target_os = "macos", windows)))]
             Inner::Hardware(e) => match e.encode(&yuv) {
                 Ok(data) => Ok(data),
                 Err(code) => {
@@ -86,7 +90,7 @@ fn software(bps: u32, fps: f32) -> anyhow::Result<Encoder> {
     Ok(Encoder::with_api_config(OpenH264API::from_source(), config)?)
 }
 
-#[cfg(all(feature = "hwcodec", target_os = "macos"))]
+#[cfg(all(feature = "hwcodec", any(target_os = "macos", windows)))]
 mod hardware {
     use std::time::{Duration, Instant};
 
@@ -103,7 +107,7 @@ mod hardware {
         pub bps: u32,
         pub fps: f32,
         hw: Hw,
-        /// The frame in the encoder's I420 layout, reused.
+        /// The frame in the encoder's NV12 layout (Y plane, then interleaved U and V), reused.
         buf: Vec<u8>,
         started: Instant,
         /// Whether it has produced any output yet.
@@ -117,7 +121,8 @@ mod hardware {
                 mc_name: None,
                 width: width as i32,
                 height: height as i32,
-                pixfmt: AVPixelFormat::AV_PIX_FMT_YUV420P,
+                // NV12, not I420: Windows' encoders take frames on D3D11 surfaces (NVENC) or only NV12 (QSV).
+                pixfmt: AVPixelFormat::AV_PIX_FMT_NV12,
                 align: 0,
                 fps: fps.round() as i32,
                 // One keyframe at the start; a viewer that needs another gets a new encoder.
@@ -137,12 +142,14 @@ mod hardware {
         pub fn encode(&mut self, yuv: &YUVBuffer) -> Result<Vec<u8>, i32> {
             let (w, h) = yuv.dimensions();
             let (ys, us, vs) = yuv.strides();
-            let planes = [(yuv.y(), ys, h, 0), (yuv.u(), us, h / 2, self.hw.offset[0]), (yuv.v(), vs, h / 2, self.hw.offset[1])];
-            for (i, (src, stride, rows, at)) in planes.into_iter().enumerate() {
-                let (line, width) = (self.hw.linesize[i] as usize, if i == 0 { w } else { w / 2 });
-                for r in 0..rows {
-                    let to = at as usize + r * line;
-                    self.buf[to..to + width].copy_from_slice(&src[r * stride..r * stride + width]);
+            let (y_line, uv_line, uv_at) = (self.hw.linesize[0] as usize, self.hw.linesize[1] as usize, self.hw.offset[0] as usize);
+            for r in 0..h {
+                self.buf[r * y_line..r * y_line + w].copy_from_slice(&yuv.y()[r * ys..r * ys + w]);
+            }
+            for r in 0..h / 2 {
+                let row = &mut self.buf[uv_at + r * uv_line..uv_at + r * uv_line + w];
+                for (c, uv) in row.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                    *uv = [yuv.u()[r * us + c], yuv.v()[r * vs + c]];
                 }
             }
             match self.hw.encode(&self.buf, self.started.elapsed().as_millis() as i64) {
@@ -153,6 +160,51 @@ mod hardware {
                 Err(-1) if self.produced || self.started.elapsed() < Duration::from_secs(1) => Ok(vec![]),
                 Err(code) => Err(code),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use openh264::decoder::Decoder;
+
+    use super::*;
+
+    /// Whichever encoder starts here (a hardware one with `--features hwcodec` on a machine that has it, openh264
+    /// otherwise), what it sends decodes back to the colours it was given: the frame reached it in the right layout.
+    #[test]
+    fn encoded_frames_decode_back_to_their_colours() {
+        let colours = [[220, 40, 40], [40, 200, 60], [50, 60, 210], [230, 220, 60]];
+        let (w, h) = (320, 240);
+        let frame = RgbaImage::from_fn(w, h, |x, y| {
+            let [r, g, b] = colours[(x >= w / 2) as usize + 2 * (y >= h / 2) as usize];
+            image::Rgba([r, g, b, 255])
+        });
+        let mut encoder = H264::open(w, h, 2_000_000, 10.0, true).unwrap();
+        let name = encoder.name();
+        let mut decoder = Decoder::new().unwrap();
+        let mut rgb = vec![0; (w * h * 3) as usize];
+        let mut decoded = false;
+        for _ in 0..20 {
+            let data = encoder.encode(&frame).unwrap();
+            if !data.is_empty() {
+                if let Some(yuv) = decoder.decode(&data).unwrap() {
+                    yuv.write_rgb8(&mut rgb);
+                    decoded = true;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        assert!(decoded, "{name} sent no picture");
+        assert_eq!(encoder.name(), name, "{name} failed mid-stream");
+        for (i, c) in colours.iter().enumerate() {
+            let (x, y) = (w / 4 + (i as u32 % 2) * w / 2, h / 4 + (i as u32 / 2) * h / 2);
+            let at = ((y * w + x) * 3) as usize;
+            let got = &rgb[at..at + 3];
+            assert!(got.iter().zip(c).all(|(g, c)| g.abs_diff(*c) < 25), "{name}: quadrant {i} came back {got:?}, sent {c:?}");
         }
     }
 }

@@ -5,7 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [features]
-# Live View's hardware H.264 (VideoToolbox) through RustDesk's hwcodec; needs VCPKG_ROOT with RustDesk's FFmpeg
+# Live View's hardware H.264 (VideoToolbox; NVENC, AMF, QSV, Media Foundation on Windows) through RustDesk's hwcodec; needs VCPKG_ROOT with RustDesk's FFmpeg
 # (docs/usage.md). Off: openh264 only, nothing extra to build.
 hwcodec = ["dep:hwcodec"]
 
@@ -58,6 +58,7 @@ zbus = "5"
 [target.'cfg(windows)'.dependencies]
 base64.workspace = true
 enigo = "0.6"
+hwcodec = { git = "https://github.com/rustdesk-org/hwcodec", rev = "ec38ebaf2454269d4c5668a57e3813c6e5541be7", optional = true }
 portable-pty = "0.9"
 sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "user"] }
 xcap = "0.9"
