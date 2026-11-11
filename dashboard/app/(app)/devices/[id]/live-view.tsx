@@ -3,6 +3,7 @@
 // (app/api/...) to the Server; media flows peer-to-peer, or through TURN when NAT blocks a direct path.
 // While the person holds the Control Lock, their mouse and keyboard on the view become Actions (POST .../actions),
 // which the Server checks against the lock and audits like any Controller's.
+// The video comes at the display's native size; each viewer picks a Live View Quality for their own stream.
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type WheelEvent } from "react";
 import { MonitorPlay } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -24,6 +25,14 @@ async function json(res: Response) {
   return body;
 }
 
+/** Size of the Observation image of a `width` x `height` display: long edge at most 1280 (as the Agent's coords.rs). */
+function observed(width: number, height: number) {
+  const long = Math.max(width, height);
+  if (long <= 1280) return { width, height };
+  const scale = (v: number) => Math.max(1, Math.floor((v * 1280) / long));
+  return { width: scale(width), height: scale(height) };
+}
+
 /** Browser key -> Action key combo ("ctrl+enter"); plain characters are typed as text instead. */
 function keys(e: KeyboardEvent) {
   const mods = [e.ctrlKey && "ctrl", e.altKey && "alt", e.shiftKey && "shift", e.metaKey && "meta"].filter(Boolean);
@@ -42,8 +51,9 @@ export function LiveView({ device, name }: { device: string; name: string }) {
   const [displays, setDisplays] = useState<{ index: number; primary: boolean; width: number; height: number }[]>([]);
   // The streamed display; input Actions target it.
   const [display, setDisplay] = useState(0);
-  const live = useRef<{ pc: RTCPeerConnection; session?: string }>(undefined);
+  const live = useRef<{ pc: RTCPeerConnection; picker: RTCDataChannel; session?: string }>(undefined);
   const video = useRef<HTMLVideoElement>(null);
+  const quality = useRef<HTMLSelectElement>(null);
   const base = `/api/devices/${encodeURIComponent(device)}/live`;
 
   function stop() {
@@ -67,7 +77,10 @@ export function LiveView({ device, name }: { device: string; name: string }) {
       const shown: number = pick ?? list.find((d: { primary: boolean }) => d.primary)?.index ?? 0;
       setDisplay(shown);
       const pc = new RTCPeerConnection({ iceServers: await json(await fetch("/api/ice-servers")) });
-      live.current = { pc };
+      // The Agent opens the same negotiated channel; it hears this viewer's Live View Quality on it.
+      const picker = pc.createDataChannel("quality", { negotiated: true, id: 0 });
+      picker.onopen = () => picker.send(quality.current?.value ?? "balanced");
+      live.current = { pc, picker };
       pc.addTransceiver("video", { direction: "recvonly" });
       pc.ontrack = (e) => setStream(e.streams[0] ?? new MediaStream([e.track]));
       pc.onconnectionstatechange = () => {
@@ -114,11 +127,13 @@ export function LiveView({ device, name }: { device: string; name: string }) {
     send?.();
   }
 
-  /** Mouse position in Observation image space of the streamed display (the video is exactly that size). */
+  /** Mouse position in Observation image space of the streamed display (the video shows its native pixels). */
   function at(e: MouseEvent<HTMLVideoElement>) {
     const v = e.currentTarget;
-    const x = Math.min(v.videoWidth - 1, Math.floor((e.nativeEvent.offsetX * v.videoWidth) / v.clientWidth));
-    const y = Math.min(v.videoHeight - 1, Math.floor((e.nativeEvent.offsetY * v.videoHeight) / v.clientHeight));
+    const d = displays.find((d) => d.index === display);
+    const image = d ? observed(d.width, d.height) : observed(v.videoWidth, v.videoHeight);
+    const x = Math.min(image.width - 1, Math.floor((e.nativeEvent.offsetX * image.width) / v.clientWidth));
+    const y = Math.min(image.height - 1, Math.floor((e.nativeEvent.offsetY * image.height) / v.clientHeight));
     return { display, x: Math.max(0, x), y: Math.max(0, y) };
   }
 
@@ -203,6 +218,21 @@ export function LiveView({ device, name }: { device: string; name: string }) {
                 ))}
               </select>
             )}
+            <select
+              ref={quality}
+              aria-label="Live View Quality"
+              title="Quality: nét nhất · Balanced · Speed: mượt nhất"
+              className="h-8 rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              defaultValue="balanced"
+              onChange={(e) => {
+                const picker = live.current?.picker;
+                if (picker?.readyState === "open") picker.send(e.target.value);
+              }}
+            >
+              <option value="quality">Quality</option>
+              <option value="balanced">Balanced</option>
+              <option value="speed">Speed</option>
+            </select>
             <Button size="sm" variant="secondary" onClick={stop}>
               Dừng xem
             </Button>

@@ -7,11 +7,14 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     },
+    time::{Duration, Instant},
 };
 
+use openh264::{decoder::Decoder, formats::YUVSource};
 use serde_json::{json, Value};
 use webrtc::{
     api::{interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder},
+    data_channel::{data_channel_init::RTCDataChannelInit, data_channel_state::RTCDataChannelState, RTCDataChannel},
     ice_transport::{ice_candidate_type::RTCIceCandidateType, ice_server::RTCIceServer},
     interceptor::registry::Registry,
     peer_connection::{
@@ -21,6 +24,7 @@ use webrtc::{
     rtp_transceiver::{
         rtp_codec::RTPCodecType, rtp_transceiver_direction::RTCRtpTransceiverDirection, RTCRtpTransceiverInit,
     },
+    rtp::{codecs::h264::H264Packet, packetizer::Depacketizer},
     stats::StatsReportType,
     turn,
 };
@@ -35,12 +39,34 @@ pub struct LiveViewer {
     path: String,
     packets: Arc<AtomicUsize>,
     codec: Arc<Mutex<String>>,
+    /// Every complete video frame received: when, and its encoded size in bytes.
+    frames: Arc<Mutex<Vec<(Instant, usize)>>>,
+    /// Size of the last decoded picture.
+    size: Arc<Mutex<Option<(u32, u32)>>>,
+    /// The channel the Dashboard sends its Live View Quality on.
+    quality: Arc<RTCDataChannel>,
+}
+
+/// Frame rate and average encoded frame size over a window of a live stream.
+#[derive(Debug, Clone, Copy)]
+pub struct StreamRate {
+    pub fps: f64,
+    pub bytes_per_frame: f64,
 }
 
 impl LiveViewer {
     /// Opens a live view of `device` through the Controller API. `relay_only` forces media through TURN.
     /// `Err` = the API refused (status and error body).
     pub async fn open(api: &ApiClient, device: &str, relay_only: bool) -> Result<Self, (StatusCode, Value)> {
+        Self::connect(api, device, relay_only, None).await
+    }
+
+    /// Opens a live view of one `display` of `device`.
+    pub async fn open_display(api: &ApiClient, device: &str, display: u32) -> Result<Self, (StatusCode, Value)> {
+        Self::connect(api, device, false, Some(display)).await
+    }
+
+    async fn connect(api: &ApiClient, device: &str, relay_only: bool, display: Option<u32>) -> Result<Self, (StatusCode, Value)> {
         let (status, servers) = api.get("/api/v1/ice-servers").await;
         if status != StatusCode::OK {
             return Err((status, servers));
@@ -64,14 +90,29 @@ impl LiveViewer {
         let pc = Arc::new(api_rtc.new_peer_connection(config).await.unwrap());
         let recvonly = RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Recvonly, send_encodings: vec![] };
         pc.add_transceiver_from_kind(RTPCodecType::Video, Some(recvonly)).await.unwrap();
+        let init = RTCDataChannelInit { negotiated: Some(0), ..Default::default() };
+        let quality = pc.create_data_channel("quality", Some(init)).await.unwrap();
         let (packets, codec) = (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::new(String::new())));
-        let (p, c) = (packets.clone(), codec.clone());
+        let (frames, size) = (Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(None)));
+        let (p, c, f, sz) = (packets.clone(), codec.clone(), frames.clone(), size.clone());
         pc.on_track(Box::new(move |track, _, _| {
             *c.lock().unwrap() = track.codec().capability.mime_type.clone();
-            let p = p.clone();
+            let (p, f, sz) = (p.clone(), f.clone(), sz.clone());
             tokio::spawn(async move {
-                while track.read_rtp().await.is_ok() {
+                let (mut depacketizer, mut decoder, mut frame) = (H264Packet::default(), Decoder::new().unwrap(), vec![]);
+                while let Ok((packet, _)) = track.read_rtp().await {
                     p.fetch_add(1, Ordering::Relaxed);
+                    if let Ok(nals) = depacketizer.depacketize(&packet.payload) {
+                        frame.extend_from_slice(&nals);
+                    }
+                    if packet.header.marker {
+                        f.lock().unwrap().push((Instant::now(), frame.len()));
+                        if let Ok(Some(picture)) = decoder.decode(&frame) {
+                            let (w, h) = picture.dimensions();
+                            *sz.lock().unwrap() = Some((w as u32, h as u32));
+                        }
+                        frame.clear();
+                    }
                 }
             });
             Box::pin(async {})
@@ -82,7 +123,7 @@ impl LiveViewer {
         let _ = gathered.recv().await;
         let sdp = pc.local_description().await.unwrap().sdp;
         let path = format!("/api/v1/devices/{device}/live");
-        let (status, body) = api.post_json(&path, &json!({ "sdp": sdp })).await;
+        let (status, body) = api.post_json(&path, &json!({ "sdp": sdp, "display": display })).await;
         if status != StatusCode::CREATED {
             pc.close().await.unwrap();
             return Err((status, body));
@@ -90,7 +131,28 @@ impl LiveViewer {
         let answer = RTCSessionDescription::answer(body["sdp"].as_str().unwrap().into()).unwrap();
         pc.set_remote_description(answer).await.unwrap();
         let session = body["session"].as_str().unwrap().to_owned();
-        Ok(Self { pc, path: format!("{path}/{session}"), session, packets, codec })
+        Ok(Self { pc, path: format!("{path}/{session}"), session, packets, codec, frames, size, quality })
+    }
+
+    /// Size in pixels of the pictures being streamed, once one has been decoded.
+    pub async fn frame_size(&self) -> (u32, u32) {
+        eventually(|| async { *self.size.lock().unwrap() }).await
+    }
+
+    /// Picks a Live View Quality ("quality", "balanced" or "speed") on the open stream, as the Dashboard's picker does.
+    pub async fn set_quality(&self, level: &str) {
+        eventually(|| async { (self.quality.ready_state() == RTCDataChannelState::Open).then_some(()) }).await;
+        self.quality.send_text(level.to_owned()).await.unwrap();
+    }
+
+    /// Frame rate and average encoded frame size of what arrives during the next `window`.
+    pub async fn measure(&self, window: Duration) -> StreamRate {
+        let from = Instant::now();
+        tokio::time::sleep(window).await;
+        let frames = self.frames.lock().unwrap();
+        let sizes: Vec<usize> = frames.iter().filter(|(at, _)| *at >= from).map(|(_, bytes)| *bytes).collect();
+        let n = sizes.len().max(1) as f64;
+        StreamRate { fps: sizes.len() as f64 / window.as_secs_f64(), bytes_per_frame: sizes.iter().sum::<usize>() as f64 / n }
     }
 
     /// Waits until at least `n` RTP packets of video have arrived.

@@ -8,7 +8,7 @@ mod live;
 
 use std::{future::Future, sync::Arc, time::Duration};
 
-pub use live::{local_candidate_type, LiveViewer, TestTurn};
+pub use live::{local_candidate_type, LiveViewer, StreamRate, TestTurn};
 
 pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState, UiElement};
 use rcli_agent::{Credentials, ServerAccess};

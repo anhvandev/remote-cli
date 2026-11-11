@@ -5171,6 +5171,7 @@ dependencies = [
  "futures",
  "hex",
  "mp4",
+ "openh264",
  "rcli",
  "rcli-agent",
  "rcli-protocol",
