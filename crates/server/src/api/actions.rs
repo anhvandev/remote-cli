@@ -18,7 +18,6 @@ pub fn routes() -> Router<super::State> {
     Router::new()
         .route("/api/v1/devices/{id}/actions", post(act))
         .route("/api/v1/devices/{id}/displays", get(displays))
-        .route("/api/v1/devices/{id}/unlock", post(unlock))
 }
 
 /// `{"actions": [...], "observe": "shot" | "none" | "frames" | "clip", "display": N | "all", "max_frames": N}`.
@@ -248,22 +247,8 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
         max_frames,
         marks: body.marks,
         media_session: body.media_session,
-        unlock: false,
     };
     send(state, device, req, &step_of).await
-}
-
-/// `unlock`: the Agent types the unlock password stored on the Device + Enter, then observes. Needs the Control Lock.
-/// The password never leaves the Device; the audit entry has no params at all.
-async fn unlock(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    let device = resolve_for(&user, &state, &id).await?;
-    control_lock::touch(&state, device, &user).await?;
-    control_lock::check(&state, device, &user).await?;
-    let req = proto::ActRequest { controller: user.controller_display(), unlock: true, ..Default::default() };
-    let result = send(&state, device, req, &[]).await;
-    let outcome = json!({ "error": result.as_ref().err().map(|e| e.code) });
-    audit::record(&state, &user, device, "unlock", json!({}), outcome).await?;
-    result
 }
 
 /// Sends `req` (its request_id is filled in) and returns the Observation JSON.

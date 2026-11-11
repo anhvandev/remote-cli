@@ -91,10 +91,8 @@ pub async fn unregister(server: Option<String>, state: &Path, out: &mut dyn std:
         }
     }
     let secrets = crate::agent::secret_store(state);
-    for name in [rcli_agent::ipc::DEVICE_PASSWORD, rcli_agent::ipc::UNLOCK_PASSWORD] {
-        if let Err(e) = secrets.remove(name) {
-            writeln!(out, "warning: {e:#}")?;
-        }
+    if let Err(e) = secrets.remove(rcli_agent::ipc::DEVICE_PASSWORD) {
+        writeln!(out, "warning: {e:#}")?;
     }
     Ok(())
 }

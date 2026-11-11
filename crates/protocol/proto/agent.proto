@@ -219,9 +219,7 @@ message ActRequest {
   bool marks = 10;
   // Open media channel (LiveOffer with `media`) of this Controller: large image/clip bytes go over it, not here.
   string media_session = 26;
-  // Type the unlock password this Device keeps in its Secret Store + Enter, instead of `actions`. The Server
-  // never sees the password; with none set the Agent answers `unlock_password_not_set`.
-  bool unlock = 27;
+  reserved 27; // was unlock: typed a stored unlock password (ADR 0005)
 }
 
 enum ObserveMode {

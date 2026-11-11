@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{auth::User, AppState};
 
 pub const RETENTION: chrono::Duration = chrono::Duration::days(90);
-/// Replaces secret values (passwords, `unlock` input) in `params`.
+/// Replaces secret values (passwords, secret or lock-screen `type` text) in `params`.
 pub const MASK: &str = "***";
 
 /// Record one Action. `action` names the kind ("act", "terminal", ...); `params` must already be masked;

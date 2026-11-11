@@ -183,7 +183,7 @@ rcli agent info                                  # Device ID + "connected"
 sudo journalctl -u rcli-agent.service -n 30 --no-pager
 ```
 
-### 10.2. Reboot, greeter, lock screen, unlock
+### 10.2. Reboot, greeter, lock screen
 
 ```bash
 sudo reboot
@@ -196,10 +196,9 @@ Các bước kiểm tra bằng mắt (chạy từ máy Controller):
 
 1. Đăng nhập desktop, `rcli shot <Device ID> --out /tmp/shot` → thấy màn hình desktop.
 2. Khoá màn hình (`loginctl lock-session` tại máy đó, hoặc `rcli power <Device ID> lock`), rồi `rcli shot` → thấy
-   màn hình khoá. `rcli act <Device ID> key enter` và `rcli unlock <Device ID>` (sau `sudo rcli agent unlock-password set`
-   tại máy đó) → mở khoá được.
+   màn hình khoá. `rcli act <Device ID> type '<mật khẩu>' --secret` rồi `rcli act <Device ID> key enter` → mở khoá được.
 3. Đăng xuất ra greeter (GDM/LightDM/SDDM), `rcli shot` → thấy màn hình đăng nhập; `rcli act` gõ được vào ô mật khẩu;
-   `rcli unlock` gõ mật khẩu + Enter để đăng nhập.
+   gõ mật khẩu với `--secret` + Enter để đăng nhập.
 4. `rcli exec <Device ID> -- whoami` → đúng Terminal User; `rcli shell <Device ID>` mở được shell.
 5. `rcli metrics <Device ID> history` vẫn có dữ liệu (Agent service tự lấy metrics, không phụ thuộc helper).
 

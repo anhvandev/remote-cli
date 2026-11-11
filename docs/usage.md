@@ -47,7 +47,7 @@ Cài xong in ra Device ID và Device Password. Binary ở `%ProgramFiles%\rcli\r
 
 Nếu Server Key sai, lệnh cài thất bại ngay và không để lại service hay file nào.
 
-**Màn khoá, màn đăng nhập và UAC.** Service chạy trong session 0 nên không thấy desktop của người dùng. Nó chạy một helper (`rcli agent session`) trong phiên console bằng token SYSTEM của chính nó, chuyển vào phiên đó (`DuplicateTokenEx` + `SetTokenInformation(TokenSessionId)`, cần `SeTcbPrivilege`) — đúng token mà winlogon dùng, nên mở được cả desktop `Winlogon` (màn khoá, màn đăng nhập) và secure desktop của UAC (`WTSQueryUserToken` chỉ là phương án dự phòng). Helper chuyển sang input desktop trước mỗi lần chụp/gõ. Vì vậy `shot`, `act`, `unlock` chạy được ở màn khoá, màn đăng nhập và hộp thoại UAC. Helper được chạy lại khi phiên console hoặc người đăng nhập đổi (đăng nhập, đăng xuất, chuyển user). Không cần cấp quyền Screen Recording như macOS. Lưu ý: vì helper chạy dưới SYSTEM, OCR (Windows.Media.Ocr) dùng profile của SYSTEM; nếu `--text` không nhận được chữ ở màn khoá, cài thêm gói ngôn ngữ OCR cho máy.
+**Màn khoá, màn đăng nhập và UAC.** Service chạy trong session 0 nên không thấy desktop của người dùng. Nó chạy một helper (`rcli agent session`) trong phiên console bằng token SYSTEM của chính nó, chuyển vào phiên đó (`DuplicateTokenEx` + `SetTokenInformation(TokenSessionId)`, cần `SeTcbPrivilege`) — đúng token mà winlogon dùng, nên mở được cả desktop `Winlogon` (màn khoá, màn đăng nhập) và secure desktop của UAC (`WTSQueryUserToken` chỉ là phương án dự phòng). Helper chuyển sang input desktop trước mỗi lần chụp/gõ. Vì vậy `shot` và `act` chạy được ở màn khoá, màn đăng nhập và hộp thoại UAC. Helper được chạy lại khi phiên console hoặc người đăng nhập đổi (đăng nhập, đăng xuất, chuyển user). Không cần cấp quyền Screen Recording như macOS. Lưu ý: vì helper chạy dưới SYSTEM, OCR (Windows.Media.Ocr) dùng profile của SYSTEM; nếu `--text` không nhận được chữ ở màn khoá, cài thêm gói ngôn ngữ OCR cho máy.
 
 **Ctrl+Alt+Del.** Windows chỉ cho tiến trình SYSTEM gửi secure attention sequence qua `SendSAS` (sas.dll), và phải bật policy một lần trên mỗi Device (mặc định là tắt):
 
@@ -79,7 +79,7 @@ Role chỉ còn quản trị Server; việc gì chạy được trên Device do 
 | Xem fleet, metrics, lịch sử, màn hình | ✅ | ✅ |
 | Điều khiển (khi giữ Control Lock), `exec`, `shell`, `--as root` | ✅ | ✅ |
 | Restart/Shut down/Sleep khi người khác giữ lock | ❌ | ❌ |
-| Users, Server Key, Server Address, Device (đổi tên/xoá/thu hồi/gộp), mật khẩu unlock, rollout Agent, audit, force-release lock | ❌ | ✅ |
+| Users, Server Key, Server Address, Device (đổi tên/xoá/thu hồi/gộp), rollout Agent, audit, force-release lock | ❌ | ✅ |
 
 ## Xem fleet
 
@@ -145,18 +145,19 @@ Bước nào lỗi thì batch dừng và báo `step` (đếm từ 0). Tổng `wa
 
 **Control Lock** tự hết sau 10 phút không có Action (mọi request của người giữ, kể cả chỉ chụp, đều gia hạn). `rcli mcp` và Dashboard còn được nhả sau 60 s nếu mất kết nối; CLI thường thì không. Admin: `rcli lock force-release demo-pc` (có ghi audit).
 
-## Màn khoá và `unlock`
+## Màn khoá và màn đăng nhập
+
+rcli không lưu mật khẩu đăng nhập OS ở đâu cả (ADR 0005). Controller tự gõ mật khẩu bằng `type` có `--secret`:
 
 ```bash
-# Tại chính Device, bằng root: mật khẩu nằm trong Secret Store của Agent, không bao giờ rời Device.
-sudo rcli agent unlock-password set --password '...'
-sudo rcli agent unlock-password clear                # bỏ mật khẩu đã lưu
 rcli lock acquire demo-pc
-rcli unlock demo-pc --out ./shots                    # Agent gõ mật khẩu đã lưu + Enter, trả ảnh sau đó
+rcli act demo-pc type '...' --secret --observe none  # che chữ trong audit log
+rcli act demo-pc key enter --out ./shots
 ```
 
-`rcli device show` cho biết `session`: `Active`, `LockScreen` hoặc `LoginScreen`. Trên Windows, xem thêm mục
-**Cài trên Windows** để bật policy cho `Ctrl+Alt+Del`; `unlock` gõ mật khẩu + Enter ở cả màn khoá và màn đăng nhập.
+`rcli device show` cho biết `session`: `Active`, `LockScreen` hoặc `LoginScreen`. Chữ gõ khi Device đang ở màn khoá
+hoặc màn đăng nhập luôn bị che trong audit, kể cả khi quên `--secret`. Trên Windows, xem thêm mục **Cài trên Windows**
+để bật policy cho `Ctrl+Alt+Del`. Màn đăng nhập macOS chỉ xem được, nên Mac cần bật auto-login nếu phải chịu được reboot.
 
 ## Terminal
 
@@ -196,7 +197,7 @@ rcli device delete <id>
 rcli audit --device demo-pc --since 2026-11-01T00:00:00Z
 ```
 
-Audit giữ 90 ngày: ai, lúc nào, Device nào, tham số, kết quả, exit code của lệnh terminal. Mật khẩu và nội dung `unlock` bị che; ảnh, clip và phím gõ trong `shell` không bao giờ được lưu.
+Audit giữ 90 ngày: ai, lúc nào, Device nào, tham số, kết quả, exit code của lệnh terminal. Mật khẩu, chữ gõ với `secret` và chữ gõ ở màn khoá/màn đăng nhập bị che; ảnh, clip và phím gõ trong `shell` không bao giờ được lưu.
 
 ## Dashboard
 
@@ -206,7 +207,7 @@ Mở `http://<server>:3080`, đăng nhập bằng tên + mật khẩu + mã TOTP
 - **Trang Device**: inventory, tài nguyên hiện tại, màn khoá/màn đăng nhập, người giữ Control Lock và giờ hết hạn, biểu đồ lịch sử (1h / 24h / 7d / 90d), nút Wake / Lock screen / Sleep / Restart / Shut down.
 - **Live view**: xem màn hình trực tiếp qua WebRTC, chọn màn hình nếu Device có nhiều. Khi bạn giữ Control Lock thì click và gõ trực tiếp lên video. Người khác giữ lock thì vẫn xem được và thấy ai giữ đến lúc nào.
 - **Web terminal**: ngay dưới live view; admin có thêm ô "as root".
-- **Quản trị** (chỉ admin): users, mật khẩu unlock, rollout Agent, đổi tên/gộp/thu hồi/xoá Device.
+- **Quản trị** (chỉ admin): users, rollout Agent, đổi tên/gộp/thu hồi/xoá Device.
 
 ## Dùng với Claude Code (MCP)
 
@@ -220,7 +221,7 @@ claude mcp add rcli -- /đường/dẫn/rcli mcp
 
 Tools: `devices`, `device`, `lock_acquire`, `lock_release`, `lock_status`, `observe` (shot / frames / clip / marks), `act`, `batch`, `exec`, `wake`, `power`. Ảnh trả về inline, bảng Mark nằm trong kết quả có cấu trúc. Mỗi AI agent nên dùng một user Dashboard riêng (qua `rcli login`) để audit tách bạch.
 
-Chưa có tool `unlock` và `shell` trong MCP; dùng `rcli unlock` hoặc `exec`.
+Ở màn khoá hoặc màn đăng nhập, AI agent tự gõ mật khẩu OS mà người dùng đưa cho nó bằng `type` có `"secret": true`; rcli không lưu mật khẩu này. Chưa có tool `shell` trong MCP; dùng `exec`.
 
 ## Thử nhanh trên một máy
 
