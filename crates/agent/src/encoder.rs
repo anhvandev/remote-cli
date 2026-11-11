@@ -15,6 +15,11 @@ const HARDWARE: &[&str] = &["h264_videotoolbox"];
 /// VA-API opens a DRM render node from the Agent service, so it needs no display: the greeter and lock screen too.
 #[cfg(all(feature = "hwcodec", target_os = "linux"))]
 const HARDWARE: &[&str] = &["h264_vaapi"];
+/// Windows: the GPU vendor's encoder (NVIDIA, AMD, Intel), then Media Foundation. RustDesk's FFmpeg build has no
+/// `h264_mf`, so that one starts only with an FFmpeg configured `--enable-mediafoundation --enable-encoder=h264_mf`.
+/// The service in session 0 encodes, also for the lock, login and UAC screens the SYSTEM helper captures.
+#[cfg(all(feature = "hwcodec", windows))]
+const HARDWARE: &[&str] = &["h264_nvenc", "h264_amf", "h264_qsv", "h264_mf"];
 
 /// An H.264 encoder for one stream at a fixed size, bitrate and frame rate.
 pub struct H264 {
@@ -25,14 +30,14 @@ pub struct H264 {
 
 enum Inner {
     Software(Box<Encoder>),
-    #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux")))]
+    #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux", windows)))]
     Hardware(Box<hardware::Encoder>),
 }
 
 impl H264 {
     /// Opens a hardware encoder if `hardware` allows and one starts, else openh264. `width` and `height` are even.
     pub fn open(width: u32, height: u32, bps: u32, fps: f32, hardware: bool) -> anyhow::Result<Self> {
-        #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux")))]
+        #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux", windows)))]
         if hardware {
             for name in HARDWARE {
                 match hardware::Encoder::open(name, width, height, bps, fps) {
@@ -49,7 +54,7 @@ impl H264 {
     pub fn name(&self) -> &'static str {
         match &self.inner {
             Inner::Software(_) => "openh264",
-            #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux")))]
+            #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux", windows)))]
             Inner::Hardware(e) => e.name,
         }
     }
@@ -65,7 +70,7 @@ impl H264 {
         let yuv = YUVBuffer::from_rgba8_source(RgbaSliceU8::new(rgba, (self.width as usize, self.height as usize)));
         match &mut self.inner {
             Inner::Software(e) => Ok(e.encode(&yuv)?.to_vec()),
-            #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux")))]
+            #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux", windows)))]
             Inner::Hardware(e) => match e.encode(&yuv) {
                 Ok(data) => Ok(data),
                 Err(code) => {
@@ -89,7 +94,7 @@ fn software(bps: u32, fps: f32) -> anyhow::Result<Encoder> {
     Ok(Encoder::with_api_config(OpenH264API::from_source(), config)?)
 }
 
-#[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux", windows)))]
 mod hardware {
     use std::time::{Duration, Instant};
 
@@ -100,8 +105,9 @@ mod hardware {
     };
     use openh264::formats::{YUVBuffer, YUVSource};
 
-    /// VA-API surfaces are NV12 (RustDesk opens every `hwcodec` encoder in it); VideoToolbox takes I420 as is.
-    const NV12: bool = cfg!(target_os = "linux");
+    /// VA-API surfaces are NV12 (RustDesk opens every `hwcodec` encoder in it); so are NVENC's D3D11 frames, and QSV
+    /// takes nothing else. VideoToolbox takes I420 as is.
+    const NV12: bool = cfg!(any(target_os = "linux", windows));
 
     pub struct Encoder {
         pub name: &'static str,
