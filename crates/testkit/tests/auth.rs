@@ -133,3 +133,19 @@ async fn user_created_api_token_endpoints_are_gone() {
     }
 }
 
+
+/// A token made by the removed `rcli token` never expires; it no longer signs anyone in.
+#[tokio::test]
+async fn an_old_api_token_without_an_expiry_is_refused() {
+    let sys = TestSystem::start().await;
+    let db = sqlx::PgPool::connect(&sys.config.database_url).await.unwrap();
+    sqlx::query(
+        "INSERT INTO api_tokens (id, user_id, token_hash, created_at)
+         SELECT gen_random_uuid(), id, sha256(convert_to('rcli_old', 'UTF8')), now() FROM users WHERE name = 'admin'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let (status, body) = sys.api.with_token(Some("rcli_old")).get("/api/v1/devices").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+}

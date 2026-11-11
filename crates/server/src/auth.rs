@@ -219,12 +219,13 @@ fn hash(token: &str) -> Vec<u8> {
 
 const USER_COLS: &str = "id, name, role, disabled_at";
 
-/// The user a bearer token belongs to, if the token is live and the user enabled.
+/// The user a bearer token belongs to, if the token is live and the user enabled. Only Dashboard sessions expire;
+/// a token without an expiry is from the removed `rcli token` and is refused.
 pub async fn authenticate(state: &AppState, token: &str) -> anyhow::Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(&format!(
         "SELECT u.{} FROM api_tokens t JOIN users u ON u.id = t.user_id
          WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND u.disabled_at IS NULL
-           AND (t.expires_at IS NULL OR t.expires_at > $2)",
+           AND t.expires_at > $2",
         USER_COLS.replace(", ", ", u.")
     ))
     .bind(hash(token))
@@ -237,7 +238,7 @@ pub async fn authenticate(state: &AppState, token: &str) -> anyhow::Result<Optio
     let admin_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM api_tokens t JOIN users u ON u.id = t.user_id
          WHERE u.role = 'admin' AND u.disabled_at IS NULL AND t.revoked_at IS NULL
-           AND (t.expires_at IS NULL OR t.expires_at > $1))",
+           AND t.expires_at > $1)",
     )
     .bind(state.clock.now())
     .fetch_one(&state.db)
