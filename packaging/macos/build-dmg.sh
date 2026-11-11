@@ -3,10 +3,11 @@
 # only ad-hoc signed, so Gatekeeper warns on first open (the Dashboard's Connect page explains how to open it).
 # Usage: packaging/macos/build-dmg.sh   (run on a Mac, from anywhere in the repo)
 set -eu
+: "${VCPKG_ROOT:?set VCPKG_ROOT to a vcpkg with the RustDesk FFmpeg, see Build trên macOS in docs/usage.md}"
 cd "$(git rev-parse --show-toplevel)"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 arch=$(uname -m | sed 's/arm64/aarch64/')
-cargo build --release -p rcli --features gui
+cargo build --release -p rcli --features gui,hwcodec
 bin="$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/rcli"
 out=target/macos
 app="$out/rcli.app"

@@ -7,6 +7,8 @@ version.workspace = true
 [features]
 # The Agent GUI window; leave off for headless machines (no display libraries).
 gui = ["dep:eframe"]
+# Live View on the GPU (VideoToolbox on macOS); release builds turn it on, see docs/usage.md.
+hwcodec = ["rcli-agent/hwcodec"]
 
 [dependencies]
 anyhow.workspace = true

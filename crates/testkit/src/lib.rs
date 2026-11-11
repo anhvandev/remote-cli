@@ -531,6 +531,29 @@ pub fn running_as_root() -> bool {
     false
 }
 
+/// What this test binary's Agents and Server log, from the first `capture_logs` on.
+static LOGS: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+/// Starts capturing what in-process Agents and Servers log (once per test binary; later calls do nothing).
+pub fn capture_logs() {
+    struct Sink;
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            LOGS.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let _ = tracing_subscriber::fmt().with_ansi(false).with_writer(|| Sink).try_init();
+}
+
+/// Whether anything logged since `capture_logs` contains `text`.
+pub fn logged(text: &str) -> bool {
+    String::from_utf8_lossy(&LOGS.lock().unwrap()).contains(text)
+}
+
 /// Retries `f` until it returns `Some`, for up to 10 seconds of real time.
 pub async fn eventually<T, F, Fut>(mut f: F) -> T
 where
