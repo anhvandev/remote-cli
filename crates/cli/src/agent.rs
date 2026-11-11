@@ -74,6 +74,8 @@ pub async fn serve_device(config: DeviceConfig) -> anyhow::Result<()> {
     status.set_settings_dir(config.state_dir.clone());
     // A new Device ID set at the Device must survive a restart.
     status.set_credentials_path(path);
+    // Controllers on this machine call the API Address the Server sends on every connection.
+    status.set_controller_config(crate::config::machine_path(None));
     // Desktop build: prompts and control events open the GUI window (ticket 14).
     #[cfg(feature = "gui")]
     let platform = crate::gui::wrap(platform, status.prompts(), config.socket.clone());
@@ -520,7 +522,13 @@ pub async fn run_prompt(command: PromptCommand, socket: Option<PathBuf>, out: &m
     Ok(())
 }
 
-/// `sudo rcli agent install`: install the Agent as a background service and register the Device.
+/// Runs no external program: the `--root` test seam installs files only, with no service.
+fn no_service(_program: &str, _args: &[&str]) -> anyhow::Result<()> {
+    Ok(())
+}
+
+/// `sudo rcli install`: install the Agent as a background service, register the Device and write the machine-wide
+/// Controller configuration (ADR 0006).
 #[derive(Args)]
 pub struct Install {
     /// Server Agent port, host:port.
@@ -541,9 +549,10 @@ pub struct Install {
     allow_root: bool,
 }
 
+/// `root` is the `--root` test seam: install there instead of `/`, without root rights, a service or the real screen.
 impl Install {
     #[cfg(target_os = "macos")]
-    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    pub async fn run(self, root: Option<&std::path::Path>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         let name = match self.name {
             Some(name) => name,
             None => String::from_utf8(std::process::Command::new("/bin/hostname").arg("-s").output()?.stdout)?.trim().to_owned(),
@@ -555,11 +564,14 @@ impl Install {
             terminal_user: crate::install::terminal_user(self.terminal_user),
             allow_root: self.allow_root,
         };
-        crate::macos_install::install(opts, out).await
+        let Some(root) = root else { return crate::macos_install::install(opts, out).await };
+        let platform = rcli_agent::platform::FakePlatform::new(opts.name.clone());
+        let layout = crate::macos_install::Layout { root: root.into() };
+        crate::macos_install::install_at(&layout, opts, &platform, None, &mut no_service, out).await
     }
 
     #[cfg(target_os = "linux")]
-    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    pub async fn run(self, root: Option<&std::path::Path>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         let name = match self.name {
             Some(name) => name,
             None => match std::fs::read_to_string("/proc/sys/kernel/hostname") {
@@ -574,12 +586,15 @@ impl Install {
             terminal_user: crate::install::terminal_user(self.terminal_user),
             allow_root: self.allow_root,
         };
-        crate::linux_install::install(opts, out).await
+        let Some(root) = root else { return crate::linux_install::install(opts, out).await };
+        let platform = rcli_agent::platform::FakePlatform::new(opts.name.clone());
+        let layout = crate::linux_install::Layout { root: root.into() };
+        crate::linux_install::install_at(&layout, opts, &platform, &mut no_service, out).await
     }
 
     /// Windows: copy the binary to `%ProgramFiles%\rcli`, register the Device and install the SYSTEM service.
     #[cfg(windows)]
-    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    pub async fn run(self, root: Option<&std::path::Path>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         let terminal_user = self.terminal_user.unwrap_or_else(terminal_user);
         let opts = crate::windows_install::Options {
             server: self.server,
@@ -588,12 +603,14 @@ impl Install {
             terminal_user,
             allow_root: self.allow_root,
         };
-        crate::windows_install::install(opts, out).await
+        let Some(root) = root else { return crate::windows_install::install(opts, out).await };
+        let platform = rcli_agent::platform::FakePlatform::new(opts.name.clone());
+        crate::windows_install::install_at(&crate::windows_install::Layout::under(root), opts, &platform, &mut no_service, out).await
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    pub async fn run(self, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        anyhow::bail!("`rcli agent install` is not available on this OS yet")
+    pub async fn run(self, _root: Option<&std::path::Path>, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        anyhow::bail!("`rcli install` is not available on this OS yet")
     }
 }
 
@@ -607,29 +624,40 @@ fn terminal_user() -> String {
         .unwrap_or_else(|| "SYSTEM".into())
 }
 
-/// `sudo rcli agent uninstall`: remove the service and the Device's local data.
+/// `sudo rcli uninstall`: remove the service, the Device's local data and the machine-wide Controller configuration.
+/// Each user's remembered Device Passwords stay.
 #[derive(Args)]
 pub struct Uninstall {}
 
+/// `root` is the `--root` test seam, as for `Install`.
 impl Uninstall {
     #[cfg(target_os = "macos")]
-    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        crate::macos_install::uninstall(out).await
+    pub async fn run(self, root: Option<&std::path::Path>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        match root {
+            None => crate::macos_install::uninstall(out).await,
+            Some(root) => crate::macos_install::uninstall_at(&crate::macos_install::Layout { root: root.into() }, None, &mut no_service, out).await,
+        }
     }
 
     #[cfg(target_os = "linux")]
-    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        crate::linux_install::uninstall(out).await
+    pub async fn run(self, root: Option<&std::path::Path>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        match root {
+            None => crate::linux_install::uninstall(out).await,
+            Some(root) => crate::linux_install::uninstall_at(&crate::linux_install::Layout { root: root.into() }, &mut no_service, out).await,
+        }
     }
 
     #[cfg(windows)]
-    pub async fn run(self, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        crate::windows_install::uninstall(out).await
+    pub async fn run(self, root: Option<&std::path::Path>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        match root {
+            None => crate::windows_install::uninstall(out).await,
+            Some(root) => crate::windows_install::uninstall_at(&crate::windows_install::Layout::under(root), &mut no_service, out).await,
+        }
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    pub async fn run(self, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        anyhow::bail!("`rcli agent uninstall` is not available on this OS yet")
+    pub async fn run(self, _root: Option<&std::path::Path>, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        anyhow::bail!("`rcli uninstall` is not available on this OS yet")
     }
 }
 
@@ -681,7 +709,7 @@ impl Session {
 /// `rcli agent service` (Windows, started by the SCM, hidden): hosts the Agent as a service.
 #[derive(Args)]
 pub struct Service {
-    /// The protected file `rcli agent install` wrote (Server Address, Server Key, Device name).
+    /// The protected file `rcli install` wrote (Server Address, Server Key, Device name).
     #[arg(long)]
     config: PathBuf,
 }

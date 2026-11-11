@@ -25,11 +25,14 @@ fn http_addr(sys: &TestSystem) -> String {
     format!("http://{}", sys.server.http_addr)
 }
 
+/// `rcli install` pins the update key the Device got at registration, machine-wide, so `rcli upgrade` checks builds
+/// against it with no further setup.
 #[tokio::test]
-async fn a_controller_only_machine_upgrades_itself() {
+async fn an_installed_machine_upgrades_itself_with_the_update_key_pinned_at_install() {
     let sys = TestSystem::start().await;
+    sys.rcli(&["api-address", "set", &http_addr(&sys)]).await.unwrap();
     let dir = temp_dir("controller");
-    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.install(&dir).await.unwrap();
     let build = temp_file("rcli", b"new rcli binary");
     let key = temp_file("update.key", &sys.update_signing_key);
     publish_to_fleet(&sys, &build, "9.9.9", &key).await;
@@ -51,7 +54,7 @@ async fn a_controller_only_machine_upgrades_itself() {
 async fn an_installed_device_upgrades_to_the_build_rolled_out_to_it() {
     let sys = TestSystem::start().await;
     let dir = temp_dir("device");
-    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.controller_config(&dir, None).await;
     let key = temp_file("update.key", &sys.update_signing_key);
     publish(&sys, &temp_file("rolled", b"rolled-out build"), "1.0.0", &key).await;
     sys.advance(60);
@@ -74,7 +77,7 @@ async fn an_installed_device_upgrades_to_the_build_rolled_out_to_it() {
 async fn a_bad_signature_is_rejected_and_the_old_binary_is_kept() {
     let sys = TestSystem::start().await;
     let dir = temp_dir("bad-signature");
-    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.controller_config(&dir, None).await;
     let rogue = temp_dir("rogue").join("rogue.key");
     sys.rcli(&["rollout", "keygen", rogue.to_str().unwrap()]).await.unwrap();
     let build = temp_file("rcli", b"malicious rcli binary");
@@ -97,7 +100,7 @@ async fn a_bad_signature_is_rejected_and_the_old_binary_is_kept() {
 async fn upgrade_fetches_the_build_rolled_out_to_the_fleet() {
     let sys = TestSystem::start().await;
     let dir = temp_dir("fleet");
-    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.controller_config(&dir, None).await;
     let key = temp_file("update.key", &sys.update_signing_key);
     publish_to_fleet(&sys, &temp_file("fleet", b"fleet build"), "1.0.0", &key).await;
     sys.advance(60);
@@ -113,36 +116,11 @@ async fn upgrade_fetches_the_build_rolled_out_to_the_fleet() {
     assert_eq!(std::fs::read(&target).unwrap(), b"fleet build");
 }
 
-/// An on-path attacker can serve the real CA (so the fingerprint matches) but cannot sign another update key
-/// without the Server Key's secret: `rcli setup` refuses the pin, so `rcli upgrade` can never trust it.
-#[tokio::test]
-async fn a_server_that_cannot_prove_the_update_key_is_refused() {
-    use axum::{routing::get, Router};
-    let sys = TestSystem::start().await;
-    let ca = sys.server.ca_pem.clone();
-    let impostor = Router::new().route("/api/v1/server-ca", get(move || async move { ca.clone() })).route(
-        "/api/v1/update-key",
-        get(|| async { axum::Json(serde_json::json!({ "update_key": "00".repeat(32), "mac": "00".repeat(32) })) }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, impostor).await });
-    let dir = temp_dir("impostor");
-
-    let err = sys
-        .rcli_in(&dir, &["setup", "--server", &format!("http://{addr}"), "--key", &sys.server_key()])
-        .await
-        .unwrap_err();
-
-    assert!(err.to_string().contains("did not prove the update key"), "{err}");
-    assert!(!dir.join("config.json").exists(), "nothing was pinned");
-}
-
 #[tokio::test]
 async fn no_build_for_this_os_and_arch_is_a_clear_error() {
     let sys = TestSystem::start().await;
     let dir = temp_dir("no-build");
-    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.controller_config(&dir, None).await;
     let target = temp_dir("no-build-target").join("rcli");
     std::fs::write(&target, b"old rcli binary").unwrap();
 

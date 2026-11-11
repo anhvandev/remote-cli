@@ -66,9 +66,7 @@ async fn admin_signs_in_with_rcli_and_operators_are_refused_admin_commands() {
     assert!(row.contains("operator") && row.contains("enabled"), "{list}");
     let enrolled = sys.rcli(&["user", "set-password", "alice", "--password", TestSystem::PASSWORD]).await.unwrap();
     let secret = enrolled.lines().find_map(|l| l.strip_prefix("totp_secret ")).expect(&enrolled);
-    sys.rcli_in(&dir, &["setup", "--server", &format!("http://{}", sys.server.http_addr), "--key", &sys.server_key()])
-        .await
-        .unwrap();
+    sys.controller_config(&dir, None).await;
 
     // The Operator's session works for Device commands but every Admin command is refused.
     let out = sys.rcli_in(&dir, &["login", "alice", "--password", TestSystem::PASSWORD, "--totp", &sys.totp(secret)]).await.unwrap();
@@ -83,9 +81,7 @@ async fn admin_signs_in_with_rcli_and_operators_are_refused_admin_commands() {
 async fn rcli_login_saves_a_session_that_admin_commands_and_logout_use() {
     let sys = TestSystem::start().await;
     let dir = temp_dir("login");
-    sys.rcli_in(&dir, &["setup", "--server", &format!("http://{}", sys.server.http_addr), "--key", &sys.server_key()])
-        .await
-        .unwrap();
+    sys.controller_config(&dir, None).await;
     let secret = sys.create_dashboard_user("bob", "admin").await;
     let out = sys.rcli_in(&dir, &["login", "bob", "--password", TestSystem::PASSWORD, "--totp", &sys.totp(&secret)]).await.unwrap();
     assert!(out.contains("bob") && out.contains("admin"), "{out}");

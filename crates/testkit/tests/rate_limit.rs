@@ -115,8 +115,7 @@ async fn the_cli_says_how_long_the_lockout_lasts() {
     let agent = sys.start_agent("lab-pc").await;
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
     let dir = temp_dir("lockout");
-    let server = format!("http://{}", sys.server.http_addr);
-    sys.rcli_in(&dir, &["setup", "--server", &server, "--key", &sys.server_key()]).await.unwrap();
+    sys.controller_config(&dir, None).await;
     for _ in 0..5 {
         sys.rcli_in(&dir, &["connect", agent.device_id(), "--password", "wrongpassword"]).await.unwrap_err();
     }

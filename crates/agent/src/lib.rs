@@ -231,7 +231,7 @@ pub async fn register(server: &ServerAccess, platform: &dyn Platform) -> anyhow:
     }
 }
 
-/// Removes this Device from the Server, what `sudo rcli agent uninstall` does before it deletes the local
+/// Removes this Device from the Server, what `sudo rcli uninstall` does before it deletes the local
 /// credentials. It authenticates with the Device's certificate, not the Server Key: the Device may already have
 /// forgotten the key, and the Server only needs to know which Device asks.
 pub async fn unregister(server: &ServerAccess, creds: &Credentials) -> anyhow::Result<()> {
