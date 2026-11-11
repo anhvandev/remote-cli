@@ -8,8 +8,8 @@ const tone = (active: boolean) => `${item} ${active ? "bg-accent text-foreground
 const adminPages = [
   { href: "/admin/users", name: "User" },
   { href: "/admin/devices", name: "Device" },
-  { href: "/admin/enrollment", name: "Enrollment Code" },
   { href: "/admin/updates", name: "Cập nhật Agent" },
+  { href: "/admin/settings", name: "Server Settings" },
 ];
 
 export function NavLinks({ admin }: { admin: boolean }) {
@@ -20,6 +20,13 @@ export function NavLinks({ admin }: { admin: boolean }) {
     <div className="flex flex-1 flex-wrap gap-1 md:flex-col">
       <Link href="/" aria-current={onFleet ? "page" : undefined} className={tone(onFleet)}>
         Device
+      </Link>
+      <Link
+        href="/connect-guide"
+        aria-current={path.startsWith("/connect-guide") ? "page" : undefined}
+        className={tone(path.startsWith("/connect-guide"))}
+      >
+        Hướng dẫn kết nối
       </Link>
       {admin && (
         <>

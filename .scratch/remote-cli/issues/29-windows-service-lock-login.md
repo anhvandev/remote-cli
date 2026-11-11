@@ -4,10 +4,14 @@
 
 **Blocked by:** 28
 
-**Status:** ready-for-agent
+**Status:** wontfix
 
 - [ ] Installer enrolls the Device with an Enrollment Code and installs the service
 - [ ] Contract suite passes at the lock screen, login screen and a UAC prompt
 - [ ] Ctrl+Alt+Del works (document the software SAS policy requirement)
 - [ ] `unlock` works at the lock and login screens
 - [ ] Session-state detection reports lock/login screen correctly
+
+## Comments
+
+- 2026-11-09: Closed. Superseded by `.scratch/easy-setup/issues/22-windows-service-installer.md` (new install flow: Server Key, Device ID + Device Password, ADR 0003/0004).

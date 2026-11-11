@@ -20,12 +20,12 @@ test("operators don't see the admin screens", async ({ page }) => {
   const nav = page.getByRole("navigation");
   await expect(nav).toContainText("Operator");
   await expect(page.getByRole("link", { name: "Quản trị" })).toHaveCount(0);
-  for (const name of ["User", "Enrollment Code", "Cập nhật Agent"]) {
+  for (const name of ["User", "Cập nhật Agent"]) {
     await expect(nav.getByRole("link", { name, exact: true })).toHaveCount(0);
   }
   await expect(nav.getByRole("link", { name: "Device", exact: true })).toHaveCount(1);
 
-  for (const url of ["/admin", "/admin/users", "/admin/devices", "/admin/enrollment", "/admin/updates"]) {
+  for (const url of ["/admin", "/admin/users", "/admin/devices", "/admin/updates"]) {
     await page.goto(url);
     await expect(page.getByText("Chỉ admin")).toBeVisible();
     await expect(page.getByRole("region")).toHaveCount(0);
@@ -33,13 +33,12 @@ test("operators don't see the admin screens", async ({ page }) => {
   }
 });
 
-test("the sidebar shows the four Quản trị sub-entries and marks the current one", async ({ page }) => {
+test("the sidebar shows the three Quản trị sub-entries and marks the current one", async ({ page }) => {
   await signIn(page, await newUser("admin"));
   const nav = page.getByRole("navigation");
   const subs: [string, string][] = [
     ["User", "/admin/users"],
     ["Device", "/admin/devices"],
-    ["Enrollment Code", "/admin/enrollment"],
     ["Cập nhật Agent", "/admin/updates"],
   ];
   const group = nav.getByRole("group", { name: "Quản trị" });
@@ -60,7 +59,6 @@ test("the Quản trị root links to each sub-page", async ({ page }) => {
   const pages: [string, string][] = [
     ["User", "/admin/users"],
     ["Device", "/admin/devices"],
-    ["Enrollment Code", "/admin/enrollment"],
     ["Cập nhật Agent", "/admin/updates"],
   ];
   for (const [name, path] of pages) {
@@ -71,38 +69,32 @@ test("the Quản trị root links to each sub-page", async ({ page }) => {
   }
 });
 
-test("admin creates a user, sets their password, issues and revokes a token, disables them", async ({ page }) => {
+test("admin creates a user, sets their password, and disables them", async ({ page }) => {
   await openAdmin(page, "User");
-  const users = page.getByRole("region", { name: "User & API token" });
+  const users = page.getByRole("region", { name: "User", exact: true });
   const name = `bot-${Date.now()}`;
   await users.getByLabel("Tên user mới").fill(name);
   await users.getByLabel("Vai trò").selectOption("operator");
   await users.getByRole("button", { name: "+ User" }).click();
-  const row = rowIn(page, "User & API token", name);
+  const row = rowIn(page, "User", name);
   await expect(row).toContainText("Operator");
-  await expect(row).toContainText("0 token");
 
   await row.getByLabel(`Mật khẩu Dashboard cho ${name}`).fill("a long password");
   await row.getByRole("button", { name: "Đặt mật khẩu" }).click();
   await expect(row.getByRole("status").filter({ hasText: "otpauth://" })).toBeVisible();
-
-  await row.getByRole("button", { name: "Tạo token" }).click();
-  await expect(row.getByRole("status").filter({ hasText: /rcli_[0-9a-f]{32}/ })).toBeVisible();
-  await expect(row).toContainText("1 token");
-  page.once("dialog", (d) => d.accept());
-  await row.getByRole("button", { name: /Thu hồi token/ }).click();
-  await expect(row).toContainText("0 token");
 
   page.once("dialog", (d) => d.accept());
   await row.getByRole("button", { name: "Vô hiệu" }).click();
   await expect(row).toContainText("đã vô hiệu");
 });
 
-test("admin creates a single-use Enrollment Code", async ({ page }) => {
-  await openAdmin(page, "Enrollment Code");
-  const codes = page.getByRole("region", { name: "Enrollment Code" });
-  await codes.getByRole("button", { name: "+ Tạo mã" }).click();
-  await expect(codes.getByRole("status")).toContainText("dùng một lần");
+test("the fleet shows each Device's 9-digit Device ID", async ({ page }) => {
+  const devices = await adminApi("/api/v1/devices");
+  const alpha = devices.find((d: { name: string }) => d.name === "alpha");
+  await signIn(page, await newUser("admin"));
+  const row = page.getByRole("row").filter({ hasText: "alpha" });
+  await expect(row).toContainText(alpha.device_id);
+  expect(alpha.device_id).toMatch(/^\d{9}$/);
 });
 
 test("admin renames, revokes, deletes and merges Devices", async ({ page }) => {
@@ -129,25 +121,7 @@ test("admin renames, revokes, deletes and merges Devices", async ({ page }) => {
   await expect(rowIn(page, "Device", /^foxtrot /)).toBeVisible();
 });
 
-test("unlock passwords can be set and cleared but are never shown", async ({ page }) => {
-  await openAdmin(page, "Device");
-  const row = rowIn(page, "Mật khẩu unlock", "bravo");
-  await expect(row).toContainText("chưa có");
-  const input = row.getByLabel("Mật khẩu unlock cho bravo");
-  await expect(input).toHaveAttribute("type", "password");
-  await input.fill("s3cret-unlock");
-  await row.getByRole("button", { name: "Lưu" }).click();
-  await expect(row).toContainText("đã lưu");
-  await expect(input).toHaveValue("");
-  expect(await page.content()).not.toContain("s3cret-unlock");
-  await page.reload();
-  expect(await page.content()).not.toContain("s3cret-unlock");
-
-  await row.getByRole("button", { name: "Xoá" }).click();
-  await expect(row).toContainText("chưa có");
-});
-
-test("the overview shows four cards with counts from the Server", async ({ page }) => {
+test("the overview shows three cards with counts from the Server", async ({ page }) => {
   await signIn(page, await newUser("admin"));
   await page.getByRole("link", { name: "Quản trị" }).click();
   const main = page.getByRole("main");
@@ -155,7 +129,6 @@ test("the overview shows four cards with counts from the Server", async ({ page 
     ["User", "/admin/users"],
     ["Device", "/admin/devices"],
     ["Cập nhật Agent", "/admin/updates"],
-    ["Enrollment Code", "/admin/enrollment"],
   ];
   for (const [name, path] of cards) {
     await expect(page.getByRole("region", { name })).toBeVisible();
@@ -165,29 +138,19 @@ test("the overview shows four cards with counts from the Server", async ({ page 
   // Other specs share the devstack, so re-read the Server and the page together until they agree.
   await expect(async () => {
     const users = await adminApi("/api/v1/users");
-    const tokens = await adminApi("/api/v1/tokens");
     const devices = await adminApi("/api/v1/devices");
-    const unlock = await Promise.all(
-      devices.map((d: { id: string }) => adminApi(`/api/v1/devices/${d.id}/unlock-password`)),
-    );
     await page.goto("/admin");
     const user = page.getByRole("region", { name: "User" });
     const admins = users.filter((u: { role: string }) => u.role === "admin").length;
     await expect(user).toContainText(`${admins} Admin · ${users.length - admins} Operator`);
     await expect(user).toContainText(`${users.filter((u: { disabled_at: string | null }) => u.disabled_at).length} User đã vô hiệu`);
-    await expect(user).toContainText(`${tokens.length} API token`);
 
     const device = page.getByRole("region", { name: "Device" });
-    await expect(device).toContainText("4 Online"); // alpha, charlie, golf, india: no spec takes them Offline
+    await expect(device).toContainText("6 Online"); // alpha, charlie, golf, india, juliet, kilo: no spec takes them Offline
     const count = (s: string) => devices.filter((d: { status: string }) => d.status === s).length;
     await expect(device).toContainText(`${count("Online")} Online · ${count("Offline")} Offline · ${count("Waking")} Waking`);
     await expect(device).toContainText(`${devices.filter((d: { revoked_at: string | null }) => d.revoked_at).length} Device đã thu hồi`);
-    await expect(device).toContainText(`${unlock.filter((u: { set: boolean }) => !u.set).length} Device chưa có mật khẩu unlock`);
   }).toPass({ timeout: 20_000 });
-
-  // No API lists Enrollment Codes, so the card offers the action instead of a count.
-  const enrollment = page.getByRole("region", { name: "Enrollment Code" });
-  await expect(enrollment.getByRole("link", { name: "Tạo Enrollment Code" })).toHaveAttribute("href", "/admin/enrollment");
 });
 
 test("the overview lists a failed Agent update with the Device name, error and a link to it", async ({ page }) => {
@@ -235,7 +198,7 @@ test("admin uploads a signed Agent build and rolls it out to selected Devices", 
   const { update } = await devstack();
   await openAdmin(page, "Cập nhật Agent");
   const card = page.getByRole("region", { name: "Cập nhật Agent" });
-  await card.getByLabel("File build").setInputFiles({ name: "rcli-agent", mimeType: "application/octet-stream", buffer: Buffer.from(update.build) });
+  await card.getByLabel("File build").setInputFiles({ name: "rcli", mimeType: "application/octet-stream", buffer: Buffer.from(update.build) });
   await card.getByLabel("Phiên bản").first().fill(update.version);
   await card.getByLabel("Target").fill(update.target);
   await card.getByLabel("Chữ ký (hex)").fill(update.signature);

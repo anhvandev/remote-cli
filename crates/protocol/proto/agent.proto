@@ -6,7 +6,7 @@ package rcli.agent.v1;
 
 message AgentMessage {
   oneof msg {
-    EnrollRequest enroll = 1;
+    RegisterRequest register = 1;
     Heartbeat heartbeat = 2;
     AgentHello hello = 17;
     UpdateFailed update_failed = 170;
@@ -22,13 +22,23 @@ message AgentMessage {
     ShellOpened shell_opened = 12;
     ShellOutput shell_output = 120;
     ShellExit shell_exit = 121;
+    IdentityUpdate identity_update = 20;
+    // The Agent's answer to a Server-initiated `identity_change`.
+    IdentityUpdated identity_updated = 22;
+    // The person at the Device disconnected a Controller (`rcli agent disconnect`).
+    DisconnectController disconnect_controller = 23;
+    // How the person at the Device answered an accept prompt, for the audit.
+    ConnectDecision connect_decision = 24;
+    // The Agent is being uninstalled (`sudo rcli agent uninstall`): the Server deletes this Device as an Admin
+    // delete does, audits it, and closes the connection. Sent with the Device's own certificate.
+    UnregisterRequest unregister = 25;
   }
   reserved 30; // was a bare Resources delta; now ResourceSample
 }
 
 message ServerMessage {
   oneof msg {
-    EnrollResponse enrolled = 1;
+    RegisterResponse registered = 1;
     Error error = 2;
     AgentUpdate update = 17;
     ProcessListRequest list_processes = 3;
@@ -44,23 +54,33 @@ message ServerMessage {
     PowerRequest power = 13;
     LiveOffer live_offer = 21;
     LiveClose live_close = 210;
+    IdentityUpdated identity_updated = 20;
+    // An Admin changed the Device ID or set a new Device Password from the Dashboard: the Device must apply it.
+    IdentityUpdate identity_change = 22;
   }
 }
 
-// Sent on a connection without a client certificate. The Server signs the CSR
-// and returns the Device's mTLS client certificate.
-message EnrollRequest {
-  string code = 1;
+// Sent on a connection without a client certificate. The Server checks the Server Key's
+// secret, signs the CSR, and returns the Device's mTLS client certificate.
+message RegisterRequest {
+  string server_key = 1;
   string csr_pem = 2;
   string hostname = 3;
 }
 
-message EnrollResponse {
+message RegisterResponse {
+  // 9-digit Device ID.
   string device_id = 1;
   string cert_pem = 2;
+  // Raw Ed25519 public key the Device pins for Agent updates; empty = no updates.
+  bytes update_key = 3;
+  // The Server's CA (PEM) whose fingerprint the Server Key pinned; the Device checks it and keeps it to trust later sessions.
+  string ca_pem = 4;
+  // The Device Password generated at registration; the Device keeps it in its Secret Store, the Server only its hash.
+  string device_password = 5;
 }
 
-// Sent by an enrolled Agent so the Server can detect half-open connections.
+// Sent by a registered Agent so the Server can detect half-open connections.
 message Heartbeat {}
 
 message Error {
@@ -190,7 +210,8 @@ message ActRequest {
   // Which display to observe: unset = the display last acted on.
   optional uint32 display = 4;
   bool all_displays = 5;
-  // Who asks; "unchanged" is relative to the last image this Controller got.
+  // Who asks, as in ExecRequest.controller: the accept gate admits it, and "unchanged" is relative to the last
+  // image this Controller got.
   string controller = 6;
   // `frames`: at most this many frames per display (the last one is always the final screen).
   uint32 max_frames = 8;
@@ -198,6 +219,9 @@ message ActRequest {
   bool marks = 10;
   // Open media channel (LiveOffer with `media`) of this Controller: large image/clip bytes go over it, not here.
   string media_session = 26;
+  // Type the unlock password this Device keeps in its Secret Store + Enter, instead of `actions`. The Server
+  // never sees the password; with none set the Agent answers `unlock_password_not_set`.
+  bool unlock = 27;
 }
 
 enum ObserveMode {
@@ -328,12 +352,17 @@ message DisplayInfo {
 message ExecRequest {
   uint64 request_id = 1;
   string command = 2;
-  // Run as root/SYSTEM instead of the logged-in user.
+  // Run as root/SYSTEM instead of the Terminal User (the Device's root setting decides).
   bool as_root = 3;
-  // With nobody logged in: run as root (admins) instead of failing with "no_logged_in_user" (operators).
-  bool root_if_nobody_logged_in = 4;
+  reserved 4; // was root_if_nobody_logged_in
   // The Agent kills the command after this long.
   uint32 timeout_ms = 5;
+  // The Controller as the person at the Device sees it, e.g. "dev-laptop (10.0.0.5)" or "alice (Dashboard)".
+  // Named in a root prompt (ticket 07).
+  string requester = 6;
+  // The Controller as listed by `rcli agent info` and matched by `disconnect`: the display name, e.g.
+  // "dev-laptop (10.0.0.5)" or "alice (Dashboard)". `requester` stays the bare name a root prompt shows.
+  string controller = 7;
 }
 
 // `error` set = nothing ran (code "no_logged_in_user", or a Platform failure).
@@ -345,26 +374,36 @@ message ExecResult {
   bool timed_out = 5;
   bool as_root = 6; // who it actually ran as
   Error error = 7;
+  // How root was decided, so the Server can audit the prompt answer: "always", "session", "accepted",
+  // "rejected", "no_session", "never"; empty when root was not asked for.
+  string root_decision = 8;
+  reserved 9; // was connect_decision; accept prompts are audited from ConnectDecision for every request kind
 }
 
 // --- Interactive shell (ticket 12) ---
-// A PTY session named by `session` (chosen by the Server). Run-as rules are the same as ExecRequest.
+// A PTY session named by `session` (chosen by the Server). The account it runs as follows the same rules as ExecRequest.
 
 // Answered with ShellOpened carrying the same request_id; then ShellOutput until one ShellExit.
 message ShellOpen {
   uint64 request_id = 1;
   string session = 2;
   bool as_root = 3;
-  bool root_if_nobody_logged_in = 4;
+  reserved 4; // was root_if_nobody_logged_in
   uint32 cols = 5;
   uint32 rows = 6;
+  // As in ExecRequest: who asks, named in a root prompt.
+  string requester = 7;
+  // As in ExecRequest.controller: admitted by the accept gate, holds a root grant, ended by `disconnect`.
+  string controller = 8;
 }
 
-// `error` set = no session was started (code "no_logged_in_user", or a Platform failure).
+// `error` set = no session was started (code "no_logged_in_user", "root_denied", or a Platform failure).
 message ShellOpened {
   uint64 request_id = 1;
   bool as_root = 2; // who it actually runs as
   Error error = 3;
+  // As in ExecResult.
+  string root_decision = 4;
 }
 
 // Keystrokes for the PTY (Ctrl-C is byte 0x03).
@@ -395,10 +434,42 @@ message ShellExit {
   int32 exit_code = 2;
 }
 
+// A change to the Device's identity. The Agent sends it after `sudo rcli agent password|id|name set`
+// (`identity_update`); the Server sends it back for an Admin's change on the Dashboard (`identity_change`).
+// Empty = unchanged. The Server checks the Device ID for uniqueness and stores a new password as a hash.
+message IdentityUpdate {
+  uint64 request_id = 1;
+  string device_password = 2;
+  string device_id = 3;
+  string name = 4;
+}
+
+// `error` set = nothing was changed. `device_id` is the Device ID in effect after the change.
+// Sent by the Server for an Agent-initiated change, and by the Agent for a Server-initiated one.
+message IdentityUpdated {
+  uint64 request_id = 1;
+  Error error = 2;
+  string device_id = 3;
+}
+
 // Show (on) or hide the on-Device indicator that the Device is being controlled.
 // Sent whenever it changes and at the start of every Device session.
 message ControlIndicator {
   bool on = 1;
+}
+
+// A person at the Device answered (or could not be asked) whether `controller` may connect in `password+accept`
+// mode. `decision` is "accepted", "rejected" or "no_session". Sent whichever request kind showed the prompt.
+message ConnectDecision {
+  string controller = 1;
+  string decision = 2;
+}
+
+// The person at the Device disconnected a Controller (`rcli agent disconnect`). `controller` is the display name
+// `rcli agent info` lists (e.g. "dev-laptop (10.0.0.5)" or "alice (Dashboard)"). The Server releases that
+// Controller's Control Lock and ends its Live View and shells; the Controller may reconnect with the password.
+message DisconnectController {
+  string controller = 1;
 }
 
 // --- Wake (ticket 14) ---
@@ -428,6 +499,8 @@ enum PowerAction {
 message PowerRequest {
   uint64 request_id = 1;
   PowerAction action = 2;
+  // As in ExecRequest.controller: admitted by the accept gate.
+  string controller = 3;
 }
 
 // `error` set = the OS refused or the adapter failed.
@@ -458,6 +531,8 @@ message LiveOffer {
   optional uint32 display = 5;
   // A media channel (one data channel, no video) for ActRequest.media_session instead of a live stream.
   bool media = 26;
+  // As in ExecRequest.controller: admitted by the accept gate, and its streams end on `disconnect`.
+  string controller = 27;
 }
 
 // The Agent's SDP answer, or `error` (code "invalid_offer" for a bad offer).
@@ -471,3 +546,7 @@ message LiveAnswer {
 message LiveClose {
   string session = 1;
 }
+
+// `sudo rcli agent uninstall` on this Device. The Server has no self-removal confirmation: it deletes the Device
+// (audited as an Admin `device.delete`, with `self: true`) and closes the connection.
+message UnregisterRequest {}

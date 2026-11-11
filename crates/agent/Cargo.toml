@@ -3,16 +3,15 @@ name = "rcli-agent"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
-default-run = "rcli-agent"
 
 [dependencies]
 anyhow.workspace = true
-clap.workspace = true
 hex.workspace = true
 image.workspace = true
 mp4.workspace = true
 openh264.workspace = true
 rcgen.workspace = true
+ring.workspace = true
 rcli-protocol.workspace = true
 rustls.workspace = true
 serde.workspace = true
@@ -21,6 +20,63 @@ sha2.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 bytes.workspace = true
 webrtc.workspace = true
+
+# The macOS adapter (`macos.rs`): capture, AX tree, session state and OCR through the system frameworks.
+[target.'cfg(target_os = "macos")'.dependencies]
+enigo = { version = "0.6", default-features = false }
+libc = "0.2"
+objc2 = "0.6"
+objc2-application-services = { version = "0.3", default-features = false, features = ["std", "libc", "HIServices", "AXError", "AXUIElement", "AXValue"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFBase", "CFCGTypes", "CFData", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGColorSpace", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGImage", "CGSession", "CGWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSString"] }
+objc2-vision = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "VNObservation", "VNRecognizeTextRequest", "VNRequest", "VNRequestHandler", "VNTypes"] }
+security-framework = "3"
+sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "user"] }
+
+# The Linux adapter (`linux/`): X11 capture and RandR over x11rb and input over XTest (enigo); Wayland capture
+# through the desktop portal's ScreenCast (ashpd + PipeWire) and input through uinput (evdev); AT-SPI over D-Bus.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.14", features = ["screencast"] }
+enigo = "0.6"
+evdev = "0.13"
+libc = "0.2"
+pipewire = "0.10"
+sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "user", "component"] }
+x11rb = { version = "0.13", features = ["randr"] }
+zbus = "5"
+
+# The Windows adapter (ticket 21).
+[target.'cfg(windows)'.dependencies]
+base64.workspace = true
+enigo = "0.6"
+portable-pty = "0.9"
+sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "user"] }
+xcap = "0.9"
+windows = { version = "0.62", features = [
+  "Foundation_Collections",
+  "Graphics_Imaging",
+  "Media_Ocr",
+  "Security_Authentication_Identity",
+  "Security_Cryptography",
+  "Storage_Streams",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Security_Cryptography",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Environment",
+  "Win32_System_Ole",
+  "Win32_System_Pipes",
+  "Win32_System_Power",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_StationsAndDesktops",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_UI_Accessibility",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }

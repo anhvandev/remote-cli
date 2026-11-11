@@ -1,0 +1,38 @@
+#!/bin/sh
+# Package hook: install the Agent through the same `rcli agent install` path the curl one-liner uses. The
+# Server Address and Server Key come from /etc/rcli/agent.conf (mode 0600, root), never from the package itself.
+set -e
+
+CONF=/etc/rcli/agent.conf
+if [ -r "$CONF" ]; then
+    # shellcheck disable=SC1090
+    . "$CONF"
+fi
+
+if [ -z "${RCLI_SERVER:-}" ] || [ -z "${RCLI_SERVER_KEY:-}" ]; then
+    cat >&2 <<'MSG'
+rcli: installed, but this Device is not registered yet.
+      Write the Server Address and Server Key to /etc/rcli/agent.conf (mode 0600, root):
+
+        RCLI_SERVER=vps.example.com:8443
+        RCLI_SERVER_KEY=rk_<fingerprint>_<secret>
+        # optional: RCLI_TERMINAL_USER=alice   RCLI_ALLOW_ROOT=1
+
+      then rerun the install step:
+
+        sudo /usr/bin/rcli agent install --server "$(sed -n 's/^RCLI_SERVER=//p' /etc/rcli/agent.conf)" \
+             --key "$(sed -n 's/^RCLI_SERVER_KEY=//p' /etc/rcli/agent.conf)"
+MSG
+    exit 0
+fi
+
+# The Server Key goes through the environment, so it is not an argument during the install either.
+export RCLI_SERVER_KEY
+set -- agent install --server "$RCLI_SERVER"
+if [ -n "${RCLI_TERMINAL_USER:-}" ]; then
+    set -- "$@" --terminal-user "$RCLI_TERMINAL_USER"
+fi
+if [ "${RCLI_ALLOW_ROOT:-0}" = "1" ]; then
+    set -- "$@" --allow-root
+fi
+/usr/bin/rcli "$@"

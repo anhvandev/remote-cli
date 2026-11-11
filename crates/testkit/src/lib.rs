@@ -11,7 +11,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 pub use live::{local_candidate_type, LiveViewer, TestTurn};
 
 pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState, UiElement};
-use rcli_agent::{Credentials, ServerEndpoint};
+use rcli_agent::{Credentials, ServerAccess};
 pub use rcli_server::clock::{Clock, ManualClock};
 pub use reqwest::StatusCode;
 pub use rmcp;
@@ -33,10 +33,12 @@ pub struct TestSystem {
     pub server: rcli_server::Server,
     /// Controller API client authenticated as the `admin` user.
     pub api: ApiClient,
+    /// The `admin` user's session token (sessions expire; `sign_in_admin` renews it).
     pub admin_token: String,
-    /// PKCS#8 Ed25519 key that signs Agent builds; Agents from `endpoint()` trust its public half.
+    /// The `admin` user's TOTP secret, so `sign_in_admin` needs no admin access.
+    pub admin_totp_secret: String,
+    /// PKCS#8 Ed25519 key that signs Agent builds; the Server hands its public half to Devices at registration.
     pub update_signing_key: Vec<u8>,
-    update_public_key: Vec<u8>,
     /// The TURN relay the Server hands out, if started with `start_with_turn`.
     pub turn: Option<TestTurn>,
     /// The running Server's config (`database_url` reaches its Postgres).
@@ -59,28 +61,39 @@ impl TestSystem {
         Self::start_inner(http_addr, None, Some(Self::master_key())).await
     }
 
-    /// Like `start`, without `RCLI_MASTER_KEY`: the vault is off and secrets are stored in plaintext.
+    /// Like `start`, but the Controller API listens on IPv4 and IPv6 loopback, so a test can make one request from
+    /// `127.0.0.1` and another from `::1` (the rate limiter keys on the peer IP).
+    pub async fn start_dual_stack() -> Self {
+        let mut sys = Self::start_inner("[::]:0".parse().unwrap(), None, Some(Self::master_key())).await;
+        let port = sys.server.http_addr.port();
+        sys.server.http_addr = format!("127.0.0.1:{port}").parse().unwrap();
+        sys.api = ApiClient::new(format!("http://{}", sys.server.http_addr), Some(&sys.admin_token));
+        sys
+    }
+
+    /// Like `start`, without `RCLI_MASTER_KEY`: secrets are stored in plaintext.
     pub async fn start_without_master_key() -> Self {
         Self::start_inner("127.0.0.1:0".parse().unwrap(), None, None).await
     }
 
     /// The `RCLI_MASTER_KEY` test Servers use.
-    pub fn master_key() -> rcli_server::vault::MasterKey {
+    pub fn master_key() -> rcli_server::master_key::MasterKey {
         "42".repeat(32).parse().unwrap()
     }
 
     /// Stops the Server and starts it again on the same database with `master_key` (API on a new port).
-    pub async fn restart(&mut self, master_key: Option<rcli_server::vault::MasterKey>) {
+    pub async fn restart(&mut self, master_key: Option<rcli_server::master_key::MasterKey>) {
         self.config.master_key = master_key;
         self.config.http_addr = "127.0.0.1:0".parse().unwrap();
         self.server = rcli_server::start(self.config.clone(), self.clock.clone()).await.expect("restart server");
         self.api = ApiClient::new(format!("http://{}", self.server.http_addr), Some(&self.admin_token));
     }
 
-    async fn start_inner(http_addr: std::net::SocketAddr, turn: Option<TestTurn>, master_key: Option<rcli_server::vault::MasterKey>) -> Self {
+    async fn start_inner(http_addr: std::net::SocketAddr, turn: Option<TestTurn>, master_key: Option<rcli_server::master_key::MasterKey>) -> Self {
         let postgres = Postgres::default().with_tag("16-alpine").start().await.expect("start postgres container");
         let port = postgres.get_host_port_ipv4(5432).await.unwrap();
         let clock = Arc::new(ManualClock::default());
+        let (update_signing_key, update_public_key) = rcli_protocol::update::generate_key().unwrap();
         let config = rcli_server::Config {
             database_url: format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
             http_addr,
@@ -90,40 +103,87 @@ impl TestSystem {
             master_key,
             ice_urls: turn.iter().map(|t| format!("turn:{}?transport=udp", t.addr)).collect(),
             turn_secret: turn.as_ref().map(|_| TURN_SECRET.into()),
+            update_public_key: Some(update_public_key),
+            trusted_proxies: Vec::new(),
         };
         let server = rcli_server::start(config.clone(), clock.clone()).await.expect("start server");
-        let (update_signing_key, update_public_key) = rcli_protocol::update::generate_key().unwrap();
         let mut sys = Self {
             clock,
             api: ApiClient::new(format!("http://{}", server.http_addr), Some(BOOTSTRAP_TOKEN)),
             server,
             admin_token: String::new(),
+            admin_totp_secret: String::new(),
             update_signing_key,
-            update_public_key,
             turn,
             config,
             _postgres: postgres,
         };
-        sys.admin_token = sys.create_user("admin", "admin").await;
+        sys.admin_totp_secret = sys.create_dashboard_user("admin", "admin").await;
+        sys.admin_token = sys.sign_in("admin", &sys.admin_totp_secret.clone()).await;
         sys.api = sys.api.with_token(Some(&sys.admin_token));
         sys
+    }
+
+    /// The Dashboard password every test user is signed in with.
+    pub const PASSWORD: &'static str = "correct horse battery";
+
+    /// Signs in `name` with a stored `totp_secret` and returns the session token (no admin access needed).
+    async fn sign_in(&self, name: &str, totp_secret: &str) -> String {
+        let body = serde_json::json!({ "name": name, "password": Self::PASSWORD, "totp": self.totp(totp_secret) });
+        let (status, body) = self.api.with_token(None).post_json("/api/v1/sessions", &body).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        body["token"].as_str().unwrap().to_owned()
+    }
+
+    /// Creates `name` with `role`, sets its Dashboard password to `TestSystem::PASSWORD`, and returns its TOTP
+    /// secret (what `rcli login` needs); it does not sign in.
+    pub async fn create_dashboard_user(&self, name: &str, role: &str) -> String {
+        let (status, body) = self.api.post_json("/api/v1/users", &serde_json::json!({ "name": name, "role": role })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, enrolled) =
+            self.api.post_json(&format!("/api/v1/users/{name}/credentials"), &serde_json::json!({ "password": Self::PASSWORD })).await;
+        assert_eq!(status, StatusCode::OK, "{enrolled}");
+        enrolled["totp_secret"].as_str().unwrap().to_owned()
+    }
+
+    /// Signs the harness admin in again. Sessions expire, so tests that move the clock far past one call this.
+    pub async fn sign_in_admin(&mut self) {
+        let secret = self.admin_totp_secret.clone();
+        self.admin_token = self.sign_in("admin", &secret).await;
+        self.api = self.api.with_token(Some(&self.admin_token));
     }
 
     pub fn advance(&self, seconds: i64) {
         self.clock.advance(chrono::Duration::seconds(seconds));
     }
 
-    pub fn endpoint(&self) -> ServerEndpoint {
-        ServerEndpoint {
-            addr: format!("localhost:{}", self.server.agent_addr.port()),
-            ca_pem: self.server.ca_pem.clone(),
-            update_key: Some(self.update_public_key.clone()),
-        }
+    /// The Server Key as an admin reads it (`rcli server-key show`).
+    pub fn server_key(&self) -> String {
+        self.server.server_key.clone()
+    }
+
+    /// `localhost:port` of the Agent port, as an Agent is given it.
+    pub fn agent_addr(&self) -> String {
+        format!("localhost:{}", self.server.agent_addr.port())
+    }
+
+    pub fn server_access(&self) -> ServerAccess {
+        ServerAccess { addr: self.agent_addr(), server_key: self.server_key() }
     }
 
     /// Runs `rcli <args>` in-process against this Server as the admin; returns stdout.
     pub async fn rcli(&self, args: &[&str]) -> anyhow::Result<String> {
         self.rcli_as(&self.admin_token, args).await
+    }
+
+    /// Runs `rcli <args>` in-process with `config_dir` as the Controller configuration, so `setup`, `connect` and
+    /// remembered Device Passwords work per test. No token is added: password connections are the point.
+    pub async fn rcli_in(&self, config_dir: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {
+        let mut argv = vec!["rcli".to_owned(), "--config-dir".to_owned(), config_dir.to_string_lossy().into_owned()];
+        argv.extend(args.iter().map(|s| s.to_string()));
+        let mut out = Vec::new();
+        rcli::run(argv, &mut out).await?;
+        Ok(String::from_utf8(out)?)
     }
 
     /// Runs `rcli <args>` in-process with the API token `token`; returns stdout.
@@ -141,21 +201,40 @@ impl TestSystem {
     pub async fn mcp_as(&self, token: &str) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
         use rmcp::ServiceExt;
         let (client, server) = tokio::io::duplex(1 << 20);
-        let (base, token) = (format!("http://{}", self.server.http_addr), token.to_owned());
+        let api = rcli::Api::new(format!("http://{}", self.server.http_addr), token.to_owned());
         tokio::spawn(async move {
             let (read, write) = tokio::io::split(server);
-            rcli::mcp::serve(base, token, read, write).await
+            rcli::mcp::serve(api, read, write).await
         });
         ().serve(client).await.expect("MCP handshake")
     }
 
-    /// Creates a user with `role` ("admin" | "operator") and returns a fresh API token for it.
+    /// Starts `rcli mcp` like `mcp_as`, but from a config directory: the Server and the session (or a remembered
+    /// Device Password) come only from `rcli setup` / `rcli login` / `rcli connect`, as `rcli mcp` does.
+    pub async fn mcp_in(&self, config_dir: &std::path::Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+        use rmcp::ServiceExt;
+        let api = rcli::Api::from_config(config_dir).expect("MCP config");
+        let (client, server) = tokio::io::duplex(1 << 20);
+        tokio::spawn(async move {
+            let (read, write) = tokio::io::split(server);
+            rcli::mcp::serve(api, read, write).await
+        });
+        ().serve(client).await.expect("MCP handshake")
+    }
+
+    /// A Controller config directory with `rcli setup` (and `rcli connect` when a password is given).
+    pub async fn controller_config(&self, dir: &std::path::Path, device: Option<(&str, &str)>) {
+        let server = format!("http://{}", self.server.http_addr);
+        self.rcli_in(dir, &["setup", "--server", &server, "--key", &self.server_key()]).await.unwrap();
+        if let Some((device, password)) = device {
+            self.rcli_in(dir, &["connect", device, "--password", password]).await.unwrap();
+        }
+    }
+
+    /// Creates a user with `role` ("admin" | "operator"), signs them in, and returns their session token.
     pub async fn create_user(&self, name: &str, role: &str) -> String {
-        let (status, body) = self.api.post_json("/api/v1/users", &serde_json::json!({ "name": name, "role": role })).await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        let (status, body) = self.api.post(&format!("/api/v1/users/{name}/tokens")).await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        body["token"].as_str().unwrap().to_owned()
+        let secret = self.create_dashboard_user(name, role).await;
+        self.sign_in(name, &secret).await
     }
 
     /// The current TOTP code for a base32 `secret` (as an authenticator app would show it), by the Server clock.
@@ -164,36 +243,83 @@ impl TestSystem {
         format!("{:06}", rcli_server::auth::totp(&secret, self.clock.now().timestamp()))
     }
 
-    pub async fn create_enrollment_code(&self) -> String {
-        let (status, body) = self.api.post("/api/v1/enrollment-codes").await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        body["code"].as_str().unwrap().to_owned()
+    /// Registers a Device on `platform` with the Server Key (not started).
+    pub async fn register(&self, platform: &FakePlatform) -> anyhow::Result<Credentials> {
+        rcli_agent::register(&self.server_access(), platform).await
     }
 
-    pub async fn enroll(&self, code: &str, platform: &FakePlatform) -> anyhow::Result<Credentials> {
-        let endpoint = self.endpoint();
-        rcli_agent::enroll(&endpoint, code, &rcli_agent::ca_fingerprint(&endpoint.ca_pem)?, platform).await
-    }
-
-    /// Enrolls a new Device named `hostname` and starts its Agent.
+    /// Registers a new Device named `hostname` and starts its Agent.
     pub async fn start_agent(&self, hostname: &str) -> TestAgent {
         self.start_agent_on(FakePlatform::new(hostname)).await
     }
 
-    /// Enrolls a new Device and starts its Agent on `platform` (keep a clone to script it).
+    /// Registers a new Device named `hostname` and starts its Agent with its local IPC socket in `dir`.
+    /// The Agent's Secret Store lives in `dir` too, as on a real Device.
+    pub async fn start_agent_with_socket(&self, hostname: &str, dir: &std::path::Path) -> TestAgent {
+        let creds = self.register(&FakePlatform::new(hostname)).await.expect("register");
+        let mut agent = TestAgent::with_secrets_dir(self.server_access(), FakePlatform::new(hostname), creds, dir.to_path_buf());
+        agent.start();
+        tokio::spawn(rcli_agent::ipc::serve(dir.join("agent.sock"), agent.status.clone()));
+        agent
+    }
+
+    /// Like `start_agent_with_socket`, but the socket treats every caller as root (the unprivileged test process
+    /// cannot be root). Only for tests of what root may do; the gate itself needs the real `serve`.
+    pub async fn start_agent_trusting_socket(&self, hostname: &str, dir: &std::path::Path) -> TestAgent {
+        self.start_agent_trusting_socket_on(FakePlatform::new(hostname), dir).await
+    }
+
+    /// Like `start_agent_trusting_socket`, on `platform` so the test can script it.
+    pub async fn start_agent_trusting_socket_on(&self, platform: FakePlatform, dir: &std::path::Path) -> TestAgent {
+        let creds = self.register(&platform).await.expect("register");
+        let mut agent = TestAgent::with_secrets_dir(self.server_access(), platform, creds, dir.to_path_buf());
+        agent.start();
+        tokio::spawn(rcli_agent::ipc::serve_trusting_all(dir.join("agent.sock"), agent.status.clone()));
+        agent
+    }
+
+    /// Starts a stopped `agent` again with its credentials and socket directory (the same Device, a new session).
+    pub async fn resume_agent_on(&self, agent: TestAgent, platform: FakePlatform, dir: &std::path::Path) -> TestAgent {
+        let mut resumed =
+            TestAgent::with_secrets_dir(agent.server_access.clone(), platform, agent.creds.clone(), dir.to_path_buf());
+        resumed.start();
+        resumed
+    }
+
+    /// A Controller API client for a password connection: Server Key + Device ID + Device Password.
+    pub fn device_client(&self, device_id: &str, password: &str) -> DeviceClient {
+        DeviceClient {
+            api: ApiClient::new(format!("http://{}", self.server.http_addr), None),
+            server_key: self.server_key(),
+            device_id: device_id.to_owned(),
+            password: password.to_owned(),
+            controller: None,
+        }
+    }
+
+    /// Runs `rcli <args>` in-process against the Agent IPC socket at `socket`; returns stdout.
+    pub async fn agent_rcli(&self, socket: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {
+        let mut argv: Vec<String> = std::iter::once("rcli".to_owned()).chain(args.iter().map(|s| s.to_string())).collect();
+        argv.push("--socket".into());
+        argv.push(socket.to_string_lossy().into_owned());
+        let mut out = Vec::new();
+        rcli::run(argv, &mut out).await?;
+        Ok(String::from_utf8(out)?)
+    }
+
+    /// Registers a new Device and starts its Agent on `platform` (keep a clone to script it).
     pub async fn start_agent_on(&self, platform: FakePlatform) -> TestAgent {
-        let code = self.create_enrollment_code().await;
-        let creds = self.enroll(&code, &platform).await.expect("enroll");
-        let mut agent = TestAgent::new(self.endpoint(), platform, creds);
+        let creds = self.register(&platform).await.expect("register");
+        let mut agent = TestAgent::new(self.server_access(), platform, creds);
         agent.start();
         agent
     }
 
-    /// Polls the Device list until the Device with `id` satisfies `pred`; returns it.
+    /// Polls the Device list until the Device with 9-digit Device ID `id` satisfies `pred`; returns it.
     pub async fn wait_device(&self, id: &str, pred: impl Fn(&Value) -> bool) -> Value {
         eventually(|| async {
             let (_, devices) = self.api.get("/api/v1/devices").await;
-            devices.as_array()?.iter().find(|d| d["id"] == id && pred(d)).cloned()
+            devices.as_array()?.iter().find(|d| d["device_id"] == id && pred(d)).cloned()
         })
         .await
     }
@@ -226,19 +352,40 @@ impl TestSystem {
 
 /// A real Agent running on a FakePlatform. Dropping it disconnects.
 pub struct TestAgent {
-    pub endpoint: ServerEndpoint,
+    pub server_access: ServerAccess,
     pub platform: FakePlatform,
     pub creds: Credentials,
+    /// The Agent's local IPC view (Device ID and connection status).
+    pub status: Arc<rcli_agent::ipc::Status>,
     task: Option<JoinHandle<()>>,
     network: NetworkLink,
 }
 
 impl TestAgent {
     /// An Agent for already-enrolled credentials; call `start` to connect.
-    /// It reaches `endpoint` through a link the test can cut (`cut_network`). Needs a Tokio runtime.
-    pub fn new(endpoint: ServerEndpoint, platform: FakePlatform, creds: Credentials) -> Self {
-        let network = NetworkLink::new(&endpoint.addr);
-        Self { endpoint, platform, creds, task: None, network }
+    /// It reaches `server_access` through a link the test can cut (`cut_network`). Needs a Tokio runtime.
+    pub fn new(server_access: ServerAccess, platform: FakePlatform, creds: Credentials) -> Self {
+        let dir = std::env::temp_dir().join(format!("rcli-test-agent-{}-{}", std::process::id(), creds.device_id));
+        Self::with_secrets_dir(server_access, platform, creds, dir)
+    }
+
+    /// An Agent that keeps its Device Password in `secrets_dir`.
+    pub fn with_secrets_dir(server_access: ServerAccess, platform: FakePlatform, creds: Credentials, secrets_dir: std::path::PathBuf) -> Self {
+        let network = NetworkLink::new(&server_access.addr);
+        use rcli_agent::secret_store::SecretStore;
+        let secrets = std::sync::Arc::new(rcli_agent::secret_store::FileSecretStore::new(secrets_dir.clone()));
+        if !creds.device_password.is_empty() {
+            secrets.set(rcli_agent::ipc::DEVICE_PASSWORD, &creds.device_password).expect("store the Device Password");
+        }
+        let status = Arc::new(rcli_agent::ipc::Status::new(&creds.device_id, server_access.clone(), secrets));
+        // Device Settings live beside the credentials, as on a real Device.
+        status.set_settings_dir(secrets_dir);
+        Self { server_access, platform, creds, status, task: None, network }
+    }
+
+    /// The Device Password generated at registration.
+    pub fn device_password(&self) -> Option<String> {
+        (!self.creds.device_password.is_empty()).then(|| self.creds.device_password.clone())
     }
 
     /// Drops the Agent's connection and stalls new ones until `restore_network`; the Agent keeps running.
@@ -255,8 +402,9 @@ impl TestAgent {
     }
 
     pub fn start(&mut self) {
-        let endpoint = ServerEndpoint { addr: self.network.addr.clone(), ..self.endpoint.clone() };
-        let run = rcli_agent::run(endpoint, self.creds.clone(), Arc::new(self.platform.clone()));
+        let server_access = ServerAccess { addr: self.network.addr.clone(), ..self.server_access.clone() };
+        self.status.set_server_access(server_access.clone());
+        let run = rcli::agent::serve(server_access, self.creds.clone(), Arc::new(self.platform.clone()), Some(self.status.clone()));
         self.task = Some(tokio::spawn(run));
     }
 
@@ -312,6 +460,32 @@ impl NetworkLink {
     }
 }
 
+/// A short temp directory: the Agent's IPC socket path must fit in `SUN_LEN` (104 bytes on macOS).
+pub fn temp_dir(name: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
+    let dir = std::path::PathBuf::from(format!("/tmp/rcli-{}-{name}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Starts a Device on `platform`, with a trusting IPC socket in `temp_dir(name)` so the test can change its settings.
+pub async fn online(sys: &TestSystem, name: &str, platform: FakePlatform) -> (TestAgent, std::path::PathBuf) {
+    let dir = temp_dir(name);
+    let agent = sys.start_agent_trusting_socket_on(platform, &dir).await;
+    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
+    eventually(|| async { dir.join("agent.sock").exists().then_some(()) }).await;
+    (agent, dir)
+}
+
+/// Whether the tests run as root (then the IPC password gate lets them through).
+pub fn running_as_root() -> bool {
+    #[cfg(unix)]
+    return std::process::Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0");
+    #[cfg(not(unix))]
+    false
+}
+
 /// Retries `f` until it returns `Some`, for up to 10 seconds of real time.
 pub async fn eventually<T, F, Fut>(mut f: F) -> T
 where
@@ -325,6 +499,77 @@ where
         }
         assert!(tokio::time::Instant::now() < deadline, "condition not met within 10s");
         tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// A Controller API client for a password connection (Server Key + Device ID + Device Password).
+pub struct DeviceClient {
+    api: ApiClient,
+    server_key: String,
+    device_id: String,
+    password: String,
+    /// Controller machine name reported to the Server; the fake name is used when unset.
+    controller: Option<String>,
+}
+
+impl DeviceClient {
+    pub fn with_server_key(mut self, key: &str) -> Self {
+        self.server_key = key.to_owned();
+        self
+    }
+
+    pub fn with_controller(mut self, hostname: &str) -> Self {
+        self.controller = Some(hostname.to_owned());
+        self
+    }
+
+    /// The same Server reached at another address (e.g. its `[::1]` side), so the request comes from another IP.
+    pub fn with_base(mut self, base: &str) -> Self {
+        self.api.base = base.to_owned();
+        self
+    }
+
+    pub async fn get(&self, path: &str) -> (StatusCode, Value) {
+        self.send(self.api.http.get(self.url(path))).await
+    }
+
+    pub async fn post(&self, path: &str) -> (StatusCode, Value) {
+        self.send(self.api.http.post(self.url(path))).await
+    }
+
+    pub async fn post_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
+        self.send(self.api.http.post(self.url(path)).json(body)).await
+    }
+
+    /// Opens a streaming GET (e.g. the Control Lock `watch`) and waits for its first chunk.
+    pub async fn watch(&self, path: &str) -> reqwest::Response {
+        let req = self
+            .api
+            .http
+            .get(self.url(path))
+            .header("x-rcli-server-key", &self.server_key)
+            .header("x-rcli-device", &self.device_id)
+            .header("x-rcli-device-password", &self.password)
+            .header("x-rcli-controller", self.controller.as_deref().unwrap_or("test-controller"));
+        let mut resp = req.send().await.expect("controller API request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        resp.chunk().await.expect("first chunk").expect("stream ended");
+        resp
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.api.base)
+    }
+
+    async fn send(&self, mut req: reqwest::RequestBuilder) -> (StatusCode, Value) {
+        req = req
+            .header("x-rcli-server-key", &self.server_key)
+            .header("x-rcli-device", &self.device_id)
+            .header("x-rcli-device-password", &self.password)
+            .header("x-rcli-controller", self.controller.as_deref().unwrap_or("test-controller"));
+        let resp = req.send().await.expect("controller API request");
+        let status = resp.status();
+        (status, resp.json().await.unwrap_or(Value::Null))
     }
 }
 
@@ -365,6 +610,17 @@ impl ApiClient {
 
     pub async fn put_bytes(&self, path: &str, body: Vec<u8>) -> (StatusCode, Value) {
         self.send(self.http.put(format!("{}{path}", self.base)).body(body)).await
+    }
+
+    /// A GET whose body is raw bytes (scripts, builds), not JSON.
+    pub async fn get_bytes(&self, path: &str) -> (StatusCode, Vec<u8>) {
+        let mut req = self.http.get(format!("{}{path}", self.base));
+        if let Some(t) = &self.token {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send().await.expect("controller API request");
+        let status = resp.status();
+        (status, resp.bytes().await.unwrap_or_default().to_vec())
     }
 
     /// Opens a streaming GET (e.g. the Control Lock `watch`) and waits for its first chunk. Drop it to disconnect.

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use base64::Engine;
-use rcli_testkit::{FakePlatform, SessionState, StatusCode, TestSystem};
+use rcli_testkit::{FakePlatform, StatusCode, TestSystem};
 use serde_json::{json, Value};
 
 /// An open interactive shell: the NDJSON output stream plus the session id for input/resize.
@@ -108,8 +108,10 @@ async fn interactive_shell_runs_commands_as_the_logged_in_user_and_audits_start_
     let (mut sh, first) = Shell::open(&sys, &alice, &dev, json!({ "cols": 80, "rows": 24 })).await.unwrap();
     assert_eq!(first["as"], "user", "{first}");
     sh.expect("$ ").await;
+    // The Terminal User defaults to the account running the Agent (this test process).
+    let running = std::env::var("USER").expect("USER");
     sh.input("whoami\r").await;
-    sh.expect("whoami\r\nuser\r\n$ ").await;
+    sh.expect(&format!("whoami\r\n{running}\r\n$ ")).await;
     sh.input("exit\r").await;
     assert_eq!(sh.finish().await, json!({ "exit_code": 0 }));
 
@@ -117,7 +119,7 @@ async fn interactive_shell_runs_commands_as_the_logged_in_user_and_audits_start_
     assert_eq!(entries.len(), 2, "{entries:?}");
     assert_eq!(entries[0]["action"], "shell.start");
     assert_eq!(entries[0]["user"], "alice");
-    assert_eq!(entries[0]["result"], json!({ "session": sh.session, "as": "user", "error": null }));
+    assert_eq!(entries[0]["result"], json!({ "session": sh.session, "as": "user", "root_decision": "", "error": null }));
     assert_eq!(entries[1]["action"], "shell.end");
     assert_eq!(entries[1]["params"], json!({ "session": sh.session }));
     assert_eq!(entries[1]["result"], json!({ "exit_code": 0, "reason": "exited" }));
@@ -141,35 +143,30 @@ async fn the_terminal_resizes_and_ctrl_c_reaches_the_shell() {
 }
 
 #[tokio::test]
-async fn root_shells_are_for_admins_only_and_nobody_logged_in_needs_an_admin() {
+async fn root_shells_are_not_gated_by_server_roles() {
+    use rcli_testkit::eventually;
     let sys = TestSystem::start().await;
-    let (dev, _agent) = online(&sys, FakePlatform::new("lab-pc")).await;
+    let dir = rcli_testkit::temp_dir("shell-root");
+    let agent = sys.start_agent_trusting_socket("lab-pc", &dir).await;
+    let dev = agent.device_id().to_owned();
+    sys.wait_device(&dev, |d| d["status"] == "Online").await;
+    let socket = dir.join("agent.sock");
+    eventually(|| async { socket.exists().then_some(()) }).await;
+    // The Device allows root always; who asks does not matter.
+    sys.agent_rcli(&socket, &["agent", "root", "always"]).await.unwrap();
     let alice = sys.create_user("alice", "operator").await;
 
-    let (status, body) = Shell::open(&sys, &alice, &dev, json!({ "as": "root" })).await.err().unwrap();
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"]["code"], "admin_required");
-
-    let (mut sh, first) = Shell::open(&sys, &sys.admin_token, &dev, json!({ "as": "root" })).await.unwrap();
+    let (mut sh, first) = Shell::open(&sys, &alice, &dev, json!({ "as": "root" })).await.unwrap();
     assert_eq!(first["as"], "root");
     sh.input("whoami\r").await;
     sh.expect("root\r\n").await;
-
-    let platform = FakePlatform::new("kiosk");
-    platform.set_session_state(SessionState::LoginScreen);
-    let (kiosk, _kiosk_agent) = online(&sys, platform).await;
-    let (status, body) = Shell::open(&sys, &alice, &kiosk, json!({})).await.err().unwrap();
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["error"]["code"], "no_logged_in_user");
-    let (mut sh, first) = Shell::open(&sys, &sys.admin_token, &kiosk, json!({})).await.unwrap();
-    assert_eq!(first["as"], "root", "admins get root when nobody is logged in");
-    sh.input("whoami\r").await;
-    sh.expect("root\r\n").await;
+    sh.input("exit\r").await;
+    assert_eq!(sh.finish().await, json!({ "exit_code": 0 }));
 
     let starts: Vec<Value> = audit(&sys).await.into_iter().filter(|e| e["action"] == "shell.start").collect();
-    assert_eq!(starts.len(), 3, "the admin_required refusal is not recorded: {starts:?}");
+    assert_eq!(starts.len(), 1, "{starts:?}");
     assert_eq!(starts[0]["params"], json!({ "as": "root" }));
-    assert_eq!(starts[1]["result"], json!({ "error": "no_logged_in_user" }));
+    assert_eq!(starts[0]["user"], "alice");
 }
 
 #[tokio::test]
@@ -223,14 +220,34 @@ async fn rcli_shell_relays_keystrokes_and_exits_with_the_remote_code() {
         }
     };
 
+    let running = std::env::var("USER").expect("USER");
     let (result, out) = rcli(&alice, &["shell", "lab-pc"], &["whoami\r", "exit 5\r"]).await;
-    assert!(out.contains("whoami\r\nuser\r\n"), "{out:?}");
+    assert!(out.contains(&format!("whoami\r\n{running}\r\n")), "{out:?}");
     let exit = result.unwrap_err();
     assert_eq!(exit.downcast_ref::<rcli::RemoteExit>().map(|e| e.exit_code()), Some(5), "{exit:#}");
 
+    // Server roles no longer gate Device work; the Device's root setting (default `ask`, with no session to show
+    // the prompt in) does, whoever asks.
     let (result, _) = rcli(&sys.admin_token, &["shell", "lab-pc", "--as", "root"], &["exit\r"]).await;
-    result.unwrap();
+    assert!(format!("{:#}", result.unwrap_err()).contains("root_denied"));
+}
 
-    let (result, _) = rcli(&alice, &["shell", "lab-pc", "--as", "root"], &[]).await;
-    assert!(format!("{:#}", result.unwrap_err()).contains("admin_required"));
+/// `rcli agent disconnect alice` ends alice's shell only; bob, also connected, keeps his.
+#[tokio::test]
+async fn disconnect_ends_only_that_controllers_shell() {
+    let sys = TestSystem::start().await;
+    let (agent, dir) = rcli_testkit::online(&sys, "disconnect-one", FakePlatform::new("lab-pc")).await;
+    let dev = agent.device_id().to_owned();
+    let (alice, bob) = (sys.create_user("alice", "operator").await, sys.create_user("bob", "operator").await);
+    let (mut alices, _) = Shell::open(&sys, &alice, &dev, json!({})).await.unwrap();
+    let (mut bobs, _) = Shell::open(&sys, &bob, &dev, json!({})).await.unwrap();
+    alices.expect("$ ").await;
+    bobs.expect("$ ").await;
+
+    let out = sys.agent_rcli(&dir.join("agent.sock"), &["agent", "disconnect", "alice"]).await.unwrap();
+    assert!(out.contains("alice (Dashboard)") && !out.contains("bob"), "{out}");
+
+    assert!(alices.finish().await.get("exit_code").is_some(), "alice's shell ended");
+    bobs.input("echo still-here\r").await;
+    bobs.expect("still-here").await;
 }

@@ -21,7 +21,7 @@ The central service that keeps the Device registry and relays Actions between Co
 _Avoid_: hub, master
 
 **Controller**:
-Whoever issues Actions to a Device: a person or an AI agent using the CLI.
+Whoever issues Actions to a Device: a person or an AI agent, through the CLI or the Dashboard.
 _Avoid_: client, máy điều khiển, AI agent (when it means the controlling side)
 
 **Action**:
@@ -44,9 +44,33 @@ _Avoid_: element id, hotspot, target
 An online Agent on the same LAN as an offline Device that sends the Wake-on-LAN packet on the Server's behalf.
 _Avoid_: WoL proxy, gateway
 
-**Enrollment Code**:
-A single-use code created by an admin that lets a new Agent register its Device with the Server.
-_Avoid_: invite, pairing code, install key
+**Server Key**:
+The secret every Agent and Controller must present to be allowed to connect to the Server; together with the Server's address it is all a new install needs. Replacing it locks out new installs but not Devices already registered.
+_Avoid_: enrollment code, install key, token
+
+**Server Address**:
+The host and port Agents use to reach the Server, set by an Admin; together with the Server Key it is all a new install needs.
+_Avoid_: hostname, server URL, endpoint
+
+**Secret Store**:
+The encrypted place on a Device where its Agent keeps the Device Password and the unlock password, readable only with root/Administrator rights on that Device.
+_Avoid_: vault, keystore, credential store
+
+**Device ID**:
+The 9-digit number the Server gives a Device when it first registers, used to address it. It never changes by itself, only when deliberately changed.
+_Avoid_: device uuid, machine id
+
+**Device Password**:
+The static secret of a Device, generated at install and viewable and changeable on the Device, that lets a Controller connect to that Device by its Device ID without a User account.
+_Avoid_: access code, PIN, one-time password
+
+**Device Settings**:
+The rules set on the Device itself, not on the Server, that govern every Controller connecting to it: which Terminal User runs commands, whether root is never allowed, asked for or always allowed, and whether a person at the Device must accept each connection.
+_Avoid_: permissions, policy, roles (when meaning what a Controller may do on a Device)
+
+**Terminal User**:
+The local account a Device runs terminal commands and shells as, by default the account that installed the Agent.
+_Avoid_: run-as user, shell user
 
 **Control Lock**:
 Exclusive right held by one Controller at a time to send mouse and keyboard Actions to a Device; others may still observe, read metrics and use the terminal. It cannot be taken over by another Controller: it ends only when its holder releases it, sends no Action for 10 minutes, or stays disconnected for 60 seconds, or when an admin force-releases it.
@@ -61,5 +85,5 @@ A User who observes and controls Devices but cannot administer the Server.
 _Avoid_: staff, normal user
 
 **Admin**:
-A User who, besides everything an Operator can do, manages Users, Enrollment Codes, Agent updates and Devices.
+A User who, besides everything an Operator can do, manages Users, the Server Key, Agent updates and Devices.
 _Avoid_: administrator, superuser, quản trị viên

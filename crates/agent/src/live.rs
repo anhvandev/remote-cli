@@ -97,13 +97,11 @@ impl Live {
         fn fail(code: &'static str) -> impl Fn(webrtc::Error) -> Error {
             move |e| Error { code: code.into(), message: e.to_string() }
         }
-        let display = match offer.display {
-            Some(d) => d,
-            None => {
-                let displays = self.platform.displays().map_err(|e| Error { code: "platform".into(), message: format!("{e:#}") })?;
-                displays.iter().find(|d| d.primary).map_or(0, |d| d.index)
-            }
-        };
+        let displays = self.platform.displays().map_err(|e| Error { code: "platform".into(), message: format!("{e:#}") })?;
+        if displays.is_empty() {
+            return Err(Error { code: "no_display".into(), message: "Device has no display".into() });
+        }
+        let display = offer.display.or_else(|| displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0);
         let remote = RTCSessionDescription::offer(offer.sdp).map_err(fail("invalid_offer"))?;
         let pc = Arc::new(peer_connection(&offer.ice_servers).await.map_err(fail("live"))?);
         let codec = RTCRtpCodecCapability {

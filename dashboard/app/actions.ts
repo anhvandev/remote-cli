@@ -1,7 +1,7 @@
 "use server";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { api, ApiError, publicApi, SESSION_COOKIE } from "@/lib/api";
+import { api, ApiError, json, publicApi, SESSION_COOKIE } from "@/lib/api";
 
 export type SignInState = { error?: string };
 
@@ -50,6 +50,21 @@ export async function power(device: string, action: "restart" | "shutdown" | "sl
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action }),
     });
+    return {};
+  } catch (e) {
+    if (e instanceof ApiError) return { error: e.message };
+    throw e;
+  }
+}
+
+/** An Admin's change to a Device's identity. The Server pushes a new Device ID or Device Password to the Device
+ * (it must be Online) and never returns a password; refusals come back as the Server's message. */
+export async function changeDevice(
+  device: string,
+  change: { name?: string; device_id?: string; device_password?: string },
+): Promise<Sent> {
+  try {
+    await api(`/api/v1/devices/${encodeURIComponent(device)}`, json("PATCH", change));
     return {};
   } catch (e) {
     if (e instanceof ApiError) return { error: e.message };

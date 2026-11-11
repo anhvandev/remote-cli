@@ -4,6 +4,8 @@ pub mod agent {
     include!(concat!(env!("OUT_DIR"), "/rcli.agent.v1.rs"));
 }
 
+pub mod password;
+pub mod server_key;
 pub mod update;
 
 /// `Resources.session` as "Active" | "LockScreen" | "LoginScreen" | null in JSON.

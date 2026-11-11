@@ -11,8 +11,8 @@ use rcli_protocol::agent::{self as proto, action::Kind, agent_message, server_me
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{bad_request, devices::resolve, ApiError, Caller};
-use crate::{audit, auth::User, control_lock, metrics, vault};
+use super::{agent_error, bad_request, devices::resolve_for, ApiError, Caller};
+use crate::{audit, auth::User, control_lock, metrics};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -160,24 +160,13 @@ fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "invalid_action", message)
 }
 
-fn agent_error(e: proto::Error) -> ApiError {
-    let bad_request = |code| ApiError::new(StatusCode::BAD_REQUEST, code, e.message.clone());
-    match e.code.as_str() {
-        "invalid_action" => bad_request("invalid_action"),
-        "stale_mark" => bad_request("stale_mark"),
-        "ambiguous_text" => bad_request("ambiguous_text"),
-        "text_not_found" => bad_request("text_not_found"),
-        _ => ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message),
-    }
-}
-
 async fn act(
     Caller(user): Caller,
     State(state): State<super::State>,
     Path(id): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let device = resolve(&state, &id).await?;
+    let device = resolve_for(&user, &state, &id).await?;
     let Json(mut params) = body.map_err(|e| bad_request(e.body_text()))?;
     let body: ActBody = serde_json::from_value(params.clone())
         .map_err(|e| bad_request(e.to_string()))?;
@@ -255,29 +244,22 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
             _ => None,
         },
         all_displays: matches!(body.display, Some(DisplaySel::All(_))),
-        controller: user.id.to_string(),
+        controller: user.controller_display(),
         max_frames,
         marks: body.marks,
         media_session: body.media_session,
+        unlock: false,
     };
     send(state, device, req, &step_of).await
 }
 
-/// `unlock`: the Agent types the Device's stored password + Enter, then observes. Needs the Control Lock.
-/// The password goes only to the Agent; the audit entry has no params at all.
+/// `unlock`: the Agent types the unlock password stored on the Device + Enter, then observes. Needs the Control Lock.
+/// The password never leaves the Device; the audit entry has no params at all.
 async fn unlock(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    let device = resolve(&state, &id).await?;
+    let device = resolve_for(&user, &state, &id).await?;
     control_lock::touch(&state, device, &user).await?;
     control_lock::check(&state, device, &user).await?;
-    let password = vault::password(&state, device).await?;
-    let req = proto::ActRequest {
-        actions: vec![Kind::TypeText(password), Kind::Key("enter".into())]
-            .into_iter()
-            .map(|k| proto::Action { kind: Some(k) })
-            .collect(),
-        controller: user.id.to_string(),
-        ..Default::default()
-    };
+    let req = proto::ActRequest { controller: user.controller_display(), unlock: true, ..Default::default() };
     let result = send(&state, device, req, &[]).await;
     let outcome = json!({ "error": result.as_ref().err().map(|e| e.code) });
     audit::record(&state, &user, device, "unlock", json!({}), outcome).await?;
@@ -288,7 +270,7 @@ async fn unlock(Caller(user): Caller, State(state): State<super::State>, Path(id
 /// `step_of[i]` = the API step of protocol Action `i`, reported as `step` on failure.
 async fn send(state: &super::State, device: uuid::Uuid, req: proto::ActRequest, step_of: &[u32]) -> Result<Json<Value>, ApiError> {
     let req = |request_id| server_message::Msg::Act(proto::ActRequest { request_id, ..req });
-    let agent_message::Msg::ActResult(result) = state.agents.request(device, req).await? else {
+    let agent_message::Msg::ActResult(result) = state.agents.request_admitted(device, req).await? else {
         return Err(anyhow::anyhow!("unexpected reply to ActRequest").into());
     };
     if let Some(e) = result.error {
@@ -337,8 +319,8 @@ async fn send(state: &super::State, device: uuid::Uuid, req: proto::ActRequest, 
     Ok(Json(reply))
 }
 
-async fn displays(_: Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    let device = resolve(&state, &id).await?;
+async fn displays(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    let device = resolve_for(&user, &state, &id).await?;
     let req = |request_id| server_message::Msg::ListDisplays(proto::DisplaysRequest { request_id });
     let agent_message::Msg::Displays(list) = state.agents.request(device, req).await? else {
         return Err(anyhow::anyhow!("unexpected reply to DisplaysRequest").into());

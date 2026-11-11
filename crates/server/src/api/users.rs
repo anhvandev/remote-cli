@@ -6,7 +6,6 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use uuid::Uuid;
 
 use super::{bad_request, Admin, ApiError};
 use crate::auth::{self, User};
@@ -15,10 +14,7 @@ pub fn routes() -> Router<super::State> {
     Router::new()
         .route("/api/v1/users", get(list).post(create))
         .route("/api/v1/users/{name}/disable", post(disable))
-        .route("/api/v1/users/{name}/tokens", post(issue_token))
         .route("/api/v1/users/{name}/credentials", post(set_credentials))
-        .route("/api/v1/tokens", get(list_tokens))
-        .route("/api/v1/tokens/{id}/revoke", post(revoke_token))
 }
 
 impl From<auth::Error> for ApiError {
@@ -53,24 +49,6 @@ async fn list(_: Admin, State(state): State<super::State>) -> Result<Json<Vec<Us
 
 async fn disable(_: Admin, State(state): State<super::State>, Path(name): Path<String>) -> Result<Json<User>, ApiError> {
     Ok(Json(auth::disable_user(&state, &name).await?))
-}
-
-async fn issue_token(
-    _: Admin,
-    State(state): State<super::State>,
-    Path(name): Path<String>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let (id, token) = auth::issue_token(&state, &name).await?;
-    Ok((StatusCode::CREATED, Json(json!({ "id": id, "user": name, "token": token }))))
-}
-
-async fn list_tokens(_: Admin, State(state): State<super::State>) -> Result<Json<Vec<auth::TokenInfo>>, ApiError> {
-    Ok(Json(auth::list_tokens(&state).await?))
-}
-
-async fn revoke_token(_: Admin, State(state): State<super::State>, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
-    auth::revoke_token(&state, id).await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

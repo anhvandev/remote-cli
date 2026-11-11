@@ -73,6 +73,15 @@ pub async fn rollout(state: &AppState, version: &str, devices: Option<&[Uuid]>) 
     .execute(&state.db)
     .await?
     .rows_affected();
+    // A rollout to every Device makes this the fleet's build: what new installs and Controller-only machines get.
+    // A rollout to some Devices (a canary) does not.
+    if devices.is_none() {
+        sqlx::query("UPDATE agent_builds SET rolled_out_at = $2 WHERE version = $1")
+            .bind(version)
+            .bind(state.clock.now())
+            .execute(&state.db)
+            .await?;
+    }
     state.rollouts.send_replace(());
     Ok(n)
 }
@@ -95,6 +104,43 @@ pub async fn agent_failed(state: &AppState, device: Uuid, failed: &UpdateFailed)
         .execute(&state.db)
         .await?;
     Ok(())
+}
+
+/// The fleet's build for a target: the one last rolled out to every Device. New installs (`/download`) and
+/// Controller-only machines (`rcli upgrade`) get it; a newer publish or a canary rollout does not reach them.
+pub async fn fleet_build(state: &AppState, target: &str) -> anyhow::Result<Option<(String, Vec<u8>, Vec<u8>)>> {
+    let row: Option<(String, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        "SELECT version, signature, build FROM agent_builds WHERE target = $1 AND rolled_out_at IS NOT NULL
+         ORDER BY rolled_out_at DESC, uploaded_at DESC LIMIT 1",
+    )
+    .bind(target)
+    .fetch_optional(&state.db)
+    .await?;
+    Ok(row)
+}
+
+/// The build `rcli upgrade` fetches when it names its Device: the one rolled out to it (`update_version`), so an
+/// unpublished or not-yet-rolled-out build never reaches a Device. No Device row (a Controller-only install) or no
+/// rollout to it yet falls back to the fleet's build.
+pub async fn upgrade_build(state: &AppState, device: Option<&str>, target: &str) -> anyhow::Result<Option<(String, Vec<u8>, Vec<u8>)>> {
+    let mut rolled_out = None;
+    if let Some(key) = device {
+        if let Ok(Some(id)) = crate::registry::resolve(state, key).await? {
+            rolled_out = sqlx::query_as::<_, (String, Vec<u8>, Vec<u8>)>(
+                "SELECT b.version, b.signature, b.build
+                 FROM devices d JOIN agent_builds b ON b.version = d.update_version AND b.target = $2
+                 WHERE d.id = $1",
+            )
+            .bind(id)
+            .bind(target)
+            .fetch_optional(&state.db)
+            .await?;
+        }
+    }
+    match rolled_out {
+        Some(row) => Ok(Some(row)),
+        None => fleet_build(state, target).await,
+    }
 }
 
 /// The build this Device should install now, if any. A missing build for the Device's

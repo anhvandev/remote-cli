@@ -5,7 +5,7 @@ use std::time::Duration;
 use rcli_agent::{
     contract::{self, Env, Step},
     platform::{
-        DisplayInfo, FakePlatform, Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, RunAs, SessionState,
+        DisplayInfo, FakePlatform, Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, Account, SessionState,
         ShellOutput, UiElement,
     },
 };
@@ -44,6 +44,7 @@ fn fake_platform_passes_every_check_in_every_environment() {
 | displays | ✅ | | |
 | capture | ✅ | ✅ | ✅ |
 | key shows on screen | ✅ | ✅ | ✅ |
+| text input | ✅ | ✅ | ✅ |
 | session state | ✅ | ✅ | ✅ |
 | control indicator | ✅ | ✅ | ✅ |
 | text recognition | ✅ | ✅ | ✅ |
@@ -108,11 +109,11 @@ impl Platform for Broken {
     fn processes(&self) -> anyhow::Result<Vec<Process>> {
         self.fake.processes()
     }
-    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
-        self.fake.shell(command, run_as, timeout)
+    fn shell(&self, command: &str, account: Account, timeout: Duration) -> anyhow::Result<ShellOutput> {
+        self.fake.shell(command, account, timeout)
     }
-    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
-        self.fake.pty(run_as, cols, rows)
+    fn pty(&self, account: Account, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+        self.fake.pty(account, cols, rows)
     }
     fn power(&self, action: PowerAction) -> anyhow::Result<()> {
         self.fake.power(action)
@@ -126,6 +127,12 @@ impl Platform for Broken {
     fn set_control_indicator(&self, on: bool) -> anyhow::Result<()> {
         self.fake.set_control_indicator(on)
     }
+    fn ask_root(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
+        self.fake.ask_root(requester, timeout)
+    }
+    fn ask_accept(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
+        self.fake.ask_accept(requester, timeout)
+    }
 }
 
 #[test]
@@ -137,8 +144,11 @@ fn keys_that_never_reach_the_screen_fail_in_every_environment() {
         report.failures(),
         vec![
             ("key shows on screen", Env::LoggedIn),
+            ("text input", Env::LoggedIn),
             ("key shows on screen", Env::LockScreen),
+            ("text input", Env::LockScreen),
             ("key shows on screen", Env::LoginScreen),
+            ("text input", Env::LoginScreen),
         ]
     );
     assert!(report.table().contains("| key shows on screen | ❌ screen did not change after the key |"));

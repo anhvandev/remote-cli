@@ -5,12 +5,13 @@
 //! `charlie` Online (logged in, a second 1024x768 display; its Control Lock belongs to the direct-control test),
 //! and never-connected `delta`, `echo`, `foxtrot` for the admin screen tests to rename/revoke/delete/merge.
 //! `golf` Online (power test), `hotel` Offline in alpha's LAN whose last Wake failed (wake test),
-//! `india` Online (its Control Lock belongs to the control-reminder test).
+//! `india` Online (its Control Lock belongs to the control-reminder test), `juliet` Online with no displays
+//! (headless: the Dashboard hides its Screen tab).
 //! `update` in info.json is a build signed with the key the Agents trust, for the update screen tests.
 //! The clock starts at real time (the Dashboard picks history ranges by its own clock) and is frozen after seeding.
 
 use rcli_testkit::{platform::SessionState, Clock, DisplayInfo, FakePlatform, TestAgent, TestSystem};
-use rcli_agent::platform::{Disk, Display, Inventory, NetworkInterface};
+use rcli_agent::platform::{Disk, Display, Inventory, NetworkInterface, Platform};
 use serde_json::json;
 
 #[tokio::main]
@@ -18,8 +19,10 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let [_, port, out] = &args[..] else { anyhow::bail!("usage: rcli-devstack <http-port> <info.json>") };
     let _ = std::fs::remove_file(out);
-    let sys = TestSystem::start_on(format!("127.0.0.1:{port}").parse()?).await;
+    let mut sys = TestSystem::start_on(format!("127.0.0.1:{port}").parse()?).await;
     sys.clock.advance(chrono::Utc::now() - sys.clock.now());
+    // The jump past the harness's real-time start expired its admin session.
+    sys.sign_in_admin().await;
 
     let alpha = FakePlatform::new("alpha");
     alpha.set_session_state(SessionState::Locked);
@@ -56,10 +59,28 @@ async fn main() -> anyhow::Result<()> {
         DisplayInfo { index: 0, x: 0, y: 0, width: 1920, height: 1080, scale: 1.0, primary: true },
         DisplayInfo { index: 1, x: 1920, y: 0, width: 1024, height: 768, scale: 1.0, primary: false },
     ]);
-    let fleet = [alpha, FakePlatform::new("bravo"), charlie, FakePlatform::new("golf"), hotel, FakePlatform::new("india")];
+    // juliet is a headless server: no displays, so the Dashboard hides its Screen tab.
+    let juliet = FakePlatform::new("juliet");
+    juliet.set_displays(vec![]);
+    // kilo is a separate Online Device: the admin Device-actions test changes its identity, which no other spec
+    // asserts on (changing an ID or password would break their names and connections).
+    let fleet = [
+        alpha,
+        FakePlatform::new("bravo"),
+        charlie,
+        FakePlatform::new("golf"),
+        hotel,
+        FakePlatform::new("india"),
+        juliet,
+        FakePlatform::new("kilo"),
+    ];
     for platform in fleet {
-        let creds = sys.enroll(&sys.create_enrollment_code().await, &platform).await?;
-        let mut agent = TestAgent::new(sys.endpoint(), platform, creds);
+        // The Dashboard reads displays from the inventory; keep it in step with what the platform reports.
+        let displays: Vec<Display> =
+            platform.displays()?.iter().map(|d| Display { name: format!("Display {}", d.index + 1), width: d.width, height: d.height }).collect();
+        platform.update(|s| s.inventory.displays = displays);
+        let creds = sys.register(&platform).await?;
+        let mut agent = TestAgent::new(sys.server_access(), platform, creds);
         agent.start();
         sys.wait_device_details(agent.device_id(), |d| !d["inventory"].is_null() && !d["resources"].is_null()).await;
         agents.push(agent);
@@ -85,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
     sys.wait_history(agents[0].device_id(), &query, |h| h["samples"].as_array().is_some_and(|s| !s.is_empty())).await;
 
     for name in ["delta", "echo", "foxtrot"] {
-        sys.enroll(&sys.create_enrollment_code().await, &FakePlatform::new(name)).await?;
+        sys.register(&FakePlatform::new(name)).await?;
     }
     let (version, target, build) = ("9.9.9", "fake-x86_64", "fake agent build");
     let signature = rcli_protocol::update::sign(&sys.update_signing_key, version, target, build.as_bytes())?;
@@ -100,8 +121,14 @@ async fn main() -> anyhow::Result<()> {
     std::fs::write(out, info.to_string())?;
     println!("rcli-devstack ready: {info}");
 
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+    // SIGTERM handling is Unix-only; Windows dev runs stop it with Ctrl-C.
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await?;
     let _ = std::fs::remove_file(out);
     Ok(()) // dropping `sys` removes the Postgres container
 }

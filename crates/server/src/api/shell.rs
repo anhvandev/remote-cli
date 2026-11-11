@@ -21,8 +21,8 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::{bad_request, devices::resolve, ApiError, Caller};
-use crate::{audit, control_lock};
+use super::{bad_request, devices::resolve_for, ApiError, Caller};
+use crate::{agent_link::PROMPT_BUDGET, audit, control_lock};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -31,19 +31,19 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/shell-sessions/{id}/resize", post(resize))
 }
 
-/// `{"as": "root" (admin only; default = logged-in user), "cols": 80, "rows": 24}`.
+/// `{"as": "root" (the Device's root setting decides; default = its Terminal User), "cols": 80, "rows": 24}`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OpenBody {
     #[serde(rename = "as")]
-    run_as: Option<RunAs>,
+    account: Option<Account>,
     cols: Option<u32>,
     rows: Option<u32>,
 }
 
 #[derive(Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-enum RunAs {
+enum Account {
     Root,
 }
 
@@ -79,43 +79,49 @@ async fn open(
     Path(id): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    let device = resolve(&state, &id).await?;
+    let device = resolve_for(&user, &state, &id).await?;
     // Terminal use by the Control Lock holder counts as an Action: restarts their idle timer.
     control_lock::touch(&state, device, &user).await?;
     let Json(params) = body.map_err(|e| bad_request(e.body_text()))?;
     let body: OpenBody = serde_json::from_value(params).map_err(bad_request)?;
     let (cols, rows) = (body.cols.unwrap_or(80), body.rows.unwrap_or(24));
     check_size(cols, rows)?;
-    let as_root = body.run_as == Some(RunAs::Root);
-    if as_root && !user.is_admin() {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "admin_required", "running as root/SYSTEM requires the admin role"));
-    }
+    // Server roles no longer gate what runs on a Device: the Device's own settings do (ticket 07).
+    let as_root = body.account == Some(Account::Root);
     let session = Uuid::new_v4();
     // Registered before the Agent starts the shell so no output is lost.
     let mut output = state.shells.open(session, device, user.id);
+    let (requester, controller) = (user.name.clone(), user.controller_display());
+    // The Agent may first show an accept prompt and a root prompt, up to 30 s each.
+    let wait = std::time::Duration::from_secs(10) + 2 * PROMPT_BUDGET;
     let req = |request_id| {
         server_message::Msg::ShellOpen(proto::ShellOpen {
             request_id,
             session: session.to_string(),
             as_root,
-            root_if_nobody_logged_in: user.is_admin(),
             cols,
             rows,
+            requester: requester.clone(),
+            controller: controller.clone(),
         })
     };
-    let opened = match state.agents.request(device, req).await {
-        Ok(agent_message::Msg::ShellOpened(r)) => match r.error {
-            Some(e) if e.code == "no_logged_in_user" => Err(ApiError::new(StatusCode::CONFLICT, "no_logged_in_user", e.message)),
-            Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
-            None => Ok(if r.as_root { "root" } else { "user" }),
-        },
+    let mut decision = String::new();
+    let opened = match state.agents.request_within(device, wait, req).await {
+        Ok(agent_message::Msg::ShellOpened(r)) => {
+            decision = r.root_decision.clone();
+            match r.error {
+                Some(e) => Err(super::agent_error(e)),
+                None => Ok(if r.as_root { "root" } else { "user" }),
+            }
+        }
         Ok(_) => Err(anyhow::anyhow!("unexpected reply to ShellOpen").into()),
         Err(e) => Err(e.into()),
     };
     let params = json!({ "as": if as_root { Some("root") } else { None } });
     let result = match &opened {
-        Ok(who) => json!({ "session": session, "as": who, "error": null }),
-        Err(e) => json!({ "error": e.code }),
+        Ok(who) => json!({ "session": session, "as": who, "root_decision": decision, "error": null }),
+        // A refused root request is still a prompt answer worth recording.
+        Err(e) => json!({ "error": e.code, "root_decision": decision }),
     };
     if let Err(e) = audit::record(&state, &user, device, "shell.start", params, result).await {
         state.shells.close(session);

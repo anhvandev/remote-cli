@@ -1,6 +1,6 @@
 //! Agent build signatures: Ed25519 over the version, the target and the build bytes, so a
 //! signed build cannot be relabeled as another version or OS. The private key stays with the
-//! admin (`rcli update keygen`); Agents are configured with the public key; the Server only stores.
+//! admin (`rcli rollout keygen`); Agents are configured with the public key; the Server only stores.
 
 use ring::{
     rand::SystemRandom,
@@ -32,6 +32,13 @@ pub fn sign(pkcs8: &[u8], version: &str, target: &str, build: &[u8]) -> anyhow::
 
 pub fn verify(public_key: &[u8], version: &str, target: &str, build: &[u8], signature: &[u8]) -> bool {
     UnparsedPublicKey::new(&ED25519, public_key).verify(&message(version, target, build), signature).is_ok()
+}
+
+/// HMAC-SHA256 of the hex update key under the Server Key's secret. A Controller checking this at `rcli setup`
+/// holds the secret already, so an on-path attacker who rewrites the plain-HTTP reply cannot produce it.
+pub fn pin_mac(server_key_secret: &str, update_key_hex: &str) -> Vec<u8> {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, server_key_secret.as_bytes());
+    ring::hmac::sign(&key, update_key_hex.as_bytes()).as_ref().to_vec()
 }
 
 #[cfg(test)]

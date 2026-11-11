@@ -1,6 +1,6 @@
-//! Auth: users with a role (admin, operator) and per-user API tokens.
-//! The bootstrap token from config acts as an admin only until an enabled admin has a live API token (first run).
-//! Dashboard sign-in: password + TOTP gives a session, which is an API token with an expiry.
+//! Auth: users with a role (admin, operator) and their sessions.
+//! The bootstrap token from config acts as an admin only until an enabled admin has a live session (first run).
+//! A session is an API token with an expiry, from Dashboard sign-in or `rcli login`.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -15,15 +15,188 @@ pub const ROLES: [&str; 2] = ["admin", "operator"];
 pub struct User {
     pub id: Uuid,
     pub name: String,
-    /// "admin" or "operator".
+    /// "admin", "operator", or "controller" for a password connection.
     pub role: String,
     pub disabled_at: Option<DateTime<Utc>>,
+    /// Set for a password connection: the only Device it may reach.
+    #[sqlx(default)]
+    #[serde(skip)]
+    pub device_scope: Option<Uuid>,
 }
 
 impl User {
+    /// Server administration only: a password connection is never an admin.
     pub fn is_admin(&self) -> bool {
-        self.role == "admin"
+        self.role == "admin" && self.device_scope.is_none()
     }
+
+    /// How the person at the Device sees this Controller: `<host> (<IP>)` for a password connection, `<name>
+    /// (Dashboard)` for a Dashboard User. `rcli agent info` lists and `disconnect` matches this name.
+    pub fn controller_display(&self) -> String {
+        if self.device_scope.is_some() {
+            self.name.clone()
+        } else {
+            format!("{} (Dashboard)", self.name)
+        }
+    }
+}
+
+/// Wrong Device Passwords in a row that lock a (Device ID, IP) pair out for a minute.
+pub const MAX_FAILED_DEVICE_PASSWORDS: i32 = 5;
+pub const PASSWORD_LOCKOUT: chrono::Duration = chrono::Duration::minutes(1);
+/// The most a lockout grows to, however many times it repeats.
+pub const PASSWORD_LOCKOUT_MAX: chrono::Duration = chrono::Duration::hours(1);
+/// Failures of a pair not seen for this long start over.
+// shortcut: the window is fixed, not sliding; a slower scanner can try a few per window indefinitely. Move to a
+// sliding window if that shows up.
+pub const PASSWORD_FAILURE_WINDOW: chrono::Duration = chrono::Duration::hours(24);
+
+pub enum ControllerError {
+    /// Wrong Server Key, Device ID or Device Password (no hint which).
+    Unauthorized,
+    /// Too many wrong passwords for this (Device ID, IP); nothing is checked until then.
+    Locked(chrono::DateTime<chrono::Utc>),
+}
+
+/// A real check's cost for an unknown Device, so response time does not reveal whether the Device ID exists.
+fn dummy_password_check(password: &str) {
+    static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let hash = DUMMY.get_or_init(|| rcli_protocol::password::hash("no such Device Password"));
+    let _ = rcli_protocol::password::verify(password, hash);
+}
+
+/// The principal a password connection authenticates as: `<controller hostname> (<IP>)`, with a stable id per
+/// (name, IP) so the Control Lock holder survives reconnects. The hostname is the client's word, so its brackets are
+/// dropped: it cannot pass for another display name such as `alice (Dashboard)`.
+fn controller_user(controller: &str, ip: &str) -> User {
+    let name = format!("{} ({ip})", controller.replace(['(', ')'], "").trim());
+    let digest = Sha256::digest(name.as_bytes());
+    let id_bytes = <[u8; 16]>::try_from(&digest[..16]).expect("16 bytes");
+    User { id: Uuid::from_bytes(id_bytes), name, role: "controller".into(), disabled_at: None, device_scope: None }
+}
+
+/// A password connection: Server Key secret + Device ID + Device Password. It reaches only its own Device and has
+/// no admin rights. Its display name is `<controller hostname> (<IP>)` in audit entries and as Control Lock holder.
+/// Wrong Device Passwords are counted per (Device ID, IP): the fifth locks the pair out for a minute, each later
+/// lockout doubles, and a correct password after that resets the count.
+// shortcut: a wrong Server Key is not counted (it reveals nothing about a password); a leaked key still has to pass
+// the limiter on the Device Password.
+pub async fn authenticate_controller(
+    state: &AppState,
+    server_key: &str,
+    device: &str,
+    password: &str,
+    controller: &str,
+    ip: &str,
+) -> anyhow::Result<Result<User, ControllerError>> {
+    if !crate::server_key::admits(state, server_key).await {
+        return Ok(Err(ControllerError::Unauthorized));
+    }
+    // A Device that exists is keyed by its UUID, so every way of naming it (Device ID, UUID, name) shares one
+    // bucket; an unknown Device ID is keyed as presented, so it is counted too and cannot dodge the limiter.
+    // An ambiguous name is treated as unknown: it gets no password check and no Device scope.
+    let resolved = crate::registry::resolve(state, device).await?.ok().flatten();
+    let bucket = resolved.map_or_else(|| device.to_owned(), |id| id.to_string());
+    let now = state.clock.now();
+    let locked_until: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT locked_until FROM device_password_failures WHERE device = $1 AND ip = $2")
+            .bind(&bucket)
+            .bind(ip)
+            .fetch_optional(&state.db)
+            .await?
+            .flatten();
+    if let Some(until) = locked_until.filter(|u| *u > now) {
+        return Ok(Err(ControllerError::Locked(until)));
+    }
+    let Some(id) = resolved else {
+        dummy_password_check(password);
+        return password_failed(state, &bucket, ip, controller, None, now).await;
+    };
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT device_password_hash FROM devices WHERE id = $1 AND revoked_at IS NULL")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+    let Some(stored) = stored.filter(|h| !h.is_empty()) else {
+        dummy_password_check(password);
+        return password_failed(state, &bucket, ip, controller, Some(id), now).await;
+    };
+    if !rcli_protocol::password::verify(password, &stored) {
+        return password_failed(state, &bucket, ip, controller, Some(id), now).await;
+    }
+    sqlx::query("DELETE FROM device_password_failures WHERE device = $1 AND ip = $2")
+        .bind(&bucket)
+        .bind(ip)
+        .execute(&state.db)
+        .await?;
+    let mut user = controller_user(controller, ip);
+    user.device_scope = Some(id);
+    Ok(Ok(user))
+}
+
+/// Counts one wrong Device Password (or unknown Device ID) for the pair; the one reaching
+/// `MAX_FAILED_DEVICE_PASSWORDS` starts a lockout, doubling each time up to `PASSWORD_LOCKOUT_MAX`.
+async fn password_failed(
+    state: &AppState,
+    bucket: &str,
+    ip: &str,
+    controller: &str,
+    device: Option<Uuid>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<Result<User, ControllerError>> {
+    // One atomic upsert: counting with a read-then-write would lose failures under parallel requests, so a
+    // parallel guesser would never reach the lockout. The lockout length is 1, 2, 4 ... minutes, capped at an hour.
+    let locked_until: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "INSERT INTO device_password_failures AS f (device, ip, failures, lockouts, locked_until, seen_at)
+         VALUES ($1, $2, 1, 0, NULL, $3)
+         ON CONFLICT (device, ip) DO UPDATE SET
+            failures = CASE
+                WHEN f.seen_at < $3 - $4::interval THEN 1
+                WHEN f.failures + 1 >= $5 THEN 0
+                ELSE f.failures + 1 END,
+            lockouts = CASE
+                WHEN f.seen_at < $3 - $4::interval THEN 0
+                WHEN f.failures + 1 >= $5 THEN f.lockouts + 1
+                ELSE f.lockouts END,
+            locked_until = CASE
+                WHEN f.seen_at < $3 - $4::interval THEN NULL
+                WHEN f.failures + 1 >= $5 THEN LEAST(
+                    $3 + $6::interval * power(2, LEAST(f.lockouts, 6))::int, $3 + $7::interval)
+                ELSE NULL END,
+            seen_at = $3
+         RETURNING locked_until",
+    )
+    .bind(bucket)
+    .bind(ip)
+    .bind(now)
+    .bind(PASSWORD_FAILURE_WINDOW)
+    .bind(MAX_FAILED_DEVICE_PASSWORDS)
+    .bind(PASSWORD_LOCKOUT)
+    .bind(PASSWORD_LOCKOUT_MAX)
+    .fetch_one(&state.db)
+    .await?;
+    let user = controller_user(controller, ip);
+    let device = device.unwrap_or(Uuid::nil());
+    let recorded = async {
+        crate::audit::record(state, &user, device, "connect.failed", serde_json::json!({}), serde_json::json!({ "error": "unauthorized" })).await?;
+        if let Some(until) = locked_until {
+            crate::audit::record(
+                state,
+                &user,
+                device,
+                "connect.locked",
+                serde_json::json!({}),
+                serde_json::json!({ "locked_until": until }),
+            )
+            .await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if let Err(e) = recorded {
+        tracing::error!("cannot audit a wrong Device Password: {e:#}");
+    }
+    Ok(Err(ControllerError::Unauthorized))
 }
 
 #[derive(Debug)]
@@ -46,12 +219,13 @@ fn hash(token: &str) -> Vec<u8> {
 
 const USER_COLS: &str = "id, name, role, disabled_at";
 
-/// The user a bearer token belongs to, if the token is live and the user enabled.
+/// The user a bearer token belongs to, if the token is live and the user enabled. Only Dashboard sessions expire;
+/// a token without an expiry is from the removed `rcli token` and is refused.
 pub async fn authenticate(state: &AppState, token: &str) -> anyhow::Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(&format!(
         "SELECT u.{} FROM api_tokens t JOIN users u ON u.id = t.user_id
          WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND u.disabled_at IS NULL
-           AND (t.expires_at IS NULL OR t.expires_at > $2)",
+           AND t.expires_at > $2",
         USER_COLS.replace(", ", ", u.")
     ))
     .bind(hash(token))
@@ -61,14 +235,15 @@ pub async fn authenticate(state: &AppState, token: &str) -> anyhow::Result<Optio
     if user.is_some() || token != state.config.bootstrap_admin_token {
         return Ok(user);
     }
-    let admin_exists: bool =
-        sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM api_tokens t JOIN users u ON u.id = t.user_id
-             WHERE u.role = 'admin' AND u.disabled_at IS NULL AND t.revoked_at IS NULL)",
-        )
-        .fetch_one(&state.db)
-        .await?;
-    Ok((!admin_exists).then(|| User { id: Uuid::nil(), name: "bootstrap".into(), role: "admin".into(), disabled_at: None }))
+    let admin_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM api_tokens t JOIN users u ON u.id = t.user_id
+         WHERE u.role = 'admin' AND u.disabled_at IS NULL AND t.revoked_at IS NULL
+           AND t.expires_at > $1)",
+    )
+    .bind(state.clock.now())
+    .fetch_one(&state.db)
+    .await?;
+    Ok((!admin_exists).then(|| User { id: Uuid::nil(), name: "bootstrap".into(), role: "admin".into(), disabled_at: None, device_scope: None }))
 }
 
 pub async fn create_user(state: &AppState, name: &str, role: &str) -> Result<User, Error> {
@@ -108,55 +283,7 @@ pub async fn disable_user(state: &AppState, name: &str) -> Result<User, Error> {
     .ok_or(Error::NotFound)
 }
 
-/// Issues a new API token for `user_name`; returns `(token id, token)`. Only the hash is stored.
-pub async fn issue_token(state: &AppState, user_name: &str) -> Result<(Uuid, String), Error> {
-    let (id, token) = (Uuid::new_v4(), format!("rcli_{}", Uuid::new_v4().simple()));
-    let inserted = sqlx::query(
-        "INSERT INTO api_tokens (id, user_id, token_hash, created_at)
-         SELECT $1, id, $3, $4 FROM users WHERE name = $2 AND disabled_at IS NULL",
-    )
-    .bind(id)
-    .bind(user_name)
-    .bind(hash(&token))
-    .bind(state.clock.now())
-    .execute(&state.db)
-    .await?;
-    if inserted.rows_affected() == 0 {
-        return Err(Error::NotFound);
-    }
-    Ok((id, token))
-}
-
-#[derive(Serialize, Debug, sqlx::FromRow)]
-pub struct TokenInfo {
-    pub id: Uuid,
-    pub user: String,
-    pub created_at: DateTime<Utc>,
-}
-
-/// Live API tokens (not Dashboard sessions); never the token itself, only its id.
-pub async fn list_tokens(state: &AppState) -> anyhow::Result<Vec<TokenInfo>> {
-    Ok(sqlx::query_as(
-        "SELECT t.id, u.name AS user, t.created_at FROM api_tokens t JOIN users u ON u.id = t.user_id
-         WHERE t.revoked_at IS NULL AND t.expires_at IS NULL ORDER BY u.name, t.created_at",
-    )
-    .fetch_all(&state.db)
-    .await?)
-}
-
-pub async fn revoke_token(state: &AppState, id: Uuid) -> Result<(), Error> {
-    let updated = sqlx::query("UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, $2) WHERE id = $1")
-        .bind(id)
-        .bind(state.clock.now())
-        .execute(&state.db)
-        .await?;
-    if updated.rows_affected() == 0 {
-        return Err(Error::NotFound);
-    }
-    Ok(())
-}
-
-/// Revokes the token itself (Dashboard sign-out).
+/// Revokes the token itself (sign-out from `rcli logout` or the Dashboard).
 pub async fn revoke_by_token(state: &AppState, token: &str) -> anyhow::Result<()> {
     sqlx::query("UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, $2) WHERE token_hash = $1")
         .bind(hash(token))
@@ -330,7 +457,7 @@ pub async fn sign_in(
 }
 
 /// Seals TOTP secrets still stored in plaintext (from before the master key was configured).
-pub async fn seal_totp_secrets(db: &sqlx::PgPool, key: &crate::vault::MasterKey) -> anyhow::Result<()> {
+pub async fn seal_totp_secrets(db: &sqlx::PgPool, key: &crate::master_key::MasterKey) -> anyhow::Result<()> {
     let plain: Vec<(Uuid, Vec<u8>)> =
         sqlx::query_as("SELECT id, totp_secret FROM users WHERE totp_secret IS NOT NULL AND NOT totp_sealed").fetch_all(db).await?;
     for (id, secret) in plain {

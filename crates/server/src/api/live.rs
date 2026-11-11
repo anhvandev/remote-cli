@@ -14,7 +14,7 @@ use rcli_protocol::agent::{agent_message, server_message, IceServer, LiveClose, 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{devices::resolve, ApiError, Caller};
+use super::{devices::resolve_for, ApiError, Caller};
 use crate::audit;
 
 /// How long minted TURN credentials stay valid; a live view must start within it (running streams keep going).
@@ -67,9 +67,9 @@ async fn open(
     Path(key): Path<String>,
     Json(offer): Json<Offer>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let device = resolve(&state, &key).await?;
+    let device = resolve_for(&user, &state, &key).await?;
     let params = json!({ "display": offer.display });
-    let reply = signal(&state, &key, offer, false).await;
+    let reply = signal_for(&user, &state, &key, offer, false).await;
     let result = match &reply {
         Ok((_, Json(body))) => json!({ "session": body["session"], "error": null }),
         Err(e) => json!({ "error": e.code }),
@@ -81,27 +81,32 @@ async fn open(
 /// A media channel: a data channel that carries large Observations and clips of `.../actions` requests
 /// naming its session (`media_session`). Closed like a live view (`DELETE .../media/{session}`).
 async fn open_media(
-    _: Caller,
+    Caller(user): Caller,
     State(state): State<super::State>,
     Path(key): Path<String>,
     Json(offer): Json<Offer>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    signal(&state, &key, offer, true).await
+    signal_for(&user, &state, &key, offer, true).await
 }
 
 /// Relays the peer's SDP offer (all ICE candidates included) to the Agent and returns its answer.
-async fn signal(state: &super::State, key: &str, offer: Offer, media: bool) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let id = resolve(state, key).await?;
+async fn signal_for(
+    user: &crate::auth::User,
+    state: &super::State,
+    key: &str,
+    offer: Offer,
+    media: bool,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let id = resolve_for(user, state, key).await?;
     let session = uuid::Uuid::new_v4().to_string();
     let msg = |request_id| {
-        let ice_servers = ice(state);
-        server_message::Msg::LiveOffer(LiveOffer { request_id, session: session.clone(), sdp: offer.sdp, ice_servers, display: offer.display, media })
+        let (ice_servers, controller) = (ice(state), user.controller_display());
+        server_message::Msg::LiveOffer(LiveOffer { request_id, session: session.clone(), sdp: offer.sdp, ice_servers, display: offer.display, media, controller })
     };
-    match state.agents.request(id, msg).await? {
+    match state.agents.request_admitted(id, msg).await? {
         agent_message::Msg::LiveAnswer(a) => match a.error {
             None => Ok((StatusCode::CREATED, Json(json!({ "session": session, "sdp": a.sdp })))),
-            Some(e) if e.code == "invalid_offer" => Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_offer", e.message)),
-            Some(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "agent_error", e.message)),
+            Some(e) => Err(super::agent_error(e)),
         },
         _ => Err(anyhow::anyhow!("unexpected reply to LiveOffer").into()),
     }
@@ -109,11 +114,11 @@ async fn signal(state: &super::State, key: &str, offer: Offer, media: bool) -> R
 
 /// Stops a live stream. Idempotent: unknown sessions and disconnected Devices are fine.
 async fn close(
-    _: Caller,
+    Caller(user): Caller,
     State(state): State<super::State>,
     Path((key, session)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let id = resolve(&state, &key).await?;
+    let id = resolve_for(&user, &state, &key).await?;
     state.agents.send(id, server_message::Msg::LiveClose(LiveClose { session }));
     Ok(StatusCode::NO_CONTENT)
 }

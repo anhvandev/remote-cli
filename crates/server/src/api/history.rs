@@ -6,7 +6,7 @@ use axum::{
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{bad_request, devices::resolve, ApiError, Caller};
+use super::{bad_request, devices::resolve_for, ApiError, Caller};
 use crate::history::{self, Point, Resolution};
 
 pub fn routes() -> Router<super::State> {
@@ -30,13 +30,13 @@ struct History {
 }
 
 async fn show(
-    _: Caller,
+    Caller(user): Caller,
     State(state): State<super::State>,
     Path(key): Path<String>,
     params: Result<Query<Params>, QueryRejection>,
 ) -> Result<Json<History>, ApiError> {
     let Query(p) = params.map_err(|e| bad_request(e.body_text()))?;
-    let id = resolve(&state, &key).await?;
+    let id = resolve_for(&user, &state, &key).await?;
     let now = state.clock.now();
     let to = p.to.unwrap_or(now);
     let from = p.from.unwrap_or(to - Duration::hours(1));

@@ -9,6 +9,7 @@ publish = false
 anyhow.workspace = true
 chrono.workspace = true
 data-encoding.workspace = true
+hex.workspace = true
 rcli.workspace = true
 rcli-agent.workspace = true
 rcli-protocol.workspace = true
@@ -21,6 +22,8 @@ tokio.workspace = true
 webrtc.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
+futures.workspace = true
 sqlx.workspace = true
 base64.workspace = true
 mp4.workspace = true

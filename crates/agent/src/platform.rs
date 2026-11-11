@@ -27,12 +27,12 @@ pub trait Platform: Send + Sync + 'static {
     /// `session` is left unset: the Agent fills it from `session_state`.
     fn metrics(&self) -> anyhow::Result<Resources>;
     fn processes(&self) -> anyhow::Result<Vec<Process>>;
-    /// One-shot command through the OS shell, as `run_as`. Kills it after `timeout` and returns what it printed
-    /// so far with `timed_out` set. `RunAs::LoggedInUser` is only asked while someone is logged in.
-    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput>;
-    /// Interactive login shell on a new PTY of `cols` x `rows`, as `run_as` (same rule as `shell`).
+    /// One-shot command through the OS shell, as `account`. Kills it after `timeout` and returns what it printed
+    /// so far with `timed_out` set. `Account::User` always names an account; `sudo` inside works as over SSH.
+    fn shell(&self, command: &str, account: Account, timeout: Duration) -> anyhow::Result<ShellOutput>;
+    /// Interactive login shell on a new PTY of `cols` x `rows`, as `account` (same rule as `shell`).
     /// Full PTY semantics: input goes to the terminal as typed (Ctrl-C = 0x03 interrupts), TERM supports full-screen programs.
-    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty>;
+    fn pty(&self, account: Account, cols: u16, rows: u16) -> anyhow::Result<Pty>;
     fn power(&self, action: PowerAction) -> anyhow::Result<()>;
     /// Sends a Wake-on-LAN magic packet for `mac` on the local network.
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()>;
@@ -46,6 +46,12 @@ pub trait Platform: Send + Sync + 'static {
     /// Shows (true) or hides the visible on-Device indicator that someone is controlling it
     /// (Control Lock held or live stream active). Must work at the lock and login screens too.
     fn set_control_indicator(&self, on: bool) -> anyhow::Result<()>;
+    /// Asks a person at the Device whether `requester` may run as root, with Accept/Reject, for at most `timeout`.
+    /// `true` = Accept; `false` = Reject or no answer in time. Only called while someone is logged in.
+    fn ask_root(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool>;
+    /// Asks a person at the Device whether to accept a new connection from `requester`, with Accept/Reject, for at
+    /// most `timeout`. `true` = Accept; `false` = Reject or no answer in time. Only called while someone is logged in.
+    fn ask_accept(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,7 +62,7 @@ pub struct Frame {
 }
 
 /// An on-screen element a Mark is made from. Box in real pixels of its display.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UiElement {
     pub role: String,
     pub text: String,
@@ -67,7 +73,7 @@ pub struct UiElement {
 }
 
 /// One input primitive. The Executor builds clicks, drags and key combinations from these.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Input {
     /// Pointer to real pixel (x, y) of `display`.
     Move { display: u32, x: u32, y: u32 },
@@ -80,16 +86,19 @@ pub enum Input {
     Key(String),
     KeyDown(String),
     KeyUp(String),
+    /// Ctrl+Alt+Del. Windows cannot synthesize it with SendInput: the SYSTEM session helper calls `SendSAS`
+    /// instead (the software-SAS policy must allow it, see `docs/usage.md`). Unavailable elsewhere.
+    Sas,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Button {
     Left,
     Right,
     Middle,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SessionState {
     LoggedIn,
     Locked,
@@ -119,10 +128,10 @@ pub trait PtyControl: Send {
     fn kill(&mut self) -> anyhow::Result<()>;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RunAs {
-    /// The user logged in at the console.
-    LoggedInUser,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Account {
+    /// The Terminal User: the account Device Settings say commands and shells run as.
+    User(String),
     /// root, or SYSTEM on Windows.
     Root,
 }
@@ -166,6 +175,15 @@ pub struct FakeState {
     pub screen_text: Vec<UiElement>,
     /// Every capture differs from the previous one by a little (below what counts as a change), like a blinking caret.
     pub flicker: bool,
+    /// Root prompts shown, in order: who asked, and the timeout the Agent allowed.
+    pub root_prompts: Vec<(String, Duration)>,
+    /// The scripted person's answers: true = Accept, false = Reject. An empty queue = nobody answers, which
+    /// auto-rejects; the FakePlatform answers at once instead of waiting out `timeout`.
+    pub root_answers: std::collections::VecDeque<bool>,
+    /// Accept-connection prompts shown, in order: who connects, and the timeout the Agent allowed.
+    pub accept_prompts: Vec<(String, Duration)>,
+    /// The scripted person's answers to accept-connection prompts, like `root_answers`.
+    pub accept_answers: std::collections::VecDeque<bool>,
 }
 
 impl FakePlatform {
@@ -190,6 +208,10 @@ impl FakePlatform {
             accessibility: None,
             screen_text: vec![],
             flicker: false,
+            root_prompts: vec![],
+            root_answers: Default::default(),
+            accept_prompts: vec![],
+            accept_answers: Default::default(),
         };
         Self { hostname, state: Arc::new(Mutex::new(state)) }
     }
@@ -233,6 +255,27 @@ impl FakePlatform {
     /// Versions installed through `install_update`, in order.
     pub fn installed_updates(&self) -> Vec<String> {
         self.state.lock().unwrap().installed.clone()
+    }
+
+    /// Every root prompt shown, in order: who asked, and the timeout it was given.
+    pub fn root_prompts(&self) -> Vec<(String, Duration)> {
+        self.state.lock().unwrap().root_prompts.clone()
+    }
+
+    /// Scripts the person's answers, in order; anything left scripted answers later prompts. With none left,
+    /// the person does not answer and the prompt auto-rejects.
+    pub fn answer_root_prompts(&self, answers: impl IntoIterator<Item = bool>) {
+        self.state.lock().unwrap().root_answers = answers.into_iter().collect();
+    }
+
+    /// Every accept-connection prompt shown, in order: who connects, and the timeout it was given.
+    pub fn accept_prompts(&self) -> Vec<(String, Duration)> {
+        self.state.lock().unwrap().accept_prompts.clone()
+    }
+
+    /// Scripts the person's answers to accept-connection prompts, like `answer_root_prompts`.
+    pub fn answer_accept_prompts(&self, answers: impl IntoIterator<Item = bool>) {
+        self.state.lock().unwrap().accept_answers = answers.into_iter().collect();
     }
 }
 
@@ -290,14 +333,14 @@ impl Platform for FakePlatform {
         Ok(self.state.lock().unwrap().processes.clone())
     }
 
-    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
-        Ok(fake_shell(command, run_as, timeout))
+    fn shell(&self, command: &str, account: Account, timeout: Duration) -> anyhow::Result<ShellOutput> {
+        Ok(fake_shell(command, account, timeout))
     }
 
-    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+    fn pty(&self, account: Account, cols: u16, rows: u16) -> anyhow::Result<Pty> {
         let state = FakePtyState { output: b"$ ".to_vec(), size: (cols, rows), ..Default::default() };
         let shared = Arc::new((Mutex::new(state), std::sync::Condvar::new()));
-        let pty = FakePty { shared, run_as };
+        let pty = FakePty { shared, account };
         Ok(Pty { output: Box::new(pty.clone()), input: Box::new(pty.clone()), control: Box::new(pty) })
     }
 
@@ -330,10 +373,25 @@ impl Platform for FakePlatform {
         self.state.lock().unwrap().control_indicator = on;
         Ok(())
     }
+
+    /// Scripted: records the prompt (who asked, the timeout the Agent allowed) and answers at once from
+    /// `root_answers`; an empty queue is the person not answering before the timeout, which rejects.
+    fn ask_root(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
+        let mut s = self.state.lock().unwrap();
+        s.root_prompts.push((requester.to_owned(), timeout));
+        Ok(s.root_answers.pop_front().unwrap_or(false))
+    }
+
+    /// Scripted like `ask_root`, for accepting a new connection.
+    fn ask_accept(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
+        let mut s = self.state.lock().unwrap();
+        s.accept_prompts.push((requester.to_owned(), timeout));
+        Ok(s.accept_answers.pop_front().unwrap_or(false))
+    }
 }
 
 // shortcut: only `echo X`, `whoami` ("user" or "root") and `sleep SECS` are emulated; anything else exits 127.
-fn fake_shell(command: &str, run_as: RunAs, timeout: Duration) -> ShellOutput {
+fn fake_shell(command: &str, account: Account, timeout: Duration) -> ShellOutput {
     let ok = |stdout: String| ShellOutput { exit_code: 0, stdout, stderr: String::new(), timed_out: false };
     if let Some(secs) = command.strip_prefix("sleep ").and_then(|s| s.parse().ok()) {
         let wanted = Duration::from_secs(secs);
@@ -342,8 +400,15 @@ fn fake_shell(command: &str, run_as: RunAs, timeout: Duration) -> ShellOutput {
     }
     match (command, command.strip_prefix("echo ")) {
         (_, Some(text)) => ok(format!("{text}\n")),
-        ("whoami", _) => ok(if run_as == RunAs::Root { "root\n" } else { "user\n" }.into()),
-        _ => ShellOutput { exit_code: 127, stdout: String::new(), stderr: format!("{command}: not found\n"), timed_out: false },
+        ("whoami", _) => ok(match &account {
+            Account::User(user) => format!("{user}\n"),
+            Account::Root => "root\n".into(),
+        }),
+        // `sudo` inside the terminal works as over SSH: the command then runs as root.
+        _ => match command.strip_prefix("sudo ") {
+            Some(inner) => fake_shell(inner, Account::Root, timeout),
+            None => ShellOutput { exit_code: 127, stdout: String::new(), stderr: format!("{command}: not found\n"), timed_out: false },
+        },
     }
 }
 
@@ -352,7 +417,7 @@ fn fake_shell(command: &str, run_as: RunAs, timeout: Duration) -> ShellOutput {
 #[derive(Clone)]
 struct FakePty {
     shared: Arc<(Mutex<FakePtyState>, std::sync::Condvar)>,
-    run_as: RunAs,
+    account: Account,
 }
 
 #[derive(Default)]
@@ -384,7 +449,7 @@ impl std::io::Read for FakePty {
 
 impl std::io::Write for FakePty {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let run_as = self.run_as;
+        let account = self.account.clone();
         self.update(|s| {
             for &b in buf {
                 if s.exit.is_some() {
@@ -407,7 +472,7 @@ impl std::io::Write for FakePty {
                                 break;
                             }
                             l => {
-                                let out = fake_shell(l, run_as, Duration::ZERO);
+                                let out = fake_shell(l, account.clone(), Duration::ZERO);
                                 out.stdout + &out.stderr
                             }
                         };

@@ -4,8 +4,12 @@
 
 **Blocked by:** 32
 
-**Status:** ready-for-agent
+**Status:** wontfix
 
 - [ ] Packages enroll the Device and install the service
 - [ ] Contract suite passes at the lock screen and at the GDM/LightDM/SDDM greeter
 - [ ] `unlock` works at both
+
+## Comments
+
+- 2026-11-09: Closed. Superseded by `.scratch/easy-setup/issues/16-linux-service-install-greeter.md` (new install flow: Server Key, Device ID + Device Password, ADR 0003/0004).

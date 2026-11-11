@@ -24,10 +24,13 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 
-use crate::{control_lock, enrollment, metrics, pki, registry, updates, AppState};
+use crate::{control_lock, metrics, pki, registration, registry, updates, AppState};
 
 /// How long a request to an Agent (e.g. the process list) may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a person at the Device has to answer one prompt (accept the connection, or root); the Agent rejects
+/// after that. A request that may show one waits this much longer for its reply.
+pub const PROMPT_BUDGET: Duration = Duration::from_secs(30);
 
 /// Outbound channels to connected Agents and requests waiting for their reply.
 #[derive(Default)]
@@ -52,6 +55,15 @@ impl Agents {
         build: impl FnOnce(u64) -> server_message::Msg,
     ) -> Result<agent_message::Msg, RequestError> {
         self.request_within(device, REQUEST_TIMEOUT, build).await
+    }
+
+    /// `request` for work the accept gate admits: the first one from a Controller may wait for the accept prompt.
+    pub async fn request_admitted(
+        &self,
+        device: uuid::Uuid,
+        build: impl FnOnce(u64) -> server_message::Msg,
+    ) -> Result<agent_message::Msg, RequestError> {
+        self.request_within(device, REQUEST_TIMEOUT + PROMPT_BUDGET, build).await
     }
 
     /// `request` with a custom reply timeout, for Agent work that may run long (terminal commands).
@@ -105,21 +117,23 @@ impl Agents {
 /// No frame (heartbeats arrive every 10 s) for this long means the connection is dead.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn acceptor(state: &AppState) -> anyhow::Result<TlsAcceptor> {
+pub fn acceptor(ca: &crate::pki::Ca, hostnames: Vec<String>) -> anyhow::Result<TlsAcceptor> {
     let mut roots = RootCertStore::empty();
-    roots.add(CertificateDer::from_pem_slice(state.ca.cert_pem.as_bytes())?)?;
+    roots.add(CertificateDer::from_pem_slice(ca.cert_pem.as_bytes())?)?;
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots)).allow_unauthenticated().build()?;
-    let leaf = state.ca.issue_server_cert(state.config.agent_hostnames.clone())?;
+    let leaf = ca.issue_server_cert(hostnames)?;
+    // The chain carries the CA so an Agent can check its fingerprint against the Server Key (it has no CA file).
+    let chain = vec![leaf.cert_der.into(), ca.cert_der.clone().into()];
     let config = ServerConfig::builder()
         .with_client_cert_verifier(verifier)
-        .with_single_cert(vec![leaf.cert_der.into()], PrivatePkcs8KeyDer::from(leaf.key_der).into())?;
+        .with_single_cert(chain, PrivatePkcs8KeyDer::from(leaf.key_der).into())?;
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-pub async fn serve(listener: TcpListener, acceptor: TlsAcceptor, state: Arc<AppState>) {
+pub async fn serve(listener: TcpListener, state: Arc<AppState>) {
     loop {
         let Ok((tcp, peer)) = listener.accept().await else { continue };
-        let (acceptor, state) = (acceptor.clone(), state.clone());
+        let (acceptor, state) = (state.tls.read().await.clone(), state.clone());
         tokio::spawn(async move {
             if let Err(e) = handle(tcp, acceptor, state).await {
                 tracing::debug!("agent connection from {peer} ended: {e}");
@@ -132,7 +146,7 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
     let tls = acceptor.accept(tcp).await?;
     let fingerprint = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| pki::fingerprint(c));
     match fingerprint {
-        None => enroll(&mut Conn::new(tls), &state).await,
+        None => register(&mut Conn::new(tls), &state).await,
         Some(fp) => {
             let mut conn = Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME);
             // shortcut: a revoke landing between this lookup and registering the sender below misses this
@@ -162,20 +176,20 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
     }
 }
 
-async fn enroll<T>(conn: &mut Conn<T>, state: &AppState) -> anyhow::Result<()>
+async fn register<T>(conn: &mut Conn<T>, state: &AppState) -> anyhow::Result<()>
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let Some(AgentMessage { msg: Some(agent_message::Msg::Enroll(req)) }) = conn.recv().await? else {
-        anyhow::bail!("expected EnrollRequest");
+    let Some(AgentMessage { msg: Some(agent_message::Msg::Register(req)) }) = conn.recv().await? else {
+        anyhow::bail!("expected RegisterRequest");
     };
-    let reply = match enrollment::enroll(state, req).await {
-        Ok(r) => server_message::Msg::Enrolled(r),
+    let reply = match registration::register(state, req).await {
+        Ok(r) => server_message::Msg::Registered(r),
         Err(e) => server_message::Msg::Error(match e {
-            enrollment::EnrollError::InvalidCode => error("invalid_enrollment_code", "enrollment code is invalid or already used"),
-            enrollment::EnrollError::BadRequest(m) => error("bad_request", &m),
-            enrollment::EnrollError::Internal(e) => {
-                tracing::error!("enrollment failed: {e:#}");
+            registration::RegisterError::InvalidKey => error("invalid_server_key", "the Server Key's secret is wrong"),
+            registration::RegisterError::BadRequest(m) => error("bad_request", &m),
+            registration::RegisterError::Internal(e) => {
+                tracing::error!("registration failed: {e:#}");
                 error("internal", "internal error")
             }
         }),
@@ -223,6 +237,32 @@ where
                         offer_update(conn, state, device, &mut offered).await?;
                     }
                     Some(agent_message::Msg::UpdateFailed(f)) => updates::agent_failed(state, device, &f).await?,
+                    Some(agent_message::Msg::IdentityUpdate(u)) => {
+                        let reply = identity_update(state, device, u).await;
+                        conn.send(&ServerMessage { msg: Some(server_message::Msg::IdentityUpdated(reply)) }).await?;
+                    }
+                    Some(agent_message::Msg::IdentityUpdated(r)) => {
+                        state.agents.reply(device, r.request_id, agent_message::Msg::IdentityUpdated(r));
+                    }
+                    Some(agent_message::Msg::DisconnectController(d)) => {
+                        // The person at the Device ended a Controller: release its Control Lock here (its remote
+                        // sessions end at the Agent, which handled the same request).
+                        control_lock::release_if_holder(state, device, &d.controller)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                        let params = serde_json::json!({ "controller": d.controller });
+                        audit_device_event(state, device, &d.controller, "disconnect", params, serde_json::json!({ "error": null })).await?;
+                    }
+                    Some(agent_message::Msg::ConnectDecision(d)) => {
+                        let result = serde_json::json!({ "decision": d.decision });
+                        audit_device_event(state, device, &d.controller, "connect.prompt", serde_json::json!({}), result).await?;
+                    }
+                    // The Device is uninstalling itself: treat it as the Admin delete it would otherwise need,
+                    // then close the connection. The Agent deletes its credentials only after this message went out.
+                    Some(agent_message::Msg::Unregister(_)) => {
+                        self_unregister(state, device).await?;
+                        return Ok(());
+                    }
                     // Later tickets dispatch more replies here.
                     _ => {}
                 }
@@ -240,6 +280,72 @@ where
             }
         }
     }
+}
+
+/// Audits what the person at the Device did, naming the Controller it concerned (that person has no Server User).
+async fn audit_device_event(
+    state: &AppState,
+    device: uuid::Uuid,
+    controller: &str,
+    action: &str,
+    params: serde_json::Value,
+    result: serde_json::Value,
+) -> anyhow::Result<()> {
+    crate::audit::record_named(state, controller, device, action, params, result).await
+}
+
+/// A Device that uninstalled itself. The Device has no Server User, so the audit names the Agent; otherwise this is
+/// exactly the Admin Device delete (`api::devices::delete`): same `device.delete` action and params, so one audit
+/// filter shows both, plus `self: true` to tell them apart.
+async fn self_unregister(state: &AppState, device: uuid::Uuid) -> anyhow::Result<()> {
+    let name = registry::get(state, device).await?.name;
+    let params = serde_json::json!({ "name": name, "self": true });
+    crate::audit::record_named(state, "agent (uninstall)", device, "device.delete", params, serde_json::json!({ "error": null })).await?;
+    registry::delete(state, device).await
+}
+
+/// A change made at the Device. Each command sends one field, so a refusal leaves the Device untouched.
+/// The reply carries the Device ID in effect afterwards.
+async fn identity_update(state: &AppState, device: uuid::Uuid, u: rcli_protocol::agent::IdentityUpdate) -> rcli_protocol::agent::IdentityUpdated {
+    let reply = |error: Option<rcli_protocol::agent::Error>, device_id: String| rcli_protocol::agent::IdentityUpdated {
+        request_id: u.request_id,
+        error,
+        device_id,
+    };
+    let fail = |message: String| reply(Some(error("bad_request", &message)), String::new());
+    if !u.device_password.is_empty() && u.device_password.chars().count() < rcli_protocol::password::MIN_LENGTH {
+        return fail(format!("the Device Password must be at least {} characters", rcli_protocol::password::MIN_LENGTH));
+    }
+    let number = match sqlx::query_scalar::<_, String>("SELECT device_number FROM devices WHERE id = $1")
+        .bind(device)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(Some(n)) => n,
+        Ok(None) => return fail("this Device no longer exists".into()),
+        Err(e) => return fail(format!("{e:#}")),
+    };
+    if !u.device_id.is_empty() {
+        match registry::set_device_number(state, device, &u.device_id).await {
+            Ok(Ok(())) => {}
+            Ok(Err(m)) => return fail(m),
+            Err(e) => return fail(format!("{e:#}")),
+        }
+    }
+    if !u.name.is_empty() {
+        match registry::rename(state, device, &u.name).await {
+            Ok(Ok(())) => {}
+            Ok(Err(m)) => return fail(m),
+            Err(e) => return fail(format!("{e:#}")),
+        }
+    }
+    if !u.device_password.is_empty() {
+        if let Err(e) = registry::set_device_password(state, device, &u.device_password).await {
+            return fail(format!("{e:#}"));
+        }
+    }
+    let number = if u.device_id.is_empty() { number } else { u.device_id };
+    reply(None, number)
 }
 
 /// Sends the Device its pending Agent update, once per version per session.

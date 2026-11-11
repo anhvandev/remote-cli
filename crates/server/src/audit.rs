@@ -15,13 +15,23 @@ pub const MASK: &str = "***";
 /// Record one Action. `action` names the kind ("act", "terminal", ...); `params` must already be masked;
 /// `result` is the outcome, e.g. `{"error": null}` or `{"exit_code": 0}`.
 pub async fn record(state: &AppState, user: &User, device: Uuid, action: &str, params: Value, result: Value) -> anyhow::Result<()> {
+    insert(state, user.id, &user.name, device, action, params, result).await
+}
+
+/// `record` for an actor that is no Server User (the person at the Device, the Agent itself): only its name.
+pub async fn record_named(state: &AppState, name: &str, device: Uuid, action: &str, params: Value, result: Value) -> anyhow::Result<()> {
+    insert(state, Uuid::nil(), name, device, action, params, result).await
+}
+
+async fn insert(state: &AppState, user_id: Uuid, user_name: &str, device: Uuid, action: &str, params: Value, result: Value) -> anyhow::Result<()> {
     let now = state.clock.now();
     sqlx::query(
-        "INSERT INTO audit_log (at, user_id, user_name, device_id, action, params, result) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO audit_log (at, user_id, user_name, device_id, device_number, action, params, result)
+         VALUES ($1, $2, $3, $4, (SELECT device_number FROM devices WHERE id = $4), $5, $6, $7)",
     )
     .bind(now)
-    .bind(user.id)
-    .bind(&user.name)
+    .bind(user_id)
+    .bind(user_name)
     .bind(device)
     .bind(action)
     .bind(params)
@@ -37,7 +47,8 @@ pub struct Entry {
     pub at: DateTime<Utc>,
     #[sqlx(rename = "user_name")]
     pub user: String,
-    pub device_id: Uuid,
+    /// 9-digit Device ID at the time of the Action; null only if it predates Device IDs.
+    pub device_id: Option<String>,
     /// Current Device name; null if the Device was deleted.
     pub device: Option<String>,
     pub action: String,
@@ -57,7 +68,7 @@ pub struct Filter {
 pub async fn list(state: &AppState, f: &Filter) -> anyhow::Result<Vec<Entry>> {
     purge(state).await?;
     Ok(sqlx::query_as(
-        "SELECT a.id, a.at, a.user_name, a.device_id, d.name AS device, a.action, a.params, a.result
+        "SELECT a.id, a.at, a.user_name, a.device_number AS device_id, d.name AS device, a.action, a.params, a.result
          FROM audit_log a LEFT JOIN devices d ON d.id = a.device_id
          WHERE ($1::uuid IS NULL OR a.device_id = $1) AND ($2::text IS NULL OR a.user_name = $2)
            AND ($3::timestamptz IS NULL OR a.at >= $3) AND ($4::timestamptz IS NULL OR a.at <= $4)

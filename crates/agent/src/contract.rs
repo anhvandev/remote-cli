@@ -1,5 +1,5 @@
 //! Contract suite for the Platform port, in the style of `prototype/lockscreen-probe`.
-//! It runs against any adapter: the FakePlatform in CI, a real OS adapter on a real machine with an operator
+//! It runs against any adapter: the FakePlatform in CI, a real OS adapter on a real Device with an operator
 //! following prompts. Each check yields one cell of a results table (rows = checks, columns = environments).
 
 use std::{
@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::platform::{Input, Platform, PowerAction, RunAs, SessionState};
+use crate::platform::{Input, Platform, PowerAction, Account, SessionState};
 
 /// Locally administered MAC that belongs to no real NIC, so the Wake check wakes nothing.
 pub const WAKE_TEST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x27];
@@ -15,10 +15,11 @@ pub const WAKE_TEST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x27];
 const SCREEN_CHANGE_TIMEOUT: Duration = Duration::from_secs(1);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(3);
 const SHELL_TIMEOUT: Duration = Duration::from_secs(5);
-const CHECKS: [&str; 16] = [
+const CHECKS: [&str; 17] = [
     "displays",
     "capture",
     "key shows on screen",
+    "text input",
     "session state",
     "control indicator",
     "text recognition",
@@ -43,7 +44,7 @@ pub enum Env {
 
 const ENVS: [Env; 3] = [Env::LoggedIn, Env::LockScreen, Env::LoginScreen];
 
-/// What the suite asks the person at the machine to do.
+/// What the suite asks the person at the Device to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     FocusTextField,
@@ -134,19 +135,19 @@ pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
         Ok(())
     });
     r.check("shell", Env::LoggedIn, || {
-        let out = p.shell("echo rcli-contract", RunAs::LoggedInUser, SHELL_TIMEOUT)?;
+        let out = p.shell("echo rcli-contract", me(), SHELL_TIMEOUT)?;
         anyhow::ensure!(out.exit_code == 0 && out.stdout.trim() == "rcli-contract", "unexpected {out:?}");
         Ok(())
     });
     r.check("shell timeout", Env::LoggedIn, || {
         let start = Instant::now();
-        let out = p.shell("sleep 30", RunAs::LoggedInUser, Duration::from_secs(1))?;
+        let out = p.shell("sleep 30", me(), Duration::from_secs(1))?;
         anyhow::ensure!(out.timed_out, "not reported as timed out: {out:?}");
         anyhow::ensure!(start.elapsed() < SHELL_TIMEOUT, "not killed in time: took {:?}", start.elapsed());
         Ok(())
     });
     r.check("pty", Env::LoggedIn, || {
-        let mut pty = p.pty(RunAs::LoggedInUser, 80, 24)?;
+        let mut pty = p.pty(me(), 80, 24)?;
         pty.control.resize(100, 30)?;
         pty.input.write_all(b"echo rcli-contract\rexit 3\r")?;
         let (tx, rx) = std::sync::mpsc::channel();
@@ -176,7 +177,7 @@ pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
     operator(Step::LogOut);
     screen_checks(p, Env::LoginScreen, SessionState::LoginScreen, &mut r);
     r.check("shell as root", Env::LoginScreen, || {
-        let out = p.shell("whoami", RunAs::Root, SHELL_TIMEOUT)?;
+        let out = p.shell("whoami", Account::Root, SHELL_TIMEOUT)?;
         let who = out.stdout.trim().to_lowercase();
         anyhow::ensure!(out.exit_code == 0 && (who == "root" || who.ends_with("\\system")), "unexpected {out:?}");
         Ok(())
@@ -209,8 +210,20 @@ fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Rep
         }
         Ok(())
     });
+    // Typed text is a different path (a keymap with Shift on Wayland's uinput), so it gets its own check.
+    r.check("text input", env, || {
+        let primary = primary(p)?;
+        let before = p.capture(primary)?;
+        p.input(Input::Text("rcli".into()))?;
+        let start = Instant::now();
+        while p.capture(primary)? == before {
+            anyhow::ensure!(start.elapsed() < SCREEN_CHANGE_TIMEOUT, "screen did not change after the text");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    });
     r.check("session state", env, || wait_for_state(p, expected, Duration::ZERO));
-    // shortcut: only checks that show/hide succeed here; whether it is visible is checked by eye on a real machine.
+    // shortcut: only checks that show/hide succeed here; whether it is visible is checked by eye on a real Device.
     r.check("control indicator", env, || {
         p.set_control_indicator(true)?;
         p.set_control_indicator(false)
@@ -220,6 +233,11 @@ fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Rep
         anyhow::ensure!(!p.recognize_text(&p.capture(primary(p)?)?)?.is_empty(), "no text recognized");
         Ok(())
     });
+}
+
+/// The account running the suite: on a real Device the Terminal User must be an account that exists.
+fn me() -> Account {
+    Account::User(std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "user".into()))
 }
 
 fn primary(p: &dyn Platform) -> anyhow::Result<u32> {

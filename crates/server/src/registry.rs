@@ -28,6 +28,8 @@ pub enum DeviceStatus {
 #[derive(Serialize, Debug)]
 pub struct Device {
     pub id: Uuid,
+    /// 9-digit Device ID; the CLI and Dashboard address a Device by it.
+    pub device_id: String,
     pub name: String,
     pub status: DeviceStatus,
     /// When the Agent's last connection ended; null while connected or never connected.
@@ -88,6 +90,7 @@ async fn fetch(state: &AppState, only: Option<Uuid>) -> anyhow::Result<Vec<Devic
     type Row = (
         Uuid,
         String,
+        String,
         Option<DateTime<Utc>>,
         Option<String>,
         Option<String>,
@@ -96,7 +99,7 @@ async fn fetch(state: &AppState, only: Option<Uuid>) -> anyhow::Result<Vec<Devic
         Option<DateTime<Utc>>,
     );
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT id, name, last_seen_at, agent_version, update_version, update_error, revoked_at, wake_requested_at
+        "SELECT id, device_number, name, last_seen_at, agent_version, update_version, update_error, revoked_at, wake_requested_at
          FROM devices WHERE $1::uuid IS NULL OR id = $1 ORDER BY enrolled_at, id",
     )
     .bind(only)
@@ -106,11 +109,12 @@ async fn fetch(state: &AppState, only: Option<Uuid>) -> anyhow::Result<Vec<Devic
     let connected = state.connections.0.lock().unwrap();
     Ok(rows
         .into_iter()
-        .map(|(id, name, last_seen_at, agent_version, update_version, update_error, revoked_at, woken_at)| {
+        .map(|(id, device_id, name, last_seen_at, agent_version, update_version, update_error, revoked_at, woken_at)| {
             let status = status(connected.contains_key(&id), last_seen_at, woken_at, now);
             let wake_failed = woken_at.is_some() && status == DeviceStatus::Offline;
             Device {
                 id,
+                device_id,
                 name,
                 status,
                 last_seen_at,
@@ -123,16 +127,18 @@ async fn fetch(state: &AppState, only: Option<Uuid>) -> anyhow::Result<Vec<Devic
         .collect())
 }
 
-/// Finds a Device by id or by name. `Ok(None)` if none; an error message if the name is ambiguous.
+/// Finds a Device by its 9-digit Device ID, its UUID or its name. `Ok(None)` if none;
+/// an error message if the key is not unique (a name shared by several Devices).
 pub async fn resolve(state: &AppState, key: &str) -> anyhow::Result<Result<Option<Uuid>, String>> {
-    let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM devices WHERE id::text = $1 OR name = $1 LIMIT 2")
-        .bind(key)
-        .fetch_all(&state.db)
-        .await?;
+    let ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM devices WHERE device_number = $1 OR id::text = $1 OR name = $1 LIMIT 2")
+            .bind(key)
+            .fetch_all(&state.db)
+            .await?;
     Ok(match ids[..] {
         [] => Ok(None),
         [id] => Ok(Some(id)),
-        _ => Err(format!("more than one Device is named {key:?}; use its id")),
+        _ => Err(format!("more than one Device matches {key:?}; use its Device ID")),
     })
 }
 
@@ -155,6 +161,53 @@ pub async fn revoke(state: &AppState, id: Uuid) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Why a new Device ID was refused: not 9 digits, or another Device has it.
+pub enum NumberError {
+    Malformed(String),
+    Taken(String),
+}
+
+impl NumberError {
+    pub fn message(&self) -> &str {
+        match self {
+            NumberError::Malformed(m) | NumberError::Taken(m) => m,
+        }
+    }
+}
+
+/// Checks a new Device ID without changing anything; `Err` with a reason if it is not 9 digits or another
+/// Device has it. Used before a change is pushed to the Device, so a refusal changes nothing.
+pub async fn validate_device_number(state: &AppState, id: Uuid, number: &str) -> anyhow::Result<Result<(), NumberError>> {
+    if number.len() != 9 || !number.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(Err(NumberError::Malformed("the Device ID must be 9 digits".into())));
+    }
+    let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM devices WHERE device_number = $1 AND id <> $2)")
+        .bind(number)
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    if taken {
+        return Ok(Err(NumberError::Taken(format!("Device ID {number} is already used by another Device"))));
+    }
+    Ok(Ok(()))
+}
+
+/// Changes the Device ID; `Err` with a message if it is not 9 digits or another Device has it.
+pub async fn set_device_number(state: &AppState, id: Uuid, number: &str) -> anyhow::Result<Result<(), String>> {
+    if let Err(e) = validate_device_number(state, id, number).await? {
+        return Ok(Err(e.message().to_owned()));
+    }
+    sqlx::query("UPDATE devices SET device_number = $2 WHERE id = $1").bind(id).bind(number).execute(&state.db).await?;
+    Ok(Ok(()))
+}
+
+/// Stores a new Device Password hash; existing connections are unaffected (they were authenticated already).
+pub async fn set_device_password(state: &AppState, id: Uuid, password: &str) -> anyhow::Result<()> {
+    let hash = rcli_protocol::password::hash(password);
+    sqlx::query("UPDATE devices SET device_password_hash = $2 WHERE id = $1").bind(id).bind(hash).execute(&state.db).await?;
+    Ok(())
+}
+
 /// Renames the Device; `Err` with a message if the name is not 1-255 characters.
 pub async fn rename(state: &AppState, id: Uuid, name: &str) -> anyhow::Result<Result<(), String>> {
     let name = name.trim();
@@ -173,7 +226,7 @@ pub async fn delete(state: &AppState, id: Uuid) -> anyhow::Result<()> {
 }
 
 /// Moves `old`'s resource history and audit entries to `new` (where both have a rollup for the same minute, `new`'s wins),
-/// then deletes `old`. Never done automatically: an admin decides two Devices are the same machine.
+/// then deletes `old`. Never done automatically: an admin decides two Devices are the same computer.
 pub async fn merge(state: &AppState, old: Uuid, new: Uuid) -> anyhow::Result<()> {
     state.agents.disconnect(old, "device_deleted", "this Device was merged into another");
     // No rollup may run while samples change owner.
@@ -192,11 +245,15 @@ pub async fn merge(state: &AppState, old: Uuid, new: Uuid) -> anyhow::Result<()>
     .bind(new)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE audit_log SET device_id = $2 WHERE device_id = $1")
-        .bind(old)
-        .bind(new)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE audit_log SET device_id = $2,
+             device_number = (SELECT device_number FROM devices WHERE id = $2)
+         WHERE device_id = $1",
+    )
+    .bind(old)
+    .bind(new)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM devices WHERE id = $1").bind(old).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())

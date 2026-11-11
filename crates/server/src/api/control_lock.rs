@@ -9,7 +9,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 
-use super::{devices::resolve, Admin, ApiError, Caller};
+use super::{devices::{resolve, resolve_for}, Admin, ApiError, Caller};
 use crate::{
     audit,
     control_lock::{self, Lock},
@@ -51,16 +51,16 @@ fn body(lock: Option<Lock>) -> Json<Value> {
     })
 }
 
-async fn status(_: Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    Ok(body(control_lock::status(&state, resolve(&state, &id).await?).await?))
+async fn status(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    Ok(body(control_lock::status(&state, resolve_for(&user, &state, &id).await?).await?))
 }
 
 async fn acquire(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    Ok(body(Some(control_lock::acquire(&state, resolve(&state, &id).await?, &user).await?)))
+    Ok(body(Some(control_lock::acquire(&state, resolve_for(&user, &state, &id).await?, &user).await?)))
 }
 
 async fn release(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    control_lock::release(&state, resolve(&state, &id).await?, &user).await?;
+    control_lock::release(&state, resolve_for(&user, &state, &id).await?, &user).await?;
     Ok(body(None))
 }
 
@@ -76,7 +76,7 @@ async fn force_release(Admin(admin): Admin, State(state): State<super::State>, P
 /// the lock ends after 60 s unless the holder reconnects or acts. Streams the lock status as NDJSON
 /// (the `GET .../lock` body), at once and then every 5 s, so anyone can watch it.
 async fn watch(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Body, ApiError> {
-    let device = resolve(&state, &id).await?;
+    let device = resolve_for(&user, &state, &id).await?;
     let conn = control_lock::connect(state.clone(), device, &user).await?;
     let lines = futures::stream::unfold((conn, state, true), move |(conn, state, first)| async move {
         if !first {

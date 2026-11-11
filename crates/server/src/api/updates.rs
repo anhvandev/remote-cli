@@ -2,21 +2,64 @@ use axum::{
     body::Bytes,
     extract::{rejection::JsonRejection, DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
-    routing::{post, put},
+    response::{IntoResponse, Response},
+    routing::{get, post, put},
     Json, Router,
 };
 use rcli_protocol::update::MAX_BUILD_BYTES;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use uuid::Uuid;
 
-use super::{bad_request, Admin, ApiError};
+use super::{bad_request, devices::resolve, Admin, ApiError};
 use crate::updates::{self, UpdateError};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
         .route("/api/v1/agent-builds/{version}/{target}", put(publish).layer(DefaultBodyLimit::max(MAX_BUILD_BYTES)))
         .route("/api/v1/agent-builds/{version}/rollout", post(rollout))
+        .route("/api/v1/agent-builds/{target}", get(current))
+}
+
+#[derive(Deserialize)]
+struct Current {
+    /// The Device asking (its 9-digit Device ID): it gets the build rolled out to it, not the newest publish.
+    device: Option<String>,
+}
+
+/// `rcli upgrade` fetches the build rolled out to its Device (or, on a Controller-only install, the fleet's build)
+/// and verifies the signature against the key it pinned at setup. The Server Key (header `X-Rcli-Server-Key`) is
+/// the only credential, so not just anyone can ask which build a given Device ID is on.
+async fn current(
+    State(state): State<super::State>,
+    Path(target): Path<String>,
+    Query(q): Query<Current>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, ApiError> {
+    let presented = headers.get("x-rcli-server-key").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    if !crate::server_key::admits(&state, presented).await {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or wrong Server Key"));
+    }
+    let (version, signature, build) = updates::upgrade_build(&state, q.device.as_deref(), &target)
+        .await?
+        .ok_or_else(|| no_build(&target))?;
+    Ok((
+        [
+            ("x-rcli-version", version),
+            ("x-rcli-signature", hex::encode(signature)),
+            ("content-type", "application/octet-stream".to_owned()),
+        ],
+        build,
+    )
+        .into_response())
+}
+
+/// 404 `no_build`: nothing for `target` has been rolled out (a newer publish alone does not count).
+pub(super) fn no_build(target: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "no_build",
+        format!("no build for {target} is rolled out yet (an Admin runs `rcli rollout <version> --all`)"),
+    )
 }
 
 impl From<UpdateError> for ApiError {
@@ -66,10 +109,11 @@ async fn publish(
 struct Rollout {
     #[serde(default)]
     all: bool,
-    devices: Option<Vec<Uuid>>,
+    /// Device IDs (9-digit), UUIDs or unique names.
+    devices: Option<Vec<String>>,
 }
 
-/// Body: `{"all": true}` or `{"devices": [id, ...]}`.
+/// Body: `{"all": true}` or `{"devices": [device, ...]}`.
 async fn rollout(
     _: Admin,
     State(state): State<super::State>,
@@ -79,7 +123,13 @@ async fn rollout(
     let Json(r) = body.map_err(|e| bad_request(e.body_text()))?;
     let devices = match (r.all, r.devices) {
         (true, None) => None,
-        (false, Some(ids)) if !ids.is_empty() => Some(ids),
+        (false, Some(keys)) if !keys.is_empty() => {
+            let mut ids = Vec::with_capacity(keys.len());
+            for key in &keys {
+                ids.push(resolve(&state, key).await?);
+            }
+            Some(ids)
+        }
         _ => return Err(bad_request("give either \"all\": true or a non-empty \"devices\" list")),
     };
     let n = updates::rollout(&state, &version, devices.as_deref()).await?;

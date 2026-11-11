@@ -1,0 +1,12 @@
+#!/bin/sh
+# Package hook: `rcli agent uninstall` stops and removes the service, removes this Device on the Server and
+# deletes the local data and secrets. `$1` is `remove` on Debian and `0` on RPM erase.
+set -e
+
+case "${1:-}" in
+    remove|0)
+        if [ -x /usr/local/bin/rcli ]; then
+            /usr/local/bin/rcli agent uninstall || echo "rcli: agent uninstall failed; check /var/log/syslog" >&2
+        fi
+        ;;
+esac

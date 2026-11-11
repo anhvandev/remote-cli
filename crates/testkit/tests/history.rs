@@ -45,7 +45,7 @@ async fn rcli_metrics_history_lists_raw_samples_in_a_time_range() {
 
 #[tokio::test]
 async fn samples_roll_up_per_minute_and_expire_after_7_and_90_days() {
-    let sys = TestSystem::start().await;
+    let mut sys = TestSystem::start().await;
     let mut agent = sys.start_agent("lab-pc").await;
     let id = agent.device_id().to_owned();
     // Away from the minute boundary: samples land a few ms before the (frozen) Server time.
@@ -72,6 +72,7 @@ async fn samples_roll_up_per_minute_and_expire_after_7_and_90_days() {
 
     // Now 7 days after 00:00:40 minus one second: the 00:00:10 samples are gone, the 00:00:40 ones are not.
     sys.advance(7 * 86400 - 61);
+    sys.sign_in_admin().await; // the admin session expired 12 h after the harness made it
     let raw = sys.history(&id, &format!("{range}&resolution=5s")).await;
     assert!(!cpus(&raw).is_empty() && cpus(&raw).iter().all(|c| *c == 30.0), "{raw}");
     sys.advance(1);
@@ -81,6 +82,7 @@ async fn samples_roll_up_per_minute_and_expire_after_7_and_90_days() {
     assert_eq!(sys.history(&id, range).await["resolution"], "1m");
 
     sys.advance(83 * 86400);
+    sys.sign_in_admin().await;
     assert!(samples(&sys.history(&id, &format!("{range}&resolution=1m")).await).is_empty());
 }
 

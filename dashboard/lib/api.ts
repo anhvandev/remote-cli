@@ -5,13 +5,21 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 export const SESSION_COOKIE = "rcli_session";
-const BASE = process.env.RCLI_API_URL ?? "http://localhost:8080";
+/** The Controller API the Dashboard talks to (server side only). */
+export const BASE = process.env.RCLI_API_URL ?? "http://localhost:8080";
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string) {
     super(message);
   }
 }
+
+/** A request with a JSON body (none when `body` is undefined), for `api`. */
+export const json = (method: string, body?: unknown): RequestInit => ({
+  method,
+  headers: { "content-type": "application/json" },
+  body: body === undefined ? undefined : JSON.stringify(body),
+});
 
 /** Calls the Controller API as the signed-in user; sends them to /signin if there is no valid session. */
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -74,11 +82,13 @@ async function parse<T>(res: Response): Promise<T> {
 
 // Shapes of Controller API responses (see crates/server/src/api).
 export type User = { id: string; name: string; role: "admin" | "operator"; disabled_at: string | null };
-/** GET /api/v1/tokens: live API tokens (never the secret). */
-export type ApiToken = { id: string; user: string; created_at: string };
+/** GET /api/v1/server-settings: the Server Key and Server Address Admins edit. */
+export type ServerSettings = { server_key: string; ca_fingerprint: string; server_address: string };
 export type DeviceStatus = "Online" | "Offline" | "Waking";
 export type Device = {
   id: string;
+  /** The 9-digit Device ID a Controller connects to. */
+  device_id: string;
   name: string;
   status: DeviceStatus;
   last_seen_at: string | null;
@@ -88,8 +98,6 @@ export type Device = {
   /** "Wake failed" when the last Wake timed out and the Device is still Offline. */
   wake_error: string | null;
 };
-/** GET /api/v1/devices/{d}/unlock-password: whether one is stored; the password itself is never returned. */
-export type UnlockPassword = { set: boolean; updated_at: string | null };
 export type Inventory = {
   os: string;
   os_version: string;

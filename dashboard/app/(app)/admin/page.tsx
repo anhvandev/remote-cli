@@ -1,16 +1,14 @@
 import Link from "next/link";
-import { api, type ApiToken, type Device, type DeviceStatus, type User } from "@/lib/api";
-import { Button } from "@/components/ui/button";
+import { api, type Device, type DeviceStatus, type ServerSettings, type User } from "@/lib/api";
 import { card, cardHead, title } from "../styles";
-import { groupRollouts, unlockPasswords } from "./data";
+import { groupRollouts } from "./data";
 
 export default async function AdminPage() {
-  const [users, tokens, devices] = await Promise.all([
+  const [users, devices, settings] = await Promise.all([
     api<User[]>("/api/v1/users"),
-    api<ApiToken[]>("/api/v1/tokens"),
     api<Device[]>("/api/v1/devices"),
+    api<ServerSettings>("/api/v1/server-settings"),
   ]);
-  const unlock = await unlockPasswords(devices);
   const rollouts = groupRollouts(devices);
   const failed = devices.filter((d) => d.update?.status === "failed");
   const count = (role: User["role"]) => users.filter((u) => u.role === role).length;
@@ -31,7 +29,6 @@ export default async function AdminPage() {
             {count("admin")} Admin · {count("operator")} Operator
           </p>
           <p>{users.filter((u) => u.disabled_at).length} User đã vô hiệu</p>
-          <p>{tokens.length} API token</p>
         </div>
       </section>
 
@@ -48,7 +45,6 @@ export default async function AdminPage() {
             {status("Online")} Online · {status("Offline")} Offline · {status("Waking")} Waking
           </p>
           <p>{devices.filter((d) => d.revoked_at).length} Device đã thu hồi</p>
-          <p>{unlock.filter((u) => !u.set).length} Device chưa có mật khẩu unlock</p>
         </div>
       </section>
 
@@ -86,18 +82,17 @@ export default async function AdminPage() {
         </div>
       </section>
 
-      <section className={card} aria-label="Enrollment Code">
+      <section className={card} aria-label="Server Settings">
         <div className={cardHead}>
           <h3 className={title}>
-            <Link href="/admin/enrollment" className="hover:text-foreground">
-              Enrollment Code
+            <Link href="/admin/settings" className="hover:text-foreground">
+              Server Settings
             </Link>
           </h3>
         </div>
-        <div className="px-5">
-          <Button asChild size="sm" variant="secondary">
-            <Link href="/admin/enrollment">Tạo Enrollment Code</Link>
-          </Button>
+        <div className="grid gap-1.5 px-5 text-sm">
+          <p>Server Address: {settings.server_address}</p>
+          <p className="text-muted-foreground">Server Key và Server Address dùng cho bản cài mới.</p>
         </div>
       </section>
     </div>

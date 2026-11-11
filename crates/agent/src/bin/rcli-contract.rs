@@ -4,20 +4,55 @@
 
 use std::time::Duration;
 
-use rcli_agent::{contract, platform::FakePlatform};
+use rcli_agent::contract;
 
 const STEP_TIME: Duration = Duration::from_secs(20);
 
 fn main() {
-    // shortcut: no OS adapter exists yet (tickets 28-35); swap in this OS's adapter here when it lands.
-    let platform = FakePlatform::new("contract");
+    #[cfg(target_os = "linux")]
+    let platform: std::sync::Arc<dyn rcli_agent::platform::Platform> = {
+        use std::path::PathBuf;
+        let args: Vec<String> = std::env::args().collect();
+        let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+        // `--state-dir <path>`: where the portal restore token is kept, so a Wayland run does not ask again.
+        let state_dir: Option<PathBuf> = flag("--state-dir").map(PathBuf::from);
+        let linux = std::sync::Arc::new(match &state_dir {
+            Some(dir) => rcli_agent::linux::LinuxPlatform::with_state_dir("contract", dir),
+            None => rcli_agent::linux::LinuxPlatform::new("contract"),
+        }
+        .expect("Linux adapter"));
+        // `--session-socket <path>` as root: the installed service, screen work done by the session helper.
+        match flag("--session-socket") {
+            Some(socket) => rcli_agent::linux::session::console(linux, socket.as_ref(), state_dir.as_deref())
+                .expect("session socket"),
+            None => linux,
+        }
+    };
+    #[cfg(target_os = "macos")]
+    let platform: std::sync::Arc<dyn rcli_agent::platform::Platform> = {
+        let mac = std::sync::Arc::new(rcli_agent::macos::MacPlatform::new("contract").expect("macOS adapter"));
+        // `--session-socket <path>`: run as the installed root Agent service does, the screen work done by the session
+        // helpers (the LaunchAgent) that connect there (ticket 24: lock screen and login window).
+        let args: Vec<String> = std::env::args().collect();
+        match args.iter().position(|a| a == "--session-socket").and_then(|i| args.get(i + 1)) {
+            Some(socket) => rcli_agent::macos_session::SessionPlatform::listen(mac, socket.as_ref()).expect("session socket"),
+            None => mac,
+        }
+    };
+    #[cfg(windows)]
+    let platform: std::sync::Arc<dyn rcli_agent::platform::Platform> =
+        std::sync::Arc::new(rcli_agent::windows_platform::WindowsPlatform::new("contract").expect("Windows adapter"));
+    // shortcut: no adapter for other OSes; they run on the FakePlatform.
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    let platform: std::sync::Arc<dyn rcli_agent::platform::Platform> =
+        std::sync::Arc::new(rcli_agent::platform::FakePlatform::new("contract"));
     eprintln!("Platform contract suite. Each step below gets {} s:", STEP_TIME.as_secs());
     use contract::Step::*;
     for step in [FocusTextField, Lock, Unlock, LogOut, LogIn, Unlock] {
         eprintln!("  - {}", step.instruction());
     }
     eprintln!("(The suite locks the screen itself before the last step.)\n");
-    let report = contract::run(&platform, &mut |step| {
+    let report = contract::run(platform.as_ref(), &mut |step| {
         eprintln!("NOW: {}", step.instruction());
         std::thread::sleep(STEP_TIME);
     });

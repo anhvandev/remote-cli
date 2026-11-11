@@ -8,7 +8,7 @@ use rcli_protocol::agent::{Inventory, WakeRequest, agent_message, server_message
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::{ApiError, Caller, devices::resolve};
+use super::{ApiError, Caller, devices::resolve_for};
 use crate::{audit, metrics, registry, wake};
 
 pub fn routes() -> Router<super::State> {
@@ -21,7 +21,7 @@ async fn wake(
     State(state): State<super::State>,
     Path(key): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let id = resolve(&state, &key).await?;
+    let id = resolve_for(&user, &state, &key).await?;
     let device = registry::list(&state)
         .await?
         .into_iter()

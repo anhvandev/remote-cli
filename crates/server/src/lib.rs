@@ -1,6 +1,6 @@
-//! Server: Device registry, enrollment and the Controller API.
+//! Server: Device registry, registration and the Controller API.
 //!
-//! Layout: one module per server area (`registry`, `enrollment`, ...), the Agent
+//! Layout: one module per server area (`registry`, `registration`, ...), the Agent
 //! connection in `agent_link`, and HTTP routes per area under `api/`.
 
 pub mod agent_link;
@@ -9,15 +9,17 @@ pub mod audit;
 pub mod auth;
 pub mod clock;
 pub mod control_lock;
-pub mod enrollment;
 pub mod history;
 pub mod metrics;
 pub mod pki;
+pub mod registration;
 pub mod registry;
+pub mod server_key;
+pub mod settings;
 pub mod shell;
 pub mod updates;
 pub mod wake;
-pub mod vault;
+pub mod master_key;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -32,16 +34,21 @@ pub struct Config {
     pub http_addr: SocketAddr,
     /// Agent connections (TLS, mTLS once enrolled).
     pub agent_addr: SocketAddr,
-    /// DNS names / IPs Agents use to reach `agent_addr`; put in the server certificate.
+    /// Seeds the Server Address on first start; after that the stored setting wins (Admins edit it).
     pub agent_hostnames: Vec<String>,
-    /// First-run admin token: accepted only until an enabled admin user has a live API token.
+    /// First-run admin token: accepted only until an enabled admin user has a live session.
     pub bootstrap_admin_token: String,
-    /// Secrets Vault key (`RCLI_MASTER_KEY`); None = unlock passwords can't be stored or used.
-    pub master_key: Option<vault::MasterKey>,
+    /// Seals the CA private key and TOTP secrets (`RCLI_MASTER_KEY`); None = they are stored in plaintext.
+    pub master_key: Option<master_key::MasterKey>,
     /// STUN/TURN URLs handed to both WebRTC peers, e.g. `turn:vps.example.com:3478`. Empty = direct paths only.
     pub ice_urls: Vec<String>,
     /// coturn `static-auth-secret`: the Server mints short-lived TURN credentials from it.
     pub turn_secret: Option<String>,
+    /// Raw Ed25519 public key handed to Agents at registration so they pin Agent updates; None = no updates.
+    pub update_public_key: Option<Vec<u8>>,
+    /// Reverse proxies in front of the Controller API (`RCLI_TRUSTED_PROXIES`): from these peers the Controller's
+    /// IP is read from `X-Forwarded-For`, so the Device Password limiter and audit see the real client.
+    pub trusted_proxies: Vec<std::net::IpAddr>,
 }
 
 impl Config {
@@ -61,6 +68,13 @@ impl Config {
             master_key: std::env::var("RCLI_MASTER_KEY").ok().filter(|k| !k.is_empty()).map(|k| k.parse()).transpose()?,
             ice_urls: var("RCLI_ICE_URLS", Some(""))?.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
             turn_secret: std::env::var("RCLI_TURN_SECRET").ok().filter(|s| !s.is_empty()),
+            update_public_key: std::env::var("RCLI_UPDATE_PUBLIC_KEY").ok().filter(|s| !s.is_empty()).map(hex::decode).transpose()?,
+            trusted_proxies: var("RCLI_TRUSTED_PROXIES", Some(""))?
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.parse().map_err(|e| anyhow::anyhow!("RCLI_TRUSTED_PROXIES: {s}: {e}")))
+                .collect::<anyhow::Result<_>>()?,
         })
     }
 }
@@ -70,7 +84,11 @@ pub struct AppState {
     pub db: PgPool,
     pub clock: Arc<dyn Clock>,
     pub ca: pki::Ca,
+    /// The Server Key and Server Address, editable by Admins.
+    pub settings: settings::Settings,
     pub config: Config,
+    /// Rebuilt when the Server Address changes, so new connections get the new certificate.
+    pub tls: tokio::sync::RwLock<tokio_rustls::TlsAcceptor>,
     pub connections: registry::Connections,
     pub resources: metrics::CurrentResources,
     pub agents: agent_link::Agents,
@@ -87,6 +105,8 @@ pub struct Server {
     pub agent_addr: SocketAddr,
     /// CA certificate Agents must trust to reach the Server.
     pub ca_pem: String,
+    /// `rk_<CA fingerprint>_<secret>`.
+    pub server_key: String,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -101,6 +121,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
     let db = sqlx::postgres::PgPoolOptions::new().max_connections(10).connect(&config.database_url).await?;
     sqlx::migrate!("./migrations").run(&db).await?;
     let ca = pki::Ca::load_or_create(&db, config.master_key.as_ref()).await?;
+    let settings = settings::Settings::load(&db, &ca, &config.agent_hostnames.join(",")).await?;
     match &config.master_key {
         Some(key) => auth::seal_totp_secrets(&db, key).await?,
         None => tracing::warn!("no RCLI_MASTER_KEY: the CA private key and TOTP secrets are stored unencrypted"),
@@ -110,12 +131,16 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
     let http = tokio::net::TcpListener::bind(config.http_addr).await?;
     let agents = tokio::net::TcpListener::bind(config.agent_addr).await?;
     let (http_addr, agent_addr) = (http.local_addr()?, agents.local_addr()?);
+    let acceptor = agent_link::acceptor(&ca, settings::hostnames(&settings.address().await))?;
+    let server_key = settings.key().await;
 
     let state = Arc::new(AppState {
         db,
         clock,
         ca,
+        settings,
         config,
+        tls: tokio::sync::RwLock::new(acceptor),
         connections: Default::default(),
         resources: Default::default(),
         agents: Default::default(),
@@ -124,15 +149,14 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
         shells: Default::default(),
         lock_watchers: Default::default(),
     });
-    let acceptor = agent_link::acceptor(&state)?;
-    let router = api::router(state.clone());
+    let router = api::router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
     let tasks = vec![
         tokio::spawn(async move {
             if let Err(e) = axum::serve(http, router).await {
                 tracing::error!("controller API stopped: {e}");
             }
         }),
-        tokio::spawn(agent_link::serve(agents, acceptor, state.clone())),
+        tokio::spawn(agent_link::serve(agents, state.clone())),
         tokio::spawn({
             let state = state.clone();
             async move {
@@ -156,5 +180,5 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
             }
         }),
     ];
-    Ok(Server { http_addr, agent_addr, ca_pem, tasks })
+    Ok(Server { http_addr, agent_addr, ca_pem, server_key, tasks })
 }

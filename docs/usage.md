@@ -13,21 +13,73 @@ Từ ngữ (Device, Action, Observation, Mark, Control Lock, Wake Relay…) theo
 ## Cài CLI
 
 ```bash
-cargo build --release -p rcli -p rcli-agent
-# binary: target/release/rcli và target/release/rcli-agent
-export RCLI_SERVER=http://localhost:8080     # URL Controller API
-export RCLI_TOKEN=rcli_xxxxxxxx              # token của bạn (admin cấp bằng `rcli token create <user>`)
+cargo build --release -p rcli
+# binary: target/release/rcli (Controller và Agent trong cùng một binary)
+rcli setup --server http://localhost:8080 --key rk_xxxxxxxx_yyyyyyyy   # một lần
+rcli connect 123456789                                                  # hỏi Device Password một lần
 ```
 
+`rcli setup` lưu Server Address, Server Key và update key đã pin vào thư mục cấu hình của bạn (thiếu `--server` hoặc
+`--key` thì lệnh hỏi, Server Key nhập không hiện ra màn hình). Server Address phải là
+`https://` (TLS ở reverse proxy); `http://` chỉ được nhận khi trỏ tới chính máy này (localhost, cho test hoặc Server
+chạy cùng máy) — không có cờ nào cho phép http tới máy khác. `rcli connect` kiểm tra Device ID + Device Password rồi
+nhớ mật khẩu (OS keychain: Keychain trên macOS, Credential Manager trên Windows, Secret Service trên Linux; file
+`0600` khi không có keychain hoặc khi dùng `--config-dir`), nên các lệnh sau chỉ cần Device ID.
+`rcli forget <Device ID>` xoá mật khẩu đã nhớ. `RCLI_SERVER`/`RCLI_TOKEN` không còn dùng.
+
+Lệnh quản trị Server (`user`, `rollout`, `audit`, `server-key`, `server-address`, đổi tên/xoá Device, `lock force-release`)
+cần một phiên User: `rcli login <tên>` (mật khẩu Dashboard + mã TOTP), `rcli logout` để xoá.
+Operator đăng nhập được nhưng các lệnh đó trả `admin_required`. Các lệnh trên Device vẫn dùng `rcli connect`.
+
+## Cài trên Windows
+
+Agent chạy như một Windows service tên `rcli-agent` (tài khoản LocalSystem, tự khởi động cùng máy). Ba cách cài, cùng một kết quả:
+
+```powershell
+# 1. Tải rcli.exe, bấm đúp: cửa sổ rcli mở với ô Server Address + Server Key và nút Install (UAC hỏi một lần).
+# 2. Một dòng trong PowerShell bình thường (script tự xin quyền qua UAC):
+iwr https://<server>/install.ps1 -OutFile install.ps1; .\install.ps1 -Key <Server Key>
+# 3. Trong PowerShell "Run as administrator", với binary đã tải:
+rcli agent install --server <server>:<port> --key <Server Key>
+```
+
+Cài xong in ra Device ID và Device Password. Binary ở `%ProgramFiles%\rcli\rcli.exe`; dữ liệu Device (credentials, Device Settings, Secret Store) ở `%ProgramData%\rcli`, chỉ SYSTEM và Administrators đọc được. Server Key nằm trong `%ProgramData%\rcli\service.json`, **không** nằm trên command line của service (`sc qc rcli-agent` không thấy nó). Secret Store dùng DPAPI machine scope (`CryptProtectData` + `CRYPTPROTECT_LOCAL_MACHINE`), nên copy ổ đĩa hay bản backup sang máy khác không đọc được Device Password.
+
+Nếu Server Key sai, lệnh cài thất bại ngay và không để lại service hay file nào.
+
+**Màn khoá, màn đăng nhập và UAC.** Service chạy trong session 0 nên không thấy desktop của người dùng. Nó chạy một helper (`rcli agent session`) trong phiên console bằng token SYSTEM của chính nó, chuyển vào phiên đó (`DuplicateTokenEx` + `SetTokenInformation(TokenSessionId)`, cần `SeTcbPrivilege`) — đúng token mà winlogon dùng, nên mở được cả desktop `Winlogon` (màn khoá, màn đăng nhập) và secure desktop của UAC (`WTSQueryUserToken` chỉ là phương án dự phòng). Helper chuyển sang input desktop trước mỗi lần chụp/gõ. Vì vậy `shot`, `act`, `unlock` chạy được ở màn khoá, màn đăng nhập và hộp thoại UAC. Helper được chạy lại khi phiên console hoặc người đăng nhập đổi (đăng nhập, đăng xuất, chuyển user). Không cần cấp quyền Screen Recording như macOS. Lưu ý: vì helper chạy dưới SYSTEM, OCR (Windows.Media.Ocr) dùng profile của SYSTEM; nếu `--text` không nhận được chữ ở màn khoá, cài thêm gói ngôn ngữ OCR cho máy.
+
+**Ctrl+Alt+Del.** Windows chỉ cho tiến trình SYSTEM gửi secure attention sequence qua `SendSAS` (sas.dll), và phải bật policy một lần trên mỗi Device (mặc định là tắt):
+
+```powershell
+# PowerShell as administrator, một lần:
+Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+  -Name SoftwareSASGeneration -Type DWord -Value 1
+# 0 = tắt (mặc định), 1 = cho phép ứng dụng chạy dưới quyền SYSTEM (đủ cho rcli), 2 = cho phép mọi ứng dụng
+```
+
+Rồi từ Controller: `rcli lock acquire <Device ID>` và `rcli act <Device ID> key ctrl+alt+del`. Không bật policy thì Windows bỏ qua `SendSAS` và không có gì xảy ra.
+
+**Gỡ cài đặt** (PowerShell "Run as administrator"):
+
+```powershell
+rcli agent uninstall
+```
+
+Lệnh này gỡ Device khỏi Server (nếu Server không tới được thì chỉ cảnh báo, phần cài đặt cục bộ vẫn được xoá), dừng và xoá service, xoá `%ProgramFiles%\rcli` và `%ProgramData%\rcli` (kể cả Secret Store) — giống macOS/Linux. Log của service ở `%ProgramData%\rcli\agent.log`.
+
+Build chưa ký nên SmartScreen có thể cảnh báo khi chạy `rcli.exe` vừa tải: chọn "More info" → "Run anyway" (trang Connect của Dashboard giải thích).
+
 ## Vai trò
+
+Role chỉ còn quản trị Server; việc gì chạy được trên Device do Device Settings của chính Device đó quyết định.
 
 | | operator | admin |
 |---|---|---|
 | Xem fleet, metrics, lịch sử, màn hình | ✅ | ✅ |
-| Điều khiển (khi giữ Control Lock), `exec`, `shell` dưới quyền user đang đăng nhập | ✅ | ✅ |
-| `exec`/`shell --as root`, chạy lệnh khi chưa ai đăng nhập | ❌ | ✅ |
-| Restart/Shut down/Sleep khi người khác giữ lock | ❌ | ✅ |
-| Users, tokens, Enrollment Code, Device (đổi tên/xoá/thu hồi/gộp), mật khẩu unlock, cập nhật Agent, audit, force-release lock | ❌ | ✅ |
+| Điều khiển (khi giữ Control Lock), `exec`, `shell`, `--as root` | ✅ | ✅ |
+| Restart/Shut down/Sleep khi người khác giữ lock | ❌ | ❌ |
+| Users, Server Key, Server Address, Device (đổi tên/xoá/thu hồi/gộp), mật khẩu unlock, rollout Agent, audit, force-release lock | ❌ | ✅ |
 
 ## Xem fleet
 
@@ -96,12 +148,15 @@ Bước nào lỗi thì batch dừng và báo `step` (đếm từ 0). Tổng `wa
 ## Màn khoá và `unlock`
 
 ```bash
-rcli unlock-password set demo-pc --password '...'   # admin, lưu mã hoá trên Server, không bao giờ đọc lại được
+# Tại chính Device, bằng root: mật khẩu nằm trong Secret Store của Agent, không bao giờ rời Device.
+sudo rcli agent unlock-password set --password '...'
+sudo rcli agent unlock-password clear                # bỏ mật khẩu đã lưu
 rcli lock acquire demo-pc
-rcli unlock demo-pc --out ./shots                   # Agent gõ mật khẩu + Enter, trả ảnh sau đó
+rcli unlock demo-pc --out ./shots                    # Agent gõ mật khẩu đã lưu + Enter, trả ảnh sau đó
 ```
 
-`rcli device show` cho biết `session`: `Active`, `LockScreen` hoặc `LoginScreen`.
+`rcli device show` cho biết `session`: `Active`, `LockScreen` hoặc `LoginScreen`. Trên Windows, xem thêm mục
+**Cài trên Windows** để bật policy cho `Ctrl+Alt+Del`; `unlock` gõ mật khẩu + Enter ở cả màn khoá và màn đăng nhập.
 
 ## Terminal
 
@@ -125,12 +180,15 @@ rcli wake demo-pc               # Device Offline → Waking; quá 3 phút chưa 
 ## Admin
 
 ```bash
+rcli login an                                 # hỏi mật khẩu Dashboard + mã TOTP, lưu phiên vào config
+rcli logout                                   # thu hồi và xoá phiên đã lưu
 rcli user create an --role operator
 rcli user set-password an --password '...'   # in TOTP secret + otpauth URL cho Dashboard
-rcli token create an                          # token chỉ hiện một lần
-rcli token revoke <token-id>
 rcli user disable an
-rcli enrollment-code create                   # mã enroll dùng một lần + ca-fingerprint
+rcli server-key show                          # Server Key (rk_<CA fingerprint>_<secret>) để cài Agent
+rcli server-key rotate                        # đổi secret: Device đã đăng ký vẫn Online, bản cài mới cần key mới
+rcli server-address show                      # Server Address Agent dùng
+rcli server-address set vps.example.com       # cấp lại chứng chỉ TLS cho tên mới
 rcli device rename demo-pc may-ke-toan
 rcli device revoke <id>                       # Agent bị cắt và không kết nối lại được
 rcli device merge <id-cũ> --into <id-mới>     # gộp lịch sử sau khi cài lại máy
@@ -148,27 +206,30 @@ Mở `http://<server>:3080`, đăng nhập bằng tên + mật khẩu + mã TOTP
 - **Trang Device**: inventory, tài nguyên hiện tại, màn khoá/màn đăng nhập, người giữ Control Lock và giờ hết hạn, biểu đồ lịch sử (1h / 24h / 7d / 90d), nút Wake / Lock screen / Sleep / Restart / Shut down.
 - **Live view**: xem màn hình trực tiếp qua WebRTC, chọn màn hình nếu Device có nhiều. Khi bạn giữ Control Lock thì click và gõ trực tiếp lên video. Người khác giữ lock thì vẫn xem được và thấy ai giữ đến lúc nào.
 - **Web terminal**: ngay dưới live view; admin có thêm ô "as root".
-- **Quản trị** (chỉ admin): users và token, Enrollment Code, mật khẩu unlock, cập nhật Agent, đổi tên/gộp/thu hồi/xoá Device.
+- **Quản trị** (chỉ admin): users, mật khẩu unlock, rollout Agent, đổi tên/gộp/thu hồi/xoá Device.
 
 ## Dùng với Claude Code (MCP)
 
 ```bash
-claude mcp add rcli --env RCLI_SERVER=http://localhost:8080 --env RCLI_TOKEN=rcli_xxxxxxxx -- /đường/dẫn/rcli mcp
+rcli setup --server http://localhost:8080 --key rk_xxxxxxxx_yyyyyyyy
+rcli connect 123456789
+claude mcp add rcli -- /đường/dẫn/rcli mcp
 ```
 
-Tools: `devices`, `device`, `lock_acquire`, `lock_release`, `lock_status`, `observe` (shot / frames / clip / marks), `act`, `batch`, `exec`, `wake`, `power`. Ảnh trả về inline, bảng Mark nằm trong kết quả có cấu trúc. Mỗi AI agent nên có user và token riêng để audit tách bạch.
+`rcli mcp` dùng cùng cấu hình và Device Password đã nhớ, nên không cần biến môi trường.
+
+Tools: `devices`, `device`, `lock_acquire`, `lock_release`, `lock_status`, `observe` (shot / frames / clip / marks), `act`, `batch`, `exec`, `wake`, `power`. Ảnh trả về inline, bảng Mark nằm trong kết quả có cấu trúc. Mỗi AI agent nên dùng một user Dashboard riêng (qua `rcli login`) để audit tách bạch.
 
 Chưa có tool `unlock` và `shell` trong MCP; dùng `rcli unlock` hoặc `exec`.
 
 ## Thử nhanh trên một máy
 
 ```bash
-# 1. Dựng stack theo docs/deploy.md với RCLI_TURN_HOST=localhost, rồi tạo admin `me` và token.
+# 1. Dựng stack theo docs/deploy.md với RCLI_TURN_HOST=localhost, rồi tạo admin `me`.
 # 2. Enroll một Agent giả:
-rcli enrollment-code create                       # ghi lại code và ca-fingerprint
-curl -s http://localhost:8080/api/v1/server-ca -o /tmp/ca.pem
-rcli-agent --server localhost:8443 --ca /tmp/ca.pem --ca-fingerprint <fp> \
-  --state-dir /tmp/agent-state --name demo-pc --enroll <code>
+rcli server-key show                              # Server Key (rk_<CA fingerprint>_<secret>)
+rcli agent run --server localhost:8443 --key <server-key> \
+  --state-dir /tmp/agent-state --name demo-pc
 # 3. Ở terminal khác:
 rcli devices && rcli shot demo-pc && rcli exec demo-pc -- echo hello
 ```

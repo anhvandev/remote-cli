@@ -7,7 +7,23 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod agent;
+pub mod config;
+pub mod install;
+#[cfg(feature = "gui")]
+pub mod gui;
+#[cfg(target_os = "linux")]
+mod linux_install;
+#[cfg(target_os = "macos")]
+mod macos_install;
 pub mod media;
+// The layout, service definition and install/uninstall flow are portable through the `Run` seam, so their tests
+// also run off Windows; the real install is Windows-only.
+#[cfg(any(windows, test))]
+mod windows_install;
+#[cfg(windows)]
+mod windows_service;
+pub mod upgrade;
 
 use base64::Engine;
 use clap::{Parser, Subcommand};
@@ -19,12 +35,15 @@ pub mod mcp;
 #[derive(Parser)]
 #[command(name = "rcli", about = "Remote CLI controller")]
 struct Cli {
-    /// Controller API base URL, e.g. http://localhost:8080
-    #[arg(long, env = "RCLI_SERVER", global = true)]
+    /// Controller API base URL; default: the one `rcli setup` saved.
+    #[arg(long, global = true)]
     server: Option<String>,
-    /// API token.
-    #[arg(long, env = "RCLI_TOKEN", global = true, hide_env_values = true)]
+    /// User session token (tests and scripting); default: the one `rcli login` saved.
+    #[arg(long, global = true, hide_env_values = true)]
     token: Option<String>,
+    /// Controller config directory; default: the platform's per-user location.
+    #[arg(long, global = true, hide = true)]
+    config_dir: Option<String>,
     /// Machine-readable JSON output.
     #[arg(long, global = true)]
     json: bool,
@@ -34,6 +53,47 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Save the Server Address and Server Key (once per Controller); asks for any not given.
+    Setup {
+        /// Server Address, e.g. https://server.example.com:8080.
+        #[arg(long)]
+        server: Option<String>,
+        /// Server Key, rk_<CA fingerprint>_<secret>.
+        #[arg(long, hide_env_values = true)]
+        key: Option<String>,
+    },
+    /// Sign in with a Dashboard account and save the session (Admin commands need it).
+    Login {
+        /// Dashboard user name.
+        name: String,
+        /// The Dashboard password; asked for when omitted.
+        #[arg(long, hide_env_values = true)]
+        password: Option<String>,
+        /// The 6-digit TOTP code; asked for when omitted.
+        #[arg(long)]
+        totp: Option<String>,
+    },
+    /// Revoke and forget the saved session.
+    Logout,
+    /// Replace this `rcli` binary with the build the Server is rolling out for this OS/arch, after checking its
+    /// signature. As root on an installed Device it also restarts the Agent service.
+    Upgrade {
+        /// Binary to replace; default: the one running now. Hidden: a seam for tests.
+        #[arg(long, hide = true)]
+        target: Option<PathBuf>,
+        /// Local IPC socket of the running Agent; identifies this Device, so the build rolled out to it is fetched.
+        #[arg(long, env = "RCLI_AGENT_SOCKET")]
+        socket: Option<PathBuf>,
+    },
+    /// Remember a Device's Device Password, so later commands take just its Device ID.
+    Connect {
+        device: String,
+        /// The Device Password; asked for when omitted.
+        #[arg(long, hide_env_values = true)]
+        password: Option<String>,
+    },
+    /// Remove a remembered Device Password.
+    Forget { device: String },
     /// List Devices with their Device Status.
     Devices,
     /// One Device: inventory, current resources, processes.
@@ -42,18 +102,31 @@ enum Command {
     /// Resource history of Devices.
     #[command(subcommand)]
     Metrics(MetricsCommand),
-    /// Manage Enrollment Codes (admin).
+    /// Read or replace the Server Key Agents and Controllers need to connect (admin).
     #[command(subcommand)]
-    EnrollmentCode(EnrollmentCodeCommand),
+    ServerKey(ServerKeyCommand),
+    /// Read or set the Server Address Agents use (admin).
+    #[command(subcommand)]
+    ServerAddress(ServerAddressCommand),
     /// Manage users (admin).
     #[command(subcommand)]
     User(UserCommand),
-    /// Manage per-user API tokens (admin).
+    /// Install packages for the Connect guide's downloads (admin).
     #[command(subcommand)]
-    Token(TokenCommand),
-    /// Signed Agent builds and rollouts (admin).
-    #[command(subcommand)]
-    Update(UpdateCommand),
+    Package(PackageCommand),
+    /// Signed Agent builds and rollouts (admin): `rollout keygen`, `rollout publish`, `rollout <version>`.
+    Rollout {
+        #[command(subcommand)]
+        command: Option<RolloutCommand>,
+        /// Version to roll out (to all Devices, or the ones under --device).
+        version: Option<String>,
+        /// Target every Device.
+        #[arg(long)]
+        all: bool,
+        /// Device id; repeat for several.
+        #[arg(long)]
+        device: Vec<String>,
+    },
     /// Control Lock: needed to send input Actions to a Device.
     #[command(subcommand)]
     Lock(LockCommand),
@@ -83,9 +156,9 @@ enum Command {
     /// Run a one-shot command on a Device: prints its stdout/stderr and exits with its exit code.
     Exec {
         device: String,
-        /// `root`: run as root/SYSTEM (admin only). Default: the logged-in user.
+        /// `root`: run as root/SYSTEM (the Device's root setting decides). Default: the Device's Terminal User.
         #[arg(long = "as")]
-        run_as: Option<String>,
+        account: Option<String>,
         /// Seconds before the command is killed (default 60).
         #[arg(long)]
         timeout: Option<u32>,
@@ -93,22 +166,25 @@ enum Command {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
-    /// Make the Agent type the Device's stored unlock password + Enter (needs the Control Lock).
+    /// Make `--as root` the default for exec and shell on one Device: `rcli root on <Device ID>` (or `off`).
+    Root {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+        device: String,
+    },
+    /// Make the Agent type the unlock password stored on the Device + Enter (needs the Control Lock).
     Unlock {
         device: String,
         /// Directory to save the Observation in.
         #[arg(long, default_value = ".")]
         out: PathBuf,
     },
-    /// Store or clear a Device's unlock password in the Secrets Vault (admin).
-    #[command(subcommand)]
-    UnlockPassword(UnlockPasswordCommand),
     /// Interactive shell on a Device, like SSH. Exits with the remote shell's exit code.
     Shell {
         device: String,
-        /// `root`: run as root/SYSTEM (admin only). Default: the logged-in user.
+        /// `root`: run as root/SYSTEM (the Device's root setting decides). Default: the Device's Terminal User.
         #[arg(long = "as")]
-        run_as: Option<String>,
+        account: Option<String>,
     },
     /// Audit log of Actions, oldest first (admin).
     Audit {
@@ -148,6 +224,9 @@ enum Command {
     },
     /// Serve the Controller operations as MCP tools on stdio, for AI agents (Claude Code etc.).
     Mcp,
+    /// Run the Agent on this Device: one binary for Controller and Agent.
+    #[command(subcommand)]
+    Agent(AgentCommand),
     /// Send an Action Batch from JSON (needs the Control Lock): a list of Actions as in the API
     /// (plus `{"type":"wait","ms":N}`), or a whole request body, which is sent as-is.
     Batch {
@@ -167,22 +246,85 @@ enum Command {
 }
 
 #[derive(Subcommand)]
-enum UnlockPasswordCommand {
-    /// Store (or replace) the password; it is encrypted on the Server and never shown again.
-    Set {
-        device: String,
-        #[arg(long, env = "RCLI_UNLOCK_PASSWORD", hide_env_values = true)]
-        password: String,
+enum AgentCommand {
+    /// Register on first start, then keep the Agent connected to the Server.
+    Run(agent::Run),
+    /// Install the Agent as a background service and register this Device (root).
+    Install(agent::Install),
+    /// Remove the background service and this Device's local data (root).
+    Uninstall(agent::Uninstall),
+    /// The console-session helper the service starts (macOS LaunchAgent, Linux systemd service, Windows service).
+    #[command(hide = true)]
+    Session(agent::Session),
+    /// Windows: the Agent hosted as a service, started by the Service Manager.
+    #[command(hide = true)]
+    Service(agent::Service),
+    /// Show the Device ID and connection status (any local user).
+    Info(agent::Info),
+    /// The Device Password: show or change it (root only).
+    Password {
+        #[command(subcommand)]
+        command: agent::PasswordCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
     },
-    Clear { device: String },
-    /// Whether a password is stored.
-    Status { device: String },
+    /// The Device ID: set a free 9-digit one (root only).
+    Id {
+        #[command(subcommand)]
+        command: agent::IdCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
+    },
+    /// The Device name: rename it (root only).
+    Name {
+        #[command(subcommand)]
+        command: agent::NameCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
+    },
+    /// The Server the Agent connects to: point it elsewhere (root only).
+    Server {
+        #[command(subcommand)]
+        command: agent::ServerCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
+    },
+    /// The Terminal User: the account terminal commands and shells run as (root only).
+    TerminalUser {
+        #[command(subcommand)]
+        command: agent::TerminalUserCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
+    },
+    /// Whether `--as root` is never allowed, asked at the Device, or always allowed (root only).
+    Root(agent::Root),
+    /// Whether a person at the Device must accept each new connection (root only).
+    Accept(agent::Accept),
+    /// End a Controller's sessions and Control Lock (any local user).
+    Disconnect(agent::Disconnect),
+    /// The password `unlock` types at the lock or login screen: set or clear it (root only).
+    UnlockPassword {
+        #[command(subcommand)]
+        command: agent::UnlockPasswordCommand,
+        /// Local IPC socket of the running Agent.
+        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
+        socket: Option<PathBuf>,
+    },
+    /// The prompts waiting for the person at the Device (any local user).
+    Prompts(agent::Prompts),
+    /// Answer one of those prompts: refusing is open to anyone, accepting needs root.
+    Prompt(agent::Prompt),
 }
 
 #[derive(Subcommand)]
 enum LockCommand {
     /// Take the Control Lock. The CLI keeps no `lock/watch` open, so the lock ends only after 10 minutes without
-    /// an Action (or on release); the 60 s disconnect grace applies to watching clients (`rcli mcp`, Dashboard).
+    /// an Action (or on release); the 60 s disconnect grace applies to watchers (`rcli mcp`, Dashboard).
     Acquire { device: String },
     Release { device: String },
     Status { device: String },
@@ -216,6 +358,20 @@ enum ActCommand {
     },
     /// Press a key combination, e.g. ctrl+shift+t.
     Key { keys: String },
+}
+
+/// Server administration, which a password connection can never do (ADR 0004): these need a User session.
+fn admin_only(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::ServerKey(_)
+            | Command::ServerAddress(_)
+            | Command::User(_)
+            | Command::Rollout { .. }
+            | Command::Audit { .. }
+            | Command::Device(DeviceCommand::Rename { .. } | DeviceCommand::Delete { .. } | DeviceCommand::Revoke { .. } | DeviceCommand::Merge { .. })
+            | Command::Lock(LockCommand::ForceRelease { .. })
+    )
 }
 
 /// Where to point: image coordinates X Y, `--mark N --observation ID`, or `--text T`.
@@ -322,8 +478,8 @@ fn lock_text(lock: &Value) -> String {
 }
 
 #[derive(Subcommand)]
-enum UpdateCommand {
-    /// Create an update signing key (offline, no server needed). Agents get the printed public key via --update-key.
+enum RolloutCommand {
+    /// Create an update signing key (offline, no server needed). Give the public key to the Server as RCLI_UPDATE_PUBLIC_KEY.
     Keygen {
         /// Where to write the private key (PKCS#8). Keep it off the Server.
         key_file: String,
@@ -336,18 +492,20 @@ enum UpdateCommand {
         /// `<os>-<arch>` the build runs on, e.g. linux-x86_64, windows-x86_64, macos-aarch64.
         #[arg(long)]
         target: String,
-        /// Private key file from `rcli update keygen`.
+        /// Private key file from `rcli rollout keygen`.
         #[arg(long)]
         key: String,
     },
-    /// Target a published version at all Devices or selected ones.
-    Rollout {
-        version: String,
-        #[arg(long, conflicts_with = "device", required_unless_present = "device")]
-        all: bool,
-        /// Device id; repeat for several.
+}
+
+#[derive(Subcommand)]
+enum PackageCommand {
+    /// Upload a .dmg, .deb or .rpm for the Connect guide's downloads; replaces the one for that kind and arch.
+    Publish {
+        file: String,
+        /// The CPU it is for: x86_64 or aarch64.
         #[arg(long)]
-        device: Vec<String>,
+        arch: String,
     },
 }
 
@@ -362,7 +520,7 @@ enum UserCommand {
     },
     /// List users.
     List,
-    /// Disable a user; all of their API tokens stop working.
+    /// Disable a user; all of their sessions stop working.
     Disable { name: String },
     /// Set a user's Dashboard password and enroll a new TOTP secret (shown once; scan the otpauth URL).
     SetPassword {
@@ -370,14 +528,6 @@ enum UserCommand {
         #[arg(long, env = "RCLI_NEW_PASSWORD", hide_env_values = true)]
         password: String,
     },
-}
-
-#[derive(Subcommand)]
-enum TokenCommand {
-    /// Issue a new API token for a user. The token is shown only once.
-    Create { user: String },
-    /// Revoke an API token by its id.
-    Revoke { id: String },
 }
 
 #[derive(Subcommand)]
@@ -418,9 +568,19 @@ enum MetricsCommand {
 }
 
 #[derive(Subcommand)]
-enum EnrollmentCodeCommand {
-    /// Create a single-use Enrollment Code.
-    Create,
+enum ServerKeyCommand {
+    /// Print the Server Key (rk_<CA fingerprint>_<secret>).
+    Show,
+    /// Replace the secret. Registered Devices stay Online; new installs and Controllers need the new key.
+    Rotate,
+}
+
+#[derive(Subcommand)]
+enum ServerAddressCommand {
+    /// Print the Server Address.
+    Show,
+    /// Set the Server Address (host or host:port, comma-separated). Reissues the TLS certificate.
+    Set { address: String },
 }
 
 pub async fn run<I, T>(args: I, out: &mut dyn Write) -> anyhow::Result<()>
@@ -437,12 +597,18 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = match Cli::try_parse_from(args) {
+    let argv: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    // `rcli` with no arguments on a desktop opens the Agent GUI (ticket 14).
+    #[cfg(feature = "gui")]
+    if argv.len() == 1 {
+        return crate::gui::run(std::env::var_os("RCLI_AGENT_SOCKET").map(PathBuf::from));
+    }
+    let cli = match Cli::try_parse_from(argv) {
         Ok(cli) => cli,
         Err(e) if !e.use_stderr() => return Ok(write!(out, "{e}")?), // --help / --version
         Err(e) => anyhow::bail!("{e}"),
     };
-    if let Command::Update(UpdateCommand::Keygen { key_file }) = &cli.command {
+    if let Command::Rollout { command: Some(RolloutCommand::Keygen { key_file }), .. } = &cli.command {
         let (private, public) = rcli_protocol::update::generate_key()?;
         write_private(key_file, &private)?;
         let public = hex::encode(public);
@@ -453,16 +619,153 @@ where
         }
         return Ok(());
     }
-    let api = Api {
-        base: cli.server.ok_or_else(|| anyhow::anyhow!("--server or RCLI_SERVER is required"))?,
-        token: cli.token.ok_or_else(|| anyhow::anyhow!("--token or RCLI_TOKEN is required"))?,
-        http: reqwest::Client::new(),
-    };
+    if let Command::Agent(command) = cli.command {
+        return match command {
+            AgentCommand::Run(run) => run.run().await,
+            AgentCommand::Install(install) => install.run(out).await,
+            AgentCommand::Uninstall(uninstall) => uninstall.run(out).await,
+            AgentCommand::Session(session) => session.run().await,
+            AgentCommand::Service(service) => service.run(),
+            AgentCommand::Info(info) => info.run(out).await,
+            AgentCommand::Password { command, socket } => agent::run_password(command, socket, out).await,
+            AgentCommand::Id { command, socket } => agent::run_id(command, socket, out).await,
+            AgentCommand::Name { command, socket } => agent::run_name(command, socket, out).await,
+            AgentCommand::Server { command, socket } => agent::run_server(command, socket, out).await,
+            AgentCommand::TerminalUser { command, socket } => agent::run_terminal_user(command, socket, out).await,
+            AgentCommand::Root(root) => root.run(out).await,
+            AgentCommand::Accept(accept) => accept.run(out).await,
+            AgentCommand::Disconnect(disconnect) => disconnect.run(out).await,
+            AgentCommand::UnlockPassword { command, socket } => agent::run_unlock_password(command, socket, out).await,
+            AgentCommand::Prompts(prompts) => prompts.run(out).await,
+            AgentCommand::Prompt(prompt) => agent::run_prompt(prompt.command, prompt.socket, out).await,
+        };
+    }
+    let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);
+    if let Command::Setup { server, key } = &cli.command {
+        let server = match server {
+            Some(s) => s.clone(),
+            None => prompt_line("Server Address (https://...): ")?,
+        };
+        let key = match key {
+            Some(k) => k.clone(),
+            None => prompt_password("Server Key: ")?,
+        };
+        let text = config::setup(&dir, &server, &key).await?;
+        let body = config::load_at(&dir)?.map(|c| config::json(&c)).unwrap_or(serde_json::Value::Null);
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),
+            false => Ok(write!(out, "{text}")?),
+        };
+    }
+    // `--server` gets the same https rule as `rcli setup`: passwords, the Server Key and sessions travel to it.
+    if let Some(server) = &cli.server {
+        config::check_transport(server.trim().trim_end_matches('/'))?;
+    }
+    if let Command::Login { name, password, totp } = &cli.command {
+        let base = match (cli.server.clone(), config::load_at(&dir)?) {
+            (Some(server), _) => server,
+            (None, Some(config)) if !config.server.is_empty() => config.server,
+            _ => anyhow::bail!("run `rcli setup` first (no saved Server Address)"),
+        };
+        let password = match password {
+            Some(p) => p.clone(),
+            None => prompt_password("Dashboard password: ")?,
+        };
+        let totp = match totp {
+            Some(code) => code.clone(),
+            None => prompt_line("TOTP code: ")?,
+        };
+        let resp = reqwest::Client::new()
+            .post(format!("{}/api/v1/sessions", base.trim_end_matches('/')))
+            .json(&json!({ "name": name, "password": password, "totp": totp.trim() }))
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or(Value::Null);
+        if !status.is_success() {
+            let e = &body["error"];
+            anyhow::bail!("{} ({}): {}", str_of(&e["code"]), status, str_of(&e["message"]));
+        }
+        config::set_session(&dir, Some(str_of(&body["token"]).to_owned()))?;
+        let user = &body["user"];
+        let text = format!("signed in as {} ({})\n", str_of(&user["name"]), str_of(&user["role"]));
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", json!({ "user": user, "expires_at": body["expires_at"] }))?),
+            false => Ok(write!(out, "{text}")?),
+        };
+    }
+    if let Command::Logout = &cli.command {
+        let saved = config::load_at(&dir)?;
+        if let (Some(session), Some(server)) = (saved.as_ref().and_then(|c| c.session.clone()), saved.as_ref().map(|c| c.server.clone())) {
+            // Best effort: an already expired session needs no revoking.
+            let _ = reqwest::Client::new()
+                .delete(format!("{}/api/v1/session", server.trim_end_matches('/')))
+                .bearer_auth(session)
+                .send()
+                .await;
+            config::set_session(&dir, None)?;
+        }
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", json!({ "signed_out": true }))?),
+            false => Ok(writeln!(out, "signed out")?),
+        };
+    }
+    if let Command::Connect { device, password } = &cli.command {
+        let (server, key) = match (cli.server.clone(), config::load_at(&dir)?) {
+            (Some(server), config) => (server, config.map(|c| c.server_key).unwrap_or_default()),
+            (None, Some(config)) if !config.server_key.is_empty() => (config.server, config.server_key),
+            _ => anyhow::bail!("run `rcli setup` first (no saved Server Address or Server Key)"),
+        };
+        let password = match password {
+            Some(p) => p.clone(),
+            None => prompt_password("Device Password: ")?,
+        };
+        let controller = config::hostname();
+        config::verify(&server, &key, device, &password, &controller).await?;
+        config::remember(&dir, device, &password, &controller)?;
+        let text = format!("connected to {device} as {controller}\n");
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", json!({ "device_id": device, "controller": controller }))?),
+            false => Ok(write!(out, "{text}")?),
+        };
+    }
+    if let Command::Upgrade { target, socket } = &cli.command {
+        let config = config::load_at(&dir)?.ok_or_else(|| anyhow::anyhow!("run `rcli setup` first (no pinned update key)"))?;
+        let path = target.clone().unwrap_or_else(|| std::env::current_exe().unwrap_or_default());
+        let done = upgrade::run(&config, &path, socket.clone()).await?;
+        let text = format!(
+            "upgraded {} to {} for {}{}\n",
+            done.path.display(),
+            done.version,
+            done.target,
+            if done.restarted { "; restarted the rcli-agent service" } else { "" }
+        );
+        let body = json!({ "version": done.version, "target": done.target, "path": done.path, "restarted": done.restarted });
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),
+            false => Ok(write!(out, "{text}")?),
+        };
+    }
+    if let Command::Forget { device } = &cli.command {
+        config::forget(&dir, device)?;
+        return match cli.json {
+            true => Ok(writeln!(out, "{}", json!({ "forgotten": device }))?),
+            false => Ok(writeln!(out, "forgot {device}")?),
+        };
+    }
+    let (base, connection) = api_target(&dir, cli.server, cli.token)?;
+    let api = Api { base, dir, connection, http: reqwest::Client::new() };
+    if admin_only(&cli.command) && api.connection.token.is_none() {
+        anyhow::bail!("this command needs an Admin account: run `rcli login <name>` (or `rcli connect <Device ID>` for Device commands)");
+    }
     let (body, human) = match cli.command {
+        Command::Setup { .. } | Command::Login { .. } | Command::Logout | Command::Upgrade { .. } | Command::Connect { .. } | Command::Forget { .. } => {
+            unreachable!("handled before connecting")
+        }
         Command::Devices => {
             let devices = api.call(reqwest::Method::GET, "/api/v1/devices", None).await?;
             let mut text = format!(
-                "{:<36}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
+                "{:<9}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
                 "ID", "NAME", "STATUS", "LAST SEEN", "AGENT", "UPDATE"
             );
             for d in devices.as_array().into_iter().flatten() {
@@ -474,8 +777,8 @@ where
                     format!("{} {}{error}", str_of(&u["version"]), str_of(&u["status"]))
                 };
                 text += &format!(
-                    "{:<36}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
-                    str_of(&d["id"]),
+                    "{:<9}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
+                    str_of(&d["device_id"]),
                     str_of(&d["name"]),
                     match d["wake_error"].as_str() {
                         Some(e) => format!("{} ({e})", str_of(&d["status"])),
@@ -529,7 +832,7 @@ where
         Command::Device(DeviceCommand::Merge { old, into }) => {
             let path = format!("/api/v1/devices/{}/merge", path_segment(&into));
             let d = api.call(reqwest::Method::POST, &path, Some(&serde_json::json!({ "from": old }))).await?;
-            let text = format!("merged {old} into {} ({})\n", str_of(&d["name"]), str_of(&d["id"]));
+            let text = format!("merged {old} into {} ({})\n", str_of(&d["name"]), str_of(&d["device_id"]));
             (d, text)
         }
         Command::Metrics(MetricsCommand::History { device, from, to, resolution }) => {
@@ -556,11 +859,27 @@ where
             }
             (history, text)
         }
-        Command::EnrollmentCode(EnrollmentCodeCommand::Create) => {
-            let created = api.call(reqwest::Method::POST, "/api/v1/enrollment-codes", None).await?;
-            // The installer passes both to the Agent: `--enroll CODE --ca-fingerprint FP`.
-            let text = format!("{}\nca-fingerprint {}\n", str_of(&created["code"]), str_of(&created["ca_fingerprint"]));
-            (created, text)
+        Command::ServerKey(ServerKeyCommand::Show) => {
+            let key = api.call(reqwest::Method::GET, "/api/v1/server-key", None).await?;
+            let text = format!("{}\n", str_of(&key["server_key"]));
+            (key, text)
+        }
+        Command::ServerKey(ServerKeyCommand::Rotate) => {
+            let key = api.call(reqwest::Method::POST, "/api/v1/server-settings/server-key/rotate", None).await?;
+            let text = format!("{}\n", str_of(&key["server_key"]));
+            (key, text)
+        }
+        Command::ServerAddress(ServerAddressCommand::Show) => {
+            let s = api.call(reqwest::Method::GET, "/api/v1/server-settings", None).await?;
+            let address = s["server_address"].clone();
+            let text = format!("{}\n", str_of(&address));
+            (serde_json::json!({ "server_address": address }), text)
+        }
+        Command::ServerAddress(ServerAddressCommand::Set { address }) => {
+            let body = serde_json::json!({ "address": address });
+            let s = api.call(reqwest::Method::PUT, "/api/v1/server-settings/server-address", Some(&body)).await?;
+            let text = format!("server address {}\n", str_of(&s["server_address"]));
+            (s, text)
         }
         Command::User(UserCommand::Create { name, role }) => {
             let body = serde_json::json!({ "name": name, "role": role });
@@ -586,15 +905,6 @@ where
             let set = api.call(reqwest::Method::POST, &format!("/api/v1/users/{name}/credentials"), Some(&body)).await?;
             let text = format!("totp_secret {}\notpauth_url {}\n", str_of(&set["totp_secret"]), str_of(&set["otpauth_url"]));
             (set, text)
-        }
-        Command::Token(TokenCommand::Create { user }) => {
-            let issued = api.call(reqwest::Method::POST, &format!("/api/v1/users/{user}/tokens"), None).await?;
-            let text = format!("id {}\ntoken {}\n", str_of(&issued["id"]), str_of(&issued["token"]));
-            (issued, text)
-        }
-        Command::Token(TokenCommand::Revoke { id }) => {
-            let body = api.call(reqwest::Method::POST, &format!("/api/v1/tokens/{id}/revoke"), None).await?;
-            (body, format!("revoked {id}\n"))
         }
         Command::Lock(cmd) => {
             let (method, device, suffix) = match cmd {
@@ -640,8 +950,9 @@ where
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
             (obs, text)
         }
-        Command::Exec { device, run_as, timeout, command } => {
-            let body = json!({ "command": command.join(" "), "as": run_as, "timeout_secs": timeout });
+        Command::Exec { device, account, timeout, command } => {
+            let account = account.or_else(|| saved_root(&api.dir, &device));
+            let body = json!({ "command": command.join(" "), "as": account, "timeout_secs": timeout });
             let r = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{}/exec", path_segment(&device)), Some(&body)).await?;
             if !cli.json {
                 write!(out, "{}", str_of(&r["stdout"]))?;
@@ -658,24 +969,15 @@ where
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
             (obs, text)
         }
-        Command::UnlockPassword(cmd) => {
-            let (method, device, suffix, body) = match cmd {
-                UnlockPasswordCommand::Set { device, password } => {
-                    (reqwest::Method::POST, device, "", Some(json!({ "password": password })))
-                }
-                UnlockPasswordCommand::Clear { device } => (reqwest::Method::POST, device, "/clear", None),
-                UnlockPasswordCommand::Status { device } => (reqwest::Method::GET, device, "", None),
-            };
-            let path = format!("/api/v1/devices/{}/unlock-password{suffix}", path_segment(&device));
-            let r = api.call(method, &path, body.as_ref()).await?;
-            let text = match r["updated_at"].as_str() {
-                Some(at) => format!("unlock password set ({at})\n"),
-                None => "no unlock password\n".into(),
-            };
-            (r, text)
+        Command::Root { state, device } => {
+            let root = state == "on";
+            config::set_root(&api.dir, &device, root)?;
+            let text = format!("root {state} for {device}\n");
+            (json!({ "device": device, "root": state }), text)
         }
-        Command::Shell { device, run_as } => {
-            let code = shell(&api, &device, run_as, input.unwrap_or_else(stdin_input), out).await?;
+        Command::Shell { device, account } => {
+            let account = account.or_else(|| saved_root(&api.dir, &device));
+            let code = shell(&api, &device, account, input.unwrap_or_else(stdin_input), out).await?;
             if code != 0 {
                 return Err(RemoteExit { code, timed_out: false }.into());
             }
@@ -727,23 +1029,32 @@ where
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, frames)? };
             (obs, text)
         }
-        Command::Mcp => return mcp::serve(api.base, api.token, tokio::io::stdin(), tokio::io::stdout()).await,
-        Command::Update(UpdateCommand::Keygen { .. }) => unreachable!("handled before connecting"),
-        Command::Update(UpdateCommand::Publish { file, version, target, key }) => {
+        Command::Mcp => return mcp::serve(api, tokio::io::stdin(), tokio::io::stdout()).await,
+        Command::Agent(_) => unreachable!("handled before connecting"),
+        Command::Rollout { command: Some(RolloutCommand::Publish { file, version, target, key }), .. } => {
             let build = std::fs::read(&file)?;
             let signature = rcli_protocol::update::sign(&std::fs::read(&key)?, &version, &target, &build)?;
             let url = format!("{}/api/v1/agent-builds/{version}/{target}", api.base.trim_end_matches('/'));
             let req = api.http.put(url).query(&[("signature", hex::encode(signature))]).body(build);
-            let published = api.send(req).await?;
+            let published = api.send(req, None).await?;
             (published, format!("published {version} for {target}\n"))
         }
-        Command::Update(UpdateCommand::Rollout { version, all, device }) => {
+        Command::Package(PackageCommand::Publish { file, arch }) => {
+            let kind = std::path::Path::new(&file).extension().and_then(|e| e.to_str()).unwrap_or_default().to_owned();
+            let url = format!("{}/api/v1/packages/{kind}/{arch}", api.base.trim_end_matches('/'));
+            let published = api.send(api.http.put(url).body(std::fs::read(&file)?), None).await?;
+            (published, format!("published the .{kind} for {arch}\n"))
+        }
+        Command::Rollout { command: None, version: Some(version), all, device } => {
+            anyhow::ensure!(all || !device.is_empty(), "give --all or at least one --device");
             let body = if all { serde_json::json!({ "all": true }) } else { serde_json::json!({ "devices": device }) };
             let path = format!("/api/v1/agent-builds/{version}/rollout");
             let r = api.call(reqwest::Method::POST, &path, Some(&body)).await?;
             let text = format!("rolling out {version} to {} device(s)\n", r["devices"]);
             (r, text)
         }
+        Command::Rollout { command: Some(RolloutCommand::Keygen { .. }), .. } => unreachable!("handled before connecting"),
+        Command::Rollout { command: None, version: None, .. } => anyhow::bail!("give a version to roll out, or `rcli rollout keygen|publish`"),
     };
     if cli.json {
         writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?;
@@ -777,10 +1088,15 @@ impl Drop for RawMode {
 }
 
 /// Runs an interactive shell session until the remote shell exits; returns its exit code.
+/// `rcli root on <Device ID>` saved this Controller asking for root by default on that Device (`None` = off).
+fn saved_root(dir: &Path, device: &str) -> Option<String> {
+    config::root_default(dir, device).then(|| "root".to_owned())
+}
+
 async fn shell(
     api: &Api,
     device: &str,
-    run_as: Option<String>,
+    account: Option<String>,
     mut input: mpsc::UnboundedReceiver<Vec<u8>>,
     out: &mut dyn Write,
 ) -> anyhow::Result<i32> {
@@ -788,9 +1104,10 @@ async fn shell(
     let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let size = || if tty { crossterm::terminal::size().ok() } else { None };
     let (cols, rows) = size().unwrap_or((80, 24));
-    let url = format!("{}/api/v1/devices/{}/shell", api.base.trim_end_matches('/'), path_segment(device));
-    let body = json!({ "as": run_as, "cols": cols, "rows": rows });
-    let mut resp = api.check(api.http.post(url).json(&body).bearer_auth(&api.token).send().await?).await?;
+    let path = format!("/api/v1/devices/{}/shell", path_segment(device));
+    let url = format!("{}{path}", api.base.trim_end_matches('/'));
+    let body = json!({ "as": account, "cols": cols, "rows": rows });
+    let mut resp = api.check(api.auth(api.http.post(url).json(&body), Some(&path))?.send().await?).await?;
     let _raw = if tty { crossterm::terminal::enable_raw_mode().map(|()| RawMode).ok() } else { None };
     let session_url = |session: &str, what: &str| format!("{}/api/v1/shell-sessions/{session}/{what}", api.base.trim_end_matches('/'));
     let (mut session, mut buf, mut last_size, mut input_open) = (String::new(), Vec::new(), size(), true);
@@ -818,7 +1135,8 @@ async fn shell(
             }
             keys = input.recv(), if input_open && !session.is_empty() => match keys {
                 Some(keys) => {
-                    api.check(api.http.post(session_url(&session, "input")).body(keys).bearer_auth(&api.token).send().await?).await?;
+                    let path = format!("/api/v1/devices/{device}/shell");
+                    api.check(api.auth(api.http.post(session_url(&session, "input")).body(keys), Some(&path))?.send().await?).await?;
                 }
                 None => input_open = false,
             },
@@ -826,7 +1144,8 @@ async fn shell(
                 if let Some((cols, rows)) = size().filter(|s| Some(*s) != last_size) {
                     last_size = Some((cols, rows));
                     let body = json!({ "cols": cols, "rows": rows });
-                    api.check(api.http.post(session_url(&session, "resize")).json(&body).bearer_auth(&api.token).send().await?).await?;
+                    let path = format!("/api/v1/devices/{device}/shell");
+                    api.check(api.auth(api.http.post(session_url(&session, "resize")).json(&body), Some(&path))?.send().await?).await?;
                 }
             }
         }
@@ -893,17 +1212,78 @@ fn str_of(v: &Value) -> &str {
     v.as_str().unwrap_or("")
 }
 
-/// Controller API client (base URL + token).
+/// How the CLI authenticates to the Controller API: a User session when it has one, else a password connection.
+#[derive(Clone, Default)]
+pub struct Connection {
+    /// A User session (`rcli login`, or `--token` in tests).
+    pub token: Option<String>,
+    /// The saved Server Key: with a remembered Device Password this makes a password connection.
+    pub server_key: Option<String>,
+    /// This Controller's name, shown in audit entries and as Control Lock holder.
+    pub controller: String,
+}
+
+/// The Controller API target: `--server`/`--token`, else the saved `rcli setup` config.
+fn api_target(dir: &std::path::Path, server: Option<String>, token: Option<String>) -> anyhow::Result<(String, Connection)> {
+    let saved = config::load_at(dir)?;
+    let controller = config::hostname();
+    let (base, token, server_key) = match (server, token) {
+        (Some(base), Some(token)) => (base, Some(token), None),
+        (Some(base), None) => {
+            (base, saved.as_ref().and_then(|c| c.session.clone()), saved.map(|c| c.server_key))
+        }
+        (None, Some(token)) => {
+            let base = saved.map(|c| c.server).ok_or_else(|| anyhow::anyhow!("run `rcli setup` or pass --server"))?;
+            (base, Some(token), None)
+        }
+        (None, None) => match saved.filter(|c| !c.server.is_empty()) {
+            Some(c) => (c.server, c.session, Some(c.server_key)),
+            None => anyhow::bail!("run `rcli setup` first (no saved Server Address or Server Key)"),
+        },
+    };
+    Ok((base, Connection { token, server_key, controller }))
+}
+
+/// Asks for the Device Password without echoing it.
+fn prompt_password(prompt: &str) -> anyhow::Result<String> {
+    eprint!("{prompt}");
+    let password = rpassword::read_password().map_err(|e| anyhow::anyhow!("cannot read the password: {e}"))?;
+    Ok(password)
+}
+
+/// Asks for a line (the TOTP code).
+fn prompt_line(prompt: &str) -> anyhow::Result<String> {
+    eprint!("{prompt}");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_owned())
+}
+
+/// Controller API client (base URL + how to authenticate).
 #[derive(Clone)]
 pub struct Api {
     base: String,
-    token: String,
+    /// Where remembered Device Passwords are read from.
+    dir: std::path::PathBuf,
+    connection: Connection,
     http: reqwest::Client,
 }
 
 impl Api {
     pub fn new(base: String, token: String) -> Self {
-        Self { base, token, http: reqwest::Client::new() }
+        Self {
+            base,
+            dir: config::dir(),
+            connection: Connection { token: Some(token), ..Default::default() },
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// The Controller from the saved `rcli setup`/`rcli login` config and remembered Device Passwords
+    /// (what `rcli mcp` uses): no env vars and no flags.
+    pub fn from_config(dir: &std::path::Path) -> anyhow::Result<Self> {
+        let (base, connection) = api_target(dir, None, None)?;
+        Ok(Self { base, dir: dir.to_path_buf(), connection, http: reqwest::Client::new() })
     }
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> anyhow::Result<Value> {
@@ -912,12 +1292,35 @@ impl Api {
         if let Some(body) = body {
             req = req.json(body);
         }
-        self.send(req).await
+        self.send(req, Some(path)).await
     }
 
-    async fn send(&self, req: reqwest::RequestBuilder) -> anyhow::Result<Value> {
-        let resp = self.check(req.bearer_auth(&self.token).send().await?).await?;
+    async fn send(&self, req: reqwest::RequestBuilder, path: Option<&str>) -> anyhow::Result<Value> {
+        let resp = self.check(self.auth(req, path)?.send().await?).await?;
         Ok(resp.json().await.unwrap_or(Value::Null))
+    }
+
+    /// A User session when there is one, else the password connection of the Device in the request `path`.
+    fn auth(&self, req: reqwest::RequestBuilder, path: Option<&str>) -> anyhow::Result<reqwest::RequestBuilder> {
+        if let Some(token) = &self.connection.token {
+            return Ok(req.bearer_auth(token));
+        }
+        // The path's Device authenticates the connection when its password is saved; otherwise any remembered
+        // Device does, and the Server refuses the unrelated Device itself (`forbidden_device`).
+        let path_device = path
+            .and_then(|p| p.strip_prefix("/api/v1/devices/"))
+            .and_then(|rest| rest.split('/').next())
+            .filter(|d| !d.is_empty())
+            .map(str::to_owned);
+        let device = path_device
+            .filter(|d| config::remembered(&self.dir, d).ok().flatten().is_some())
+            .or_else(|| config::some_remembered(&self.dir))
+            .ok_or_else(|| anyhow::anyhow!("no User session saved; run `rcli login <name>` for Admin commands, or `rcli connect <Device ID>`"))?;
+        let Some(remembered) = config::remembered(&self.dir, &device)? else {
+            anyhow::bail!("no Device Password saved for {device}; run `rcli connect {device}`");
+        };
+        let key = self.connection.server_key.as_deref().unwrap_or_default();
+        Ok(config::password_connection(req, key, &device, &remembered.password, &remembered.controller))
     }
 
     /// Turns an API error response into an error naming its code and message.
