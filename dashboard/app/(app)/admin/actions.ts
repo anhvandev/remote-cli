@@ -1,16 +1,11 @@
 "use server";
 // Admin server actions. Each returns a Result for <Form/>: the one-time TOTP secret is shown once in
 // `message` and never stored by the Dashboard. The Server enforces admin-only on every call.
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, json } from "@/lib/api";
 import { run } from "./run";
 
 export type Result = { message?: string; error?: string };
 
-const json = (method: string, body?: unknown): RequestInit => ({
-  method,
-  headers: { "content-type": "application/json" },
-  body: body === undefined ? undefined : JSON.stringify(body),
-});
 const str = (form: FormData, key: string) => String(form.get(key) ?? "");
 const seg = encodeURIComponent;
 

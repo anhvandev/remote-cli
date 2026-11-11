@@ -1,7 +1,7 @@
 "use server";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { api, ApiError, publicApi, SESSION_COOKIE } from "@/lib/api";
+import { api, ApiError, json, publicApi, SESSION_COOKIE } from "@/lib/api";
 
 export type SignInState = { error?: string };
 
@@ -64,11 +64,7 @@ export async function changeDevice(
   change: { name?: string; device_id?: string; device_password?: string },
 ): Promise<Sent> {
   try {
-    await api(`/api/v1/devices/${encodeURIComponent(device)}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(change),
-    });
+    await api(`/api/v1/devices/${encodeURIComponent(device)}`, json("PATCH", change));
     return {};
   } catch (e) {
     if (e instanceof ApiError) return { error: e.message };

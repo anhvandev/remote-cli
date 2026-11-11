@@ -14,6 +14,13 @@ export class ApiError extends Error {
   }
 }
 
+/** A request with a JSON body (none when `body` is undefined), for `api`. */
+export const json = (method: string, body?: unknown): RequestInit => ({
+  method,
+  headers: { "content-type": "application/json" },
+  body: body === undefined ? undefined : JSON.stringify(body),
+});
+
 /** Calls the Controller API as the signed-in user; sends them to /signin if there is no valid session. */
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
