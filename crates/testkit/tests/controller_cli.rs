@@ -110,3 +110,17 @@ async fn the_server_does_not_store_the_device_password_in_plaintext() {
     assert_eq!(status, StatusCode::OK);
     assert!(device["device_password"].is_null(), "{device}");
 }
+
+/// `--server` cannot skip the https rule `rcli setup` applies: the saved Server Key would travel in plaintext.
+#[tokio::test]
+async fn a_plain_http_server_flag_is_refused_like_setup() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    let dir = temp_dir("server-flag-http");
+    let password = agent.device_password().unwrap();
+    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.rcli_in(&dir, &["connect", agent.device_id(), "--password", &password]).await.unwrap();
+    let args = ["--server", "http://server.example.com:8080", "exec", agent.device_id(), "--", "whoami"];
+    let err = sys.rcli_in(&dir, &args).await.unwrap_err();
+    assert!(err.to_string().contains("TLS reverse proxy"), "{err}");
+}

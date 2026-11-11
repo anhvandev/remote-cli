@@ -96,7 +96,7 @@ fn hostname_from(env: Option<String>, command: Option<String>, fallback: &str) -
 /// The Server Key's secret and Device Passwords travel in request headers, so the Controller API must be reached over
 /// https (it sits behind a TLS reverse proxy). The one exception is loopback, for a Server on this computer and for
 /// tests: nothing leaves the computer there. There is no flag to accept plain http to another host.
-fn check_transport(base: &str) -> anyhow::Result<()> {
+pub(crate) fn check_transport(base: &str) -> anyhow::Result<()> {
     let url = reqwest::Url::parse(base).map_err(|e| anyhow::anyhow!("bad Server Address {base}: {e}"))?;
     let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']);
     let loopback = host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());

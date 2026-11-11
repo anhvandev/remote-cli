@@ -635,6 +635,10 @@ where
             false => Ok(write!(out, "{text}")?),
         };
     }
+    // `--server` gets the same https rule as `rcli setup`: passwords, the Server Key and sessions travel to it.
+    if let Some(server) = &cli.server {
+        config::check_transport(server.trim().trim_end_matches('/'))?;
+    }
     if let Command::Login { name, password, totp } = &cli.command {
         let base = match (cli.server.clone(), config::load_at(&dir)?) {
             (Some(server), _) => server,
