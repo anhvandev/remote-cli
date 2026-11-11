@@ -1,4 +1,4 @@
-//! Server Settings (admin): the Server Key and the Server Address.
+//! Server Settings (admin): the Server Key, the Server Address and the API Address.
 
 use axum::{
     extract::{rejection::JsonRejection, State},
@@ -16,6 +16,7 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/server-settings", axum::routing::get(show))
         .route("/api/v1/server-settings/server-key/rotate", post(rotate_key))
         .route("/api/v1/server-settings/server-address", put(set_address))
+        .route("/api/v1/server-settings/api-address", put(set_api_address))
 }
 
 /// Readable by every signed-in User: the Connect guide shows the Server Key and Server Address to all of them
@@ -33,6 +34,7 @@ async fn show(Caller(user): Caller, State(state): State<super::State>) -> Result
         "server_key": state.settings.key().await,
         "ca_fingerprint": state.ca.fingerprint,
         "server_address": state.settings.address().await,
+        "api_address": state.settings.api_address().await,
     })))
 }
 
@@ -64,4 +66,21 @@ async fn set_address(
     state.settings.set_address(&state.db, &body.address).await?;
     *state.tls.write().await = crate::agent_link::acceptor(&state.ca, hostnames)?;
     Ok(Json(json!({ "server_address": body.address })))
+}
+
+/// An Admin's correction of the API Address: an `https://` origin, no path. Agents get it on their next connection.
+async fn set_api_address(
+    Admin(_): Admin,
+    State(state): State<super::State>,
+    body: Result<Json<Address>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Json(body) = body.map_err(|e| bad_request(e.body_text()))?;
+    let uri: axum::http::Uri = body.address.trim().parse().map_err(|_| bad_request("the API Address must be an https:// URL"))?;
+    let authority = match (uri.scheme_str(), uri.authority(), uri.path_and_query().map(|p| p.as_str())) {
+        (Some("https"), Some(a), None | Some("/")) if !a.as_str().contains('@') => a,
+        _ => return Err(bad_request("the API Address must be an https:// origin such as https://rcli.example.com")),
+    };
+    let url = format!("https://{authority}");
+    state.settings.set_api_address(&state.db, &url).await?;
+    Ok(Json(json!({ "api_address": url })))
 }

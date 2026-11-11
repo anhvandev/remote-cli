@@ -108,6 +108,9 @@ enum Command {
     /// Read or set the Server Address Agents use (admin).
     #[command(subcommand)]
     ServerAddress(ServerAddressCommand),
+    /// Read or correct the API Address installs get, the Dashboard's public https:// URL (admin).
+    #[command(subcommand)]
+    ApiAddress(ApiAddressCommand),
     /// Manage users (admin).
     #[command(subcommand)]
     User(UserCommand),
@@ -366,6 +369,7 @@ fn admin_only(command: &Command) -> bool {
         command,
         Command::ServerKey(_)
             | Command::ServerAddress(_)
+            | Command::ApiAddress(_)
             | Command::User(_)
             | Command::Rollout { .. }
             | Command::Audit { .. }
@@ -580,6 +584,14 @@ enum ServerAddressCommand {
     /// Print the Server Address.
     Show,
     /// Set the Server Address (host or host:port, comma-separated). Reissues the TLS certificate.
+    Set { address: String },
+}
+
+#[derive(Subcommand)]
+enum ApiAddressCommand {
+    /// Print the API Address (empty until an Admin opens the Dashboard over https://).
+    Show,
+    /// Correct the API Address, e.g. https://rcli.example.com. Agents get it on their next connection.
     Set { address: String },
 }
 
@@ -879,6 +891,18 @@ where
             let body = serde_json::json!({ "address": address });
             let s = api.call(reqwest::Method::PUT, "/api/v1/server-settings/server-address", Some(&body)).await?;
             let text = format!("server address {}\n", str_of(&s["server_address"]));
+            (s, text)
+        }
+        Command::ApiAddress(ApiAddressCommand::Show) => {
+            let s = api.call(reqwest::Method::GET, "/api/v1/server-settings", None).await?;
+            let address = s["api_address"].clone();
+            let text = format!("{}\n", str_of(&address));
+            (serde_json::json!({ "api_address": address }), text)
+        }
+        Command::ApiAddress(ApiAddressCommand::Set { address }) => {
+            let body = serde_json::json!({ "address": address });
+            let s = api.call(reqwest::Method::PUT, "/api/v1/server-settings/api-address", Some(&body)).await?;
+            let text = format!("api address {}\n", str_of(&s["api_address"]));
             (s, text)
         }
         Command::User(UserCommand::Create { name, role }) => {
