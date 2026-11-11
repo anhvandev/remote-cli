@@ -179,5 +179,5 @@
 - 2026-11-11: Resolved after the final merge. The code is on the integration branch `easy-setup` (tip 63398c2) and the automated gates pass: `cargo test --workspace` 238 passed (the one failure is the environmental macOS display/wake test on this host), clippy, Windows `cargo xwin` clippy/build, Linux container 79 passed, Dashboard Playwright 42 passed. Real-hardware acceptance (see the steps above) remains for the user; the checkboxes stay unticked until that run.
 
 - code-review fix (round 4): the SYSTEM service now opens the GUI window on the console user's desktop
-  (`windows_session::spawn_as_console_user`: `WTSQueryUserToken`, the user's environment block, `winsta0\\default`),
+  (`windows_session::spawn_as_console_user`: `WTSQueryUserToken`, the user's environment block, `winsta0\default`),
   so root and accept prompts can be answered. Compile-checked with `cargo xwin`; not run on Windows.
