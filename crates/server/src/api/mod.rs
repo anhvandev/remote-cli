@@ -159,6 +159,12 @@ fn client_ip(peer: Option<std::net::IpAddr>, forwarded: Option<&str>, trusted: &
     }
 }
 
+/// Whether a URL host (IPv6 with or without brackets) is this computer: `localhost` or a loopback IP.
+fn loopback(host: &str) -> bool {
+    let host = host.trim_matches(['[', ']']);
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.to_canonical().is_loopback())
+}
+
 /// The API Address a request reveals: the `https://` origin a trusted proxy (the Dashboard) says it arrived at.
 /// `http`, localhost and private, loopback or link-local IPs never count, so a test visit on an internal port
 /// cannot set it.
@@ -174,11 +180,13 @@ fn api_address_of(
     }
     let authority: axum::http::uri::Authority = host?.parse().ok()?;
     let name = authority.host().trim_start_matches('[').trim_end_matches(']');
-    let internal = match name.parse::<IpAddr>().map(|ip| ip.to_canonical()) {
-        Ok(IpAddr::V4(ip)) => ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified(),
-        Ok(IpAddr::V6(ip)) => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local() || ip.is_unspecified(),
-        Err(_) => name.eq_ignore_ascii_case("localhost") || name.to_ascii_lowercase().ends_with(".localhost"),
-    };
+    let internal = loopback(name)
+        || name.to_ascii_lowercase().ends_with(".localhost")
+        || match name.parse::<IpAddr>().map(|ip| ip.to_canonical()) {
+            Ok(IpAddr::V4(ip)) => ip.is_private() || ip.is_link_local() || ip.is_unspecified(),
+            Ok(IpAddr::V6(ip)) => ip.is_unique_local() || ip.is_unicast_link_local() || ip.is_unspecified(),
+            Err(_) => false,
+        };
     // A `user@host` authority is not an address anyone serves the Dashboard at.
     (!internal && !authority.as_str().contains('@')).then(|| format!("https://{authority}"))
 }
@@ -198,9 +206,12 @@ impl FromRequestParts<State> for Caller {
             let user = crate::auth::authenticate(state, t)
                 .await?
                 .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"))?;
+            // Only the Dashboard's own requests mark themselves; its `/api/v1` pass-through for Controllers strips the
+            // mark, so an Admin's CLI call through the Dashboard URL teaches nothing.
             let (proto, host) = (header("x-forwarded-proto"), header("x-forwarded-host"));
-            if let Some(url) = user.is_admin().then(|| api_address_of(peer, proto, host, &state.config.trusted_proxies)).flatten() {
-                state.settings.learn_api_address(&state.db, &url).await?;
+            let dashboard = user.is_admin() && header("x-rcli-dashboard").is_some();
+            if let Some(url) = dashboard.then(|| api_address_of(peer, proto, host, &state.config.trusted_proxies)).flatten() {
+                state.settings.set_api_address(&state.db, &url, true).await?;
             }
             return Ok(Caller(user));
         }

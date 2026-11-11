@@ -34,18 +34,20 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return parse<T>(res);
 }
 
-/** Where the browser reached the Dashboard: an Admin's visit over https:// teaches the Server its API Address. */
+/** Where the browser reached the Dashboard: an Admin's visit over https:// teaches the Server its API Address.
+ * `x-rcli-dashboard` marks it as the Dashboard's own request; `forward` strips it from what Controllers send. */
 async function forwarded() {
   const h = await headers();
   const first = (v: string | null) => (v ?? "").split(",")[0].trim();
   return {
     "x-forwarded-proto": first(h.get("x-forwarded-proto")) || "http",
     "x-forwarded-host": first(h.get("x-forwarded-host") ?? h.get("host")),
+    "x-rcli-dashboard": "1",
   };
 }
 
 /** For route handlers that browser code calls: forwards to the Controller API with the session token, and passes
- * the reply (status + JSON body) back unchanged; use `proxyStream` for streams. The token stays on the Next server. */
+ * the reply (status + JSON body) back unchanged; streams go through `forward` (lib/forward.ts). The token stays on the Next server. */
 export async function proxy(path: string, init: RequestInit = {}): Promise<Response> {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!token) return Response.json({ error: { code: "unauthorized", message: "not signed in" } }, { status: 401 });
@@ -57,23 +59,6 @@ export async function proxy(path: string, init: RequestInit = {}): Promise<Respo
   return new Response(res.status === 204 ? null : res.body, {
     status: res.status,
     headers: { "content-type": "application/json" },
-  });
-}
-
-/** Like `proxy`, but passes the reply body through as a stream (NDJSON shell sessions). Aborting `signal` (the browser
- * went away) closes the upstream stream, which ends the session. */
-export async function proxyStream(path: string, init: RequestInit & { signal: AbortSignal }): Promise<Response> {
-  const token = (await cookies()).get(SESSION_COOKIE)?.value;
-  if (!token) return Response.json({ error: { code: "unauthorized", message: "not signed in" } }, { status: 401 });
-  const res = await fetch(BASE + path, {
-    ...init,
-    cache: "no-store",
-    headers: { ...init.headers, "content-type": "application/json", authorization: `Bearer ${token}` },
-  });
-  return new Response(res.body, {
-    status: res.status,
-    // no-transform: keeps Next's gzip from buffering the stream.
-    headers: { "content-type": res.headers.get("content-type") ?? "application/json", "cache-control": "no-transform" },
   });
 }
 

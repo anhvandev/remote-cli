@@ -9,7 +9,7 @@ use crate::{pki::Ca, server_key};
 pub struct Settings {
     key: RwLock<String>,
     address: RwLock<String>,
-    /// Empty until learned (`learn_api_address`) or set by an Admin.
+    /// Empty until learned from an Admin's Dashboard visit or set by an Admin.
     api_address: RwLock<String>,
 }
 
@@ -48,20 +48,13 @@ impl Settings {
         self.api_address.read().await.clone()
     }
 
-    pub async fn set_api_address(&self, db: &PgPool, url: &str) -> anyhow::Result<()> {
-        let mut current = self.api_address.write().await;
-        sqlx::query("UPDATE server_ca SET api_address = $1").bind(url).execute(db).await?;
-        *current = url.to_owned();
-        Ok(())
-    }
-
-    /// Records `url` only while no API Address is set, so a later visit never overrides an Admin's correction.
-    pub async fn learn_api_address(&self, db: &PgPool, url: &str) -> anyhow::Result<()> {
-        if !self.api_address.read().await.is_empty() {
+    /// Sets the API Address; a `learned` one only while none is set, so a visit never overrides an Admin's correction.
+    pub async fn set_api_address(&self, db: &PgPool, url: &str, learned: bool) -> anyhow::Result<()> {
+        if learned && !self.api_address.read().await.is_empty() {
             return Ok(());
         }
         let mut current = self.api_address.write().await;
-        if current.is_empty() {
+        if !learned || current.is_empty() {
             sqlx::query("UPDATE server_ca SET api_address = $1").bind(url).execute(db).await?;
             *current = url.to_owned();
         }
