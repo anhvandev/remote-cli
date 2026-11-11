@@ -20,3 +20,13 @@ export async function setServerAddress(_: Result, form: FormData) {
     return `Đã đặt Server Address: ${r.server_address}`;
   });
 }
+
+export async function setApiAddress(_: Result, form: FormData) {
+  return run("/admin/settings", async () => {
+    const r = await api<{ api_address: string }>(
+      "/api/v1/server-settings/api-address",
+      json("PUT", { address: String(form.get("address") ?? "") }),
+    );
+    return `Đã đặt API Address: ${r.api_address}`;
+  });
+}

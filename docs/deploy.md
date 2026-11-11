@@ -41,7 +41,7 @@ EOF
 | `RCLI_TURN_HOST` | nên đặt | Tên/IP public của VPS mà trình duyệt và Agent dùng để tới coturn. Mặc định `localhost`. |
 | `RCLI_AGENT_HOSTNAMES` | chỉ lần đầu | Server Address ban đầu (đưa vào chứng chỉ TLS cổng 8443). Sau lần khởi động đầu, đổi bằng `rcli server-address set` hoặc trang Server Settings. Mặc định `localhost`. |
 | `RCLI_MASTER_KEY` | nên đặt | 64 ký tự hex. Mã hoá CA private key và TOTP secret. |
-| `RCLI_TRUSTED_PROXIES` | nên đặt khi có proxy | IP của reverse proxy TLS đứng trước cổng 8080, cách nhau bằng dấu phẩy (vd. `172.17.0.1` khi proxy chạy trên host và gọi vào container). Chỉ với request từ các IP này, Server mới lấy IP thật của Controller từ `X-Forwarded-For` (proxy phải thêm header này). Không đặt thì mọi Controller sau proxy dùng chung IP của proxy: nhập sai Device Password vài lần sẽ khoá tất cả, và audit chỉ ghi IP của proxy. |
+| `RCLI_TRUSTED_PROXIES` | nên đặt khi có proxy | IP của reverse proxy TLS đứng trước cổng 8080, cách nhau bằng dấu phẩy (vd. `172.17.0.1` khi proxy chạy trên host và gọi vào container). Chỉ với request từ các IP này, Server mới lấy IP thật của Controller từ `X-Forwarded-For` (proxy phải thêm header này). Không đặt thì mọi Controller sau proxy dùng chung IP của proxy: nhập sai Device Password vài lần sẽ khoá tất cả, và audit chỉ ghi IP của proxy. Server cũng chỉ ghi lại API Address từ request của Dashboard đến từ các IP này, nên hãy thêm IP của container Dashboard. |
 | `POSTGRES_PASSWORD` | nên đặt | Mặc định `rcli`. |
 
 **Về `RCLI_MASTER_KEY` — đọc kỹ:**

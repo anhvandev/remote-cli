@@ -1,7 +1,7 @@
 // Controller API access from server components and server actions. The session token lives in an
 // httpOnly cookie and never reaches browser JavaScript.
 import "server-only";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 export const SESSION_COOKIE = "rcli_session";
@@ -28,10 +28,20 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(BASE + path, {
     ...init,
     cache: "no-store",
-    headers: { ...init.headers, authorization: `Bearer ${token}` },
+    headers: { ...init.headers, ...(await forwarded()), authorization: `Bearer ${token}` },
   });
   if (res.status === 401) redirect("/signin");
   return parse<T>(res);
+}
+
+/** Where the browser reached the Dashboard: an Admin's visit over https:// teaches the Server its API Address. */
+async function forwarded() {
+  const h = await headers();
+  const first = (v: string | null) => (v ?? "").split(",")[0].trim();
+  return {
+    "x-forwarded-proto": first(h.get("x-forwarded-proto")) || "http",
+    "x-forwarded-host": first(h.get("x-forwarded-host") ?? h.get("host")),
+  };
 }
 
 /** For route handlers that browser code calls: forwards to the Controller API with the session token, and passes
@@ -82,8 +92,8 @@ async function parse<T>(res: Response): Promise<T> {
 
 // Shapes of Controller API responses (see crates/server/src/api).
 export type User = { id: string; name: string; role: "admin" | "operator"; disabled_at: string | null };
-/** GET /api/v1/server-settings: the Server Key and Server Address Admins edit. */
-export type ServerSettings = { server_key: string; ca_fingerprint: string; server_address: string };
+/** GET /api/v1/server-settings: the Server Key, Server Address and API Address ("" until learned) Admins edit. */
+export type ServerSettings = { server_key: string; ca_fingerprint: string; server_address: string; api_address: string };
 export type DeviceStatus = "Online" | "Offline" | "Waking";
 export type Device = {
   id: string;
