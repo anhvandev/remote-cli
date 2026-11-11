@@ -239,7 +239,8 @@ qua XDG desktop portal (`org.freedesktop.portal.ScreenCast`) + PipeWire; input d
 
 ### 10.4. Deb/RPM
 
-Build trên Linux (cần `dpkg-dev` hoặc `rpm-build`):
+Build trên Linux (cần `dpkg-dev` hoặc `rpm-build`, và `VCPKG_ROOT` có FFmpeg của RustDesk cho feature `hwcodec`,
+xem docs/usage.md):
 
 ```bash
 packaging/linux/build-deb.sh     # → packaging/linux/out/rcli_0.1.0_amd64.deb

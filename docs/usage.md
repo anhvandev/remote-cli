@@ -24,6 +24,12 @@ Trang **Hướng dẫn kết nối** của Dashboard hiện sẵn các lệnh c�
 > Sau đó build bằng `VCPKG_ROOT=~/vcpkg cargo build --release -p rcli --features hwcodec`. Không có GPU encoder (máy
 > ảo) hoặc encoder không khởi động được thì Agent tự chuyển sang openh264; log Agent ghi tên encoder đang dùng
 > (`live stream …: H.264 through h264_videotoolbox` hoặc `… through openh264`).
+>
+> **Build trên Linux**: tương tự, `packaging/linux/build-deb.sh` / `build-rpm.sh` bật `hwcodec` để Live View mã hoá bằng
+> VA-API (`h264_vaapi`). Máy build cần thêm `clang`, `libva-dev`, `libdrm-dev`, `libx11-dev`, `cmake`, `ninja-build`,
+> rồi `~/vcpkg/vcpkg install 'ffmpeg[amf,nvcodec]' --triplet x64-linux --overlay-ports=<rustdesk>/res/vcpkg`
+> (`arm64-linux` trên ARM; trên ARM đặt thêm `VCPKG_FORCE_SYSTEM_BINARIES=1`). FFmpeg nạp libva lúc chạy: máy không có
+> libva, driver VA-API hoặc GPU thì Agent dùng openh264, kể cả ở greeter và màn hình khoá.
 
 ```bash
 cargo build --release -p rcli

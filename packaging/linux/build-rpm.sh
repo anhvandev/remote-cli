@@ -18,7 +18,9 @@ trap 'rm -rf "$TOP"' EXIT
 
 echo "building rcli $VERSION for $ARCH"
 # The GUI window answers the root and accept prompts; it loads the display libraries only when it opens.
-cargo build --release --manifest-path "$ROOT/Cargo.toml" -p rcli --features gui
+# hwcodec: Live View on the GPU through VA-API (libva is loaded at run time, openh264 without it); needs VCPKG_ROOT
+# with RustDesk's FFmpeg, see docs/usage.md.
+cargo build --release --manifest-path "$ROOT/Cargo.toml" -p rcli --features gui,hwcodec
 
 mkdir -p "$TOP/BUILD" "$TOP/RPMS" "$TOP/SOURCES" "$TOP/SPECS" "$TOP/SRPMS"
 spec="$TOP/SPECS/rcli.spec"
@@ -31,7 +33,7 @@ Summary: Remote CLI Agent and Controller
 License: AGPL-3.0-only
 BuildArch: $ARCH
 Requires: systemd
-Recommends: tesseract-ocr, xauth
+Recommends: tesseract-ocr, xauth, libva, mesa-va-drivers
 %description
 One binary for both sides: the Agent runs as a root systemd service and lets Controllers see and use the screen,
 run commands and shells, and manage power. The Device registers itself with the Server Key.

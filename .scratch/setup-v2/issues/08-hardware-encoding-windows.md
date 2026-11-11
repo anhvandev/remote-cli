@@ -18,12 +18,12 @@
   hwcodec `ec38eba` (`src/ffmpeg_ram/encode.rs`, `cpp/common/util.cpp`) and RustDesk's FFmpeg port, which enables
   `h264_nvenc`, `h264_amf`, `h264_qsv` on Windows x64 but not `h264_mf` (`--disable-everything`, no
   `--enable-mediafoundation`): with that FFmpeg, Media Foundation never starts and just logs "did not start".
-- Hardware frames are now NV12 on every OS (were I420): QSV takes only NV12 (hwcodec drops QSV for I420), and NVENC
-  goes through a D3D11 frame pool, which has no I420. New unit test `encoder::tests::encoded_frames_decode_back_to_their_colours`
-  encodes four colour quadrants through whichever encoder `H264::open` picks and decodes them with openh264. Run with
-  `--features hwcodec` on this Mac it exercised `h264_videotoolbox` with NV12 and passed; swapping U and V made it fail
-  (`quadrant 0 came back [50, 84, 250]`), so it catches a wrong layout. On Windows, `cargo test -p rcli-agent
-  --features hwcodec encoder` runs it through the machine's GPU encoder.
+- Hardware frames on Windows are NV12 (ticket 09's `NV12` switch, now on for Linux and Windows; macOS stays I420):
+  QSV takes only NV12 (hwcodec drops QSV for I420), and NVENC goes through a D3D11 frame pool, which has no I420.
+  Ticket 09's `encoder::tests::a_frame_decodes_to_the_colours_it_was_encoded_from` checks the layout through whichever
+  encoder starts. With `NV12` forced on for one run on this Mac, it passed through `h264_videotoolbox` (before the
+  merge, my own equivalent test failed on swapped U/V, so a wrong NV12 layout shows). On Windows,
+  `cargo test -p rcli-agent --features hwcodec encoder` runs it through the machine's GPU encoder.
 - Lock screen, login screen, UAC: the SYSTEM helper only captures; frames go over the pipe to the service (session 0),
   which runs Live View and the encoder. So those screens use the same encoder as the desktop, and if a hardware
   encoder cannot start in session 0, `H264::open` falls back to openh264 there too. No helper-side code was needed.
