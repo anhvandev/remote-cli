@@ -29,14 +29,14 @@ services:
       RCLI_MASTER_KEY: ${RCLI_MASTER_KEY:-}
       # Public half of the key that signs Agent builds (`rcli rollout keygen`); Devices pin it at registration.
       RCLI_UPDATE_PUBLIC_KEY: ${RCLI_UPDATE_PUBLIC_KEY:-}
-      # IPs of the TLS reverse proxy in front of port 8080 (comma-separated); from them the Controller's IP is read
-      # from X-Forwarded-For, so wrong Device Passwords are counted per real client. Empty = the TCP peer.
-      RCLI_TRUSTED_PROXIES: ${RCLI_TRUSTED_PROXIES:-}
+      # The Dashboard forwards the Controller API: from its IP the Controller's IP is read from X-Forwarded-For (which
+      # the TLS proxy in front of the Dashboard must append), so wrong Device Passwords are counted per real client.
+      RCLI_TRUSTED_PROXIES: ${RCLI_TRUSTED_PROXIES:-172.31.250.10}
       # WebRTC (live view): peers try direct paths first, then relay through coturn with short-lived credentials.
       RCLI_ICE_URLS: stun:${RCLI_TURN_HOST:-localhost}:3478,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=udp,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=tcp
       RCLI_TURN_SECRET: ${RCLI_TURN_SECRET:?set RCLI_TURN_SECRET}
     ports:
-      - "8080:8080" # Controller API
+      # The Controller API (8080) stays internal: Controllers reach it through the Dashboard (ADR 0006).
       - "8443:8443" # Agent connections (TLS / mTLS)
 
   dashboard:
@@ -45,7 +45,10 @@ services:
     environment:
       RCLI_API_URL: http://server:8080
     ports:
-      - "3080:3000" # Dashboard (put TLS in front of it outside localhost)
+      - "3080:3000" # Dashboard and Controller API (put TLS in front of it; reach it only through that proxy)
+    networks:
+      default:
+        ipv4_address: 172.31.250.10 # RCLI_TRUSTED_PROXIES
 
   coturn:
     image: coturn/coturn:4.6
@@ -69,3 +72,9 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24 # fixed, so the Server can trust the Dashboard's address

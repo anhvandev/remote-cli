@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 // Runs against the in-process system (crates/testkit/src/bin/rcli-devstack.rs): real Server on Postgres in a
 // test container + FakePlatform Agents, with a manual clock. Needs Docker (export DOCKER_HOST for Colima).
+// The `rcli` binary is built too: specs run it against the Dashboard URL.
 // Overridable so several worktrees can run the suite at once.
 const API_PORT = Number(process.env.RCLI_TEST_API_PORT ?? 18080);
 const WEB_PORT = Number(process.env.RCLI_TEST_WEB_PORT ?? 3100);
@@ -12,7 +13,7 @@ export default defineConfig({
   use: { baseURL: `http://127.0.0.1:${WEB_PORT}`, trace: "retain-on-failure" },
   webServer: [
     {
-      command: `cargo build -q -p rcli-testkit --bin rcli-devstack && ../target/debug/rcli-devstack ${API_PORT} .devstack.json`,
+      command: `cargo build -q -p rcli-testkit --bin rcli-devstack -p rcli --bin rcli && ../target/debug/rcli-devstack ${API_PORT} .devstack.json`,
       url: `http://127.0.0.1:${API_PORT}/api/v1/server-ca`,
       timeout: 600_000,
       reuseExistingServer: false,
