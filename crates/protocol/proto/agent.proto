@@ -68,7 +68,8 @@ message ApiAddress {
 }
 
 // Sent on a connection without a client certificate. The Server checks the Server Key's
-// secret, signs the CSR, and returns the Device's mTLS client certificate.
+// secret, signs the CSR, and returns the Device's mTLS client certificate. With an empty `csr_pem` it only checks
+// the secret: a RegisterResponse carrying just `ca_pem`, and no Device is created.
 message RegisterRequest {
   string server_key = 1;
   string csr_pem = 2;

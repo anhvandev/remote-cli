@@ -40,7 +40,7 @@ use rcli_protocol::{
     agent::{
         agent_message, server_message, AgentHello, AgentMessage, AgentUpdate, ConnectDecision, DisconnectController,
         DisplayList, Error, ExecRequest, ExecResult, Heartbeat, IdentityUpdate, IdentityUpdated, LiveAnswer,
-        PowerResult, ProcessList, RegisterRequest, ResourceSample, Resources, ServerMessage, ShellExit, ShellOpen,
+        PowerResult, ProcessList, RegisterRequest, RegisterResponse, ResourceSample, Resources, ServerMessage, ShellExit, ShellOpen,
         ShellOpened, ShellOutput, UnregisterRequest, UpdateFailed, WakeResult,
     },
     server_key::ServerKey,
@@ -203,11 +203,31 @@ async fn connect_with_config(addr: &str, config: ClientConfig) -> anyhow::Result
 /// secret, and gets back this Device's mTLS certificate, 9-digit Device ID and update key to pin.
 /// The private key never leaves the Agent; only a CSR is sent.
 pub async fn register(server: &ServerAccess, platform: &dyn Platform) -> anyhow::Result<Credentials> {
-    let server_key = parse_server_key(&server.server_key)?;
     let key = rcgen::KeyPair::generate()?;
     let csr = rcgen::CertificateParams::new(vec![])?.serialize_request(&key)?.pem()?;
+    let (r, ca_der) = send_register(server, csr, platform.hostname()).await?;
+    Ok(Credentials {
+        device_id: r.device_id,
+        cert_pem: r.cert_pem,
+        key_pem: key.serialize_pem(),
+        ca_der,
+        update_key: r.update_key,
+        device_password: r.device_password,
+        api_address: r.api_address,
+    })
+}
+
+/// Checks the Server Key against the Server without registering: a reinstall's first step, so a wrong key fails
+/// before the existing install is touched.
+pub async fn check_server_key(server: &ServerAccess) -> anyhow::Result<()> {
+    send_register(server, String::new(), String::new()).await.map(drop)
+}
+
+/// One RegisterRequest (an empty `csr` only checks the key); the reply and the Server's CA it pinned.
+async fn send_register(server: &ServerAccess, csr: String, hostname: String) -> anyhow::Result<(RegisterResponse, Vec<u8>)> {
+    let server_key = parse_server_key(&server.server_key)?;
     let mut conn = connect(server, None).await?;
-    let req = RegisterRequest { server_key: server.server_key.clone(), csr_pem: csr, hostname: platform.hostname() };
+    let req = RegisterRequest { server_key: server.server_key.clone(), csr_pem: csr, hostname };
     conn.send(&AgentMessage { msg: Some(agent_message::Msg::Register(req)) }).await?;
     match conn.recv::<ServerMessage>().await?.and_then(|m| m.msg) {
         Some(server_message::Msg::Registered(r)) => {
@@ -217,15 +237,7 @@ pub async fn register(server: &ServerAccess, platform: &dyn Platform) -> anyhow:
                 hex::encode(sha256(&ca_der)) == server_key.fingerprint,
                 "the Server CA's fingerprint does not match the Server Key; refusing to register"
             );
-            Ok(Credentials {
-                device_id: r.device_id,
-                cert_pem: r.cert_pem,
-                key_pem: key.serialize_pem(),
-                ca_der,
-                update_key: r.update_key,
-                device_password: r.device_password,
-                api_address: r.api_address,
-            })
+            Ok((r, ca_der))
         }
         Some(server_message::Msg::Error(e)) => anyhow::bail!("registration rejected: {}: {}", e.code, e.message),
         Some(_) | None => anyhow::bail!("server closed the connection during registration"),

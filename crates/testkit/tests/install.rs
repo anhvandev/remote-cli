@@ -126,6 +126,24 @@ async fn a_wrong_server_key_fails_the_install_and_leaves_nothing_behind() {
 }
 
 #[tokio::test]
+async fn a_reinstall_with_a_wrong_server_key_fails_and_leaves_the_existing_install_untouched() {
+    let sys = TestSystem::start().await;
+    set_api_address(&sys).await;
+    let machine = temp_dir("retype");
+    sys.install(&machine).await.unwrap();
+    let snapshot = |dir: &std::path::Path| files(dir).into_iter().map(|p| (std::fs::read(&p).unwrap(), p)).collect::<Vec<_>>();
+    let before = snapshot(&machine);
+    let (_, secret) = sys.server_key().rsplit_once('_').map(|(f, s)| (f.to_owned(), s.to_owned())).unwrap();
+    let wrong = sys.server_key().replace(&secret, &"0".repeat(secret.len()));
+
+    let err = sys.install_with_key(&machine, &wrong).await.unwrap_err();
+    assert!(format!("{err:#}").contains("Server Key"), "{err:#}");
+    assert!(snapshot(&machine) == before, "a failed reinstall changed the existing install");
+    let (_, devices) = sys.api.get("/api/v1/devices").await;
+    assert_eq!(devices.as_array().map(Vec::len), Some(1), "{devices}");
+}
+
+#[tokio::test]
 async fn uninstall_removes_the_agent_and_the_machine_wide_configuration_and_keeps_remembered_passwords() {
     let sys = TestSystem::start().await;
     set_api_address(&sys).await;
