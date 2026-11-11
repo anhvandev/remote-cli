@@ -11,13 +11,13 @@ Toàn bộ hệ thống chạy bằng một file Docker Compose trên một VPS:
 
 | Cổng | Giao thức | Dùng cho |
 |---|---|---|
-| 8080 | TCP | Controller API (CLI, MCP, Dashboard gọi vào) |
+| 443 | TCP | Dashboard và Controller API (`rcli`, `rcli mcp`), qua reverse proxy TLS tới cổng 3080 |
 | 8443 | TCP | Agent kết nối (mTLS) |
-| 3080 | TCP | Dashboard |
 | 3478 | TCP + UDP | TURN/STUN (coturn) |
 | 49160–49200 | UDP | Dải cổng relay của coturn |
 
-- Đặt TLS (reverse proxy như Caddy/nginx) trước cổng 8080 và 3080 nếu mở ra internet. Cổng 8443 đã là TLS sẵn, **không** đặt proxy trước nó. Nếu proxy bật gzip hoặc buffer, tắt cho các đường stream (`/api/v1/devices/*/shell`, `/api/devices/*/shell`), nếu không web terminal sẽ bị đứng.
+- Chỉ cổng Dashboard và cổng Agent ra internet. Dashboard chuyển tiếp toàn bộ Controller API (`/api/v1/*`) vào Server, nên `rcli` và `rcli mcp` dùng chính URL của Dashboard. Cổng Controller API (8080) chỉ nằm trong mạng Docker, **không** mở ra ngoài.
+- Đặt TLS (reverse proxy như Caddy/nginx) trước cổng 3080 và chỉ cho vào 3080 qua proxy đó (firewall chặn 3080 từ ngoài). Proxy phải thêm IP của client vào `X-Forwarded-For` (Caddy làm sẵn; nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`): Dashboard chuyển header này nguyên trạng cho Server, nên ai gọi thẳng vào 3080 có thể tự chọn IP của mình. Cổng 8443 đã là TLS sẵn, **không** đặt proxy trước nó. Nếu proxy bật gzip hoặc buffer, tắt cho các đường stream (`/api/v1/devices/*/shell`, `/api/v1/devices/*/lock/watch`, `/api/devices/*/shell`, `/api/devices/*/lock/watch`), nếu không shell và Control Lock sẽ bị đứng.
 
 ## 2. Biến môi trường
 
@@ -41,7 +41,7 @@ EOF
 | `RCLI_TURN_HOST` | nên đặt | Tên/IP public của VPS mà trình duyệt và Agent dùng để tới coturn. Mặc định `localhost`. |
 | `RCLI_AGENT_HOSTNAMES` | chỉ lần đầu | Server Address ban đầu (đưa vào chứng chỉ TLS cổng 8443). Sau lần khởi động đầu, đổi bằng `rcli server-address set` hoặc trang Server Settings. Mặc định `localhost`. |
 | `RCLI_MASTER_KEY` | nên đặt | 64 ký tự hex. Mã hoá CA private key và TOTP secret. |
-| `RCLI_TRUSTED_PROXIES` | nên đặt khi có proxy | IP của reverse proxy TLS đứng trước cổng 8080, cách nhau bằng dấu phẩy (vd. `172.17.0.1` khi proxy chạy trên host và gọi vào container). Chỉ với request từ các IP này, Server mới lấy IP thật của Controller từ `X-Forwarded-For` (proxy phải thêm header này). Không đặt thì mọi Controller sau proxy dùng chung IP của proxy: nhập sai Device Password vài lần sẽ khoá tất cả, và audit chỉ ghi IP của proxy. |
+| `RCLI_TRUSTED_PROXIES` | không | Mặc định là IP của Dashboard trong mạng Docker (`172.31.250.10`, `compose.yaml`). Chỉ với request từ các IP này, Server mới lấy IP thật của Controller từ `X-Forwarded-For` (proxy TLS trước Dashboard phải thêm header này). Nhờ vậy giới hạn nhập sai Device Password và audit tính theo từng Controller, không theo Dashboard. Chỉ đổi khi đổi mạng Docker trong `compose.yaml`. |
 | `POSTGRES_PASSWORD` | nên đặt | Mặc định `rcli`. |
 
 **Về `RCLI_MASTER_KEY` — đọc kỹ:**
@@ -63,7 +63,7 @@ Lần build đầu mất vài phút (biên dịch Rust và `next build`).
 Cần binary `rcli` trên máy của bạn (xem `docs/usage.md`, mục Cài CLI).
 
 ```bash
-rcli setup --server https://vps.example.com:8080 --key rk_xxxxxxxx_yyyyyyyy   # Server Key (bước 5)
+rcli setup --server https://vps.example.com --key rk_xxxxxxxx_yyyyyyyy   # Server Key (bước 5)
 rcli --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user create me --role admin
 rcli --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user set-password me --password '<mật khẩu Dashboard>'
 #   → in ra totp_secret và otpauth_url: quét otpauth_url bằng app Authenticator
@@ -72,7 +72,7 @@ rcli login me                       # mật khẩu Dashboard + mã TOTP; phiên 
 
 Từ lúc admin `me` đăng nhập, bootstrap token hết tác dụng. Nó chỉ hoạt động lại nếu mọi admin bị vô hiệu hoá hoặc phiên đã hết hạn (đường cứu hộ).
 
-Mở `http://vps.example.com:3080`, đăng nhập bằng `me` + mật khẩu + mã TOTP. Sai 5 lần liên tiếp thì tài khoản bị khoá 15 phút.
+Mở `https://vps.example.com`, đăng nhập bằng `me` + mật khẩu + mã TOTP. Sai 5 lần liên tiếp thì tài khoản bị khoá 15 phút.
 
 ## 5. Thêm Device (Agent tự đăng ký)
 

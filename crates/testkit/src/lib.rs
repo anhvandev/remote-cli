@@ -48,23 +48,25 @@ pub struct TestSystem {
 
 impl TestSystem {
     pub async fn start() -> Self {
-        Self::start_on("127.0.0.1:0".parse().unwrap()).await
+        Self::start_inner("127.0.0.1:0".parse().unwrap(), None, Some(Self::master_key()), vec![]).await
     }
 
     /// Like `start`, with a TURN relay configured as the Server's ICE server.
     pub async fn start_with_turn() -> Self {
-        Self::start_inner("127.0.0.1:0".parse().unwrap(), Some(TestTurn::start(TURN_SECRET).await), Some(Self::master_key())).await
+        let turn = Some(TestTurn::start(TURN_SECRET).await);
+        Self::start_inner("127.0.0.1:0".parse().unwrap(), turn, Some(Self::master_key()), vec![]).await
     }
 
-    /// Like `start`, with the Controller API on a fixed address (the Dashboard's Playwright stack).
+    /// Like `start`, with the Controller API on a fixed address (the Dashboard's Playwright stack). The Dashboard
+    /// runs on the same host and forwards the Controller API, so loopback is a trusted proxy.
     pub async fn start_on(http_addr: std::net::SocketAddr) -> Self {
-        Self::start_inner(http_addr, None, Some(Self::master_key())).await
+        Self::start_inner(http_addr, None, Some(Self::master_key()), vec![std::net::Ipv4Addr::LOCALHOST.into()]).await
     }
 
     /// Like `start`, but the Controller API listens on IPv4 and IPv6 loopback, so a test can make one request from
     /// `127.0.0.1` and another from `::1` (the rate limiter keys on the peer IP).
     pub async fn start_dual_stack() -> Self {
-        let mut sys = Self::start_inner("[::]:0".parse().unwrap(), None, Some(Self::master_key())).await;
+        let mut sys = Self::start_inner("[::]:0".parse().unwrap(), None, Some(Self::master_key()), vec![]).await;
         let port = sys.server.http_addr.port();
         sys.server.http_addr = format!("127.0.0.1:{port}").parse().unwrap();
         sys.api = ApiClient::new(format!("http://{}", sys.server.http_addr), Some(&sys.admin_token));
@@ -73,7 +75,7 @@ impl TestSystem {
 
     /// Like `start`, without `RCLI_MASTER_KEY`: secrets are stored in plaintext.
     pub async fn start_without_master_key() -> Self {
-        Self::start_inner("127.0.0.1:0".parse().unwrap(), None, None).await
+        Self::start_inner("127.0.0.1:0".parse().unwrap(), None, None, vec![]).await
     }
 
     /// The `RCLI_MASTER_KEY` test Servers use.
@@ -89,7 +91,12 @@ impl TestSystem {
         self.api = ApiClient::new(format!("http://{}", self.server.http_addr), Some(&self.admin_token));
     }
 
-    async fn start_inner(http_addr: std::net::SocketAddr, turn: Option<TestTurn>, master_key: Option<rcli_server::master_key::MasterKey>) -> Self {
+    async fn start_inner(
+        http_addr: std::net::SocketAddr,
+        turn: Option<TestTurn>,
+        master_key: Option<rcli_server::master_key::MasterKey>,
+        trusted_proxies: Vec<std::net::IpAddr>,
+    ) -> Self {
         let postgres = Postgres::default().with_tag("16-alpine").start().await.expect("start postgres container");
         let port = postgres.get_host_port_ipv4(5432).await.unwrap();
         let clock = Arc::new(ManualClock::default());
@@ -104,7 +111,7 @@ impl TestSystem {
             ice_urls: turn.iter().map(|t| format!("turn:{}?transport=udp", t.addr)).collect(),
             turn_secret: turn.as_ref().map(|_| TURN_SECRET.into()),
             update_public_key: Some(update_public_key),
-            trusted_proxies: Vec::new(),
+            trusted_proxies,
         };
         let server = rcli_server::start(config.clone(), clock.clone()).await.expect("start server");
         let mut sys = Self {
