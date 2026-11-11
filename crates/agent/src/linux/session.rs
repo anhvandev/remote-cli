@@ -327,13 +327,13 @@ pub fn helper_args(exe: &Path, socket: &Path, target: &Target, restore_token: Op
 pub type Spawn = dyn Fn(&Target, Option<&str>) -> anyhow::Result<Child> + Send + Sync;
 type Loginctl = dyn Fn(&[&str]) -> Option<String> + Send + Sync;
 
-/// The daemon's Platform: screen calls go to the helper for seat0, everything else to `inner`.
+/// The Agent service's Platform: screen calls go to the helper for seat0, everything else to `inner`.
 pub struct ConsoleSession {
     inner: Arc<dyn Platform>,
     sessions: Arc<SessionPlatform>,
     /// The helper's process and the Target it serves, so a login/logout replaces it.
     running: Mutex<Option<(Target, Child)>>,
-    /// uids a helper may connect as (root, and the session user the daemon just spawned).
+    /// uids a helper may connect as (root, and the session user the Agent service just spawned).
     trusted: Arc<Mutex<Vec<u32>>>,
     root: PathBuf,
     loginctl: Arc<Loginctl>,
@@ -372,7 +372,7 @@ impl ConsoleSession {
             true,
         )?;
         let token = state_dir.map(|dir| TokenStore::new(dir.join(super::screencast::TOKEN_FILE)));
-        // A helper publishes the portal's new restore token over the wire; the daemon owns the state dir.
+        // A helper publishes the portal's new restore token over the wire; the Agent service owns the state dir.
         if let Some(store) = token.clone() {
             sessions.on_restore_token(move |token| {
                 // Every state poll carries the token; only a new one is worth a write.
@@ -483,7 +483,7 @@ impl ConsoleSession {
         seat_session(self.loginctl.as_ref()).is_some_and(|session| session.is_wayland())
     }
 
-    /// Writes `input` to the daemon's virtual device; a move needs the portal's display geometry.
+    /// Writes `input` to the Agent service's virtual device; a move needs the portal's display geometry.
     fn uinput_input(&self, input: Input) -> anyhow::Result<()> {
         let displays = match input {
             Input::Move { .. } => self.sessions.displays()?,
@@ -513,7 +513,7 @@ impl Platform for ConsoleSession {
     }
     fn input(&self, input: Input) -> anyhow::Result<()> {
         if self.seat_is_wayland() {
-            // Wayland input is the daemon's uinput device: the helper runs as the session user, which cannot create
+            // Wayland input is the Agent service's uinput device: the helper runs as the session user, which cannot create
             // one, and the portal has no input path at all. It also reaches a Wayland greeter, which has no portal.
             return self.uinput_input(input);
         }
@@ -525,7 +525,7 @@ impl Platform for ConsoleSession {
     }
     fn recognize_text(&self, frame: &Frame) -> anyhow::Result<Vec<UiElement>> {
         // OCR runs in the helper (it has the session's environment for tesseract) through capture-side work; the
-        // frame is already here, so the daemon does it. tesseract needs no X.
+        // frame is already here, so the Agent service does it. tesseract needs no X.
         self.inner.recognize_text(frame)
     }
     fn session_state(&self) -> anyhow::Result<SessionState> {
@@ -533,7 +533,7 @@ impl Platform for ConsoleSession {
     }
     fn inventory(&self) -> anyhow::Result<Inventory> {
         let mut inventory = self.inner.inventory()?;
-        // The daemon has no DISPLAY of its own; take the displays from the console session when it has one.
+        // The Agent service has no DISPLAY of its own; take the displays from the console session when it has one.
         if self.sessions.helper_count() > 0 {
             if let Ok(displays) = self.sessions.displays() {
                 inventory.displays = displays
@@ -558,7 +558,7 @@ impl Platform for ConsoleSession {
     }
     fn power(&self, action: PowerAction) -> anyhow::Result<()> {
         if action == PowerAction::Lock {
-            // The daemon has no session of its own; lock the one on the console by id.
+            // The Agent service has no session of its own; lock the one on the console by id.
             let session = seat_session(self.loginctl.as_ref()).ok_or_else(|| anyhow::anyhow!("nobody is logged in to lock"))?;
             let out = std::process::Command::new("loginctl")
                 .args(["lock-session", &session.id])
@@ -771,8 +771,8 @@ mod tests {
         }
     }
 
-    /// The daemon with a scripted logind; the helper is never spawned (`spawn` would fail in a test process).
-    fn daemon(root: &Path, session: SessionInfo) -> (Arc<ConsoleSession>, PathBuf) {
+    /// The Agent service with a scripted logind; the helper is never spawned (`spawn` would fail in a test process).
+    fn agent_service(root: &Path, session: SessionInfo) -> (Arc<ConsoleSession>, PathBuf) {
         let dir = std::env::temp_dir().join(format!("rcli-linux-console-{}-{}", std::process::id(), rand_suffix()));
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("session.sock");
@@ -863,19 +863,19 @@ mod tests {
         let root = root("wayland-console");
         touch(&root.join("run/user/1000/wayland-0"));
         let session = wayland_session();
-        let (console, dir) = daemon(&root, session.clone());
+        let (console, dir) = agent_service(&root, session.clone());
         let target = console.target().expect("a logged-in Wayland session can be served now");
         assert_eq!((target.session, target.display.as_str()), (SessionKind::Wayland, "wayland-0"));
         assert!(console.seat_is_wayland(), "input then goes through uinput, not the helper");
         let _ = std::fs::remove_dir_all(dir);
 
         let greeter = SessionInfo { user: "gdm".into(), uid: Some(111), class: "greeter".into(), ..session };
-        let (greeter_daemon, greeter_dir) = daemon(&root, greeter);
-        assert!(greeter_daemon.target().is_none(), "the greeter has no screen-cast portal to share");
+        let (greeter_service, greeter_dir) = agent_service(&root, greeter);
+        assert!(greeter_service.target().is_none(), "the greeter has no screen-cast portal to share");
         assert!(
-            greeter_daemon.no_helper_error().to_string().contains("Wayland login screen"),
+            greeter_service.no_helper_error().to_string().contains("Wayland login screen"),
             "{}",
-            greeter_daemon.no_helper_error()
+            greeter_service.no_helper_error()
         );
         let _ = std::fs::remove_dir_all(greeter_dir);
         let _ = std::fs::remove_dir_all(root);

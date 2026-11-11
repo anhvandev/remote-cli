@@ -80,7 +80,7 @@ impl Wayland {
                     tracing::warn!("cannot store the screen cast restore token: {e:#}");
                 }
             }
-            // The helper process cannot write the state dir; the daemon persists what it reads from the wire.
+            // The helper process cannot write the state dir; the Agent service persists what it reads from the wire.
             screencast::publish_token(token);
         })?;
         tracing::info!(

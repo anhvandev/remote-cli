@@ -100,7 +100,7 @@ impl PixelFormat {
 }
 
 /// The restore token the last portal session returned, for the session helper's wire (the helper cannot write the
-/// root-only state dir, so the daemon persists what the helper publishes here).
+/// root-only state dir, so the Agent service persists what the helper publishes here).
 static PUBLISHED_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn publish_token(token: &str) {
@@ -648,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn the_helper_publishes_the_token_the_daemon_persists() {
+    fn the_helper_publishes_the_token_the_agent_service_persists() {
         assert_eq!(published_token(), None);
         publish_token("tok-wire");
         assert_eq!(published_token().as_deref(), Some("tok-wire"));

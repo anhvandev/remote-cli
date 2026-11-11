@@ -201,7 +201,7 @@ Các bước kiểm tra bằng mắt (chạy từ máy Controller):
 3. Đăng xuất ra greeter (GDM/LightDM/SDDM), `rcli shot` → thấy màn hình đăng nhập; `rcli act` gõ được vào ô mật khẩu;
    `rcli unlock` gõ mật khẩu + Enter để đăng nhập.
 4. `rcli exec <Device ID> -- whoami` → đúng Terminal User; `rcli shell <Device ID>` mở được shell.
-5. `rcli metrics <Device ID> history` vẫn có dữ liệu (daemon tự lấy metrics, không phụ thuộc helper).
+5. `rcli metrics <Device ID> history` vẫn có dữ liệu (Agent service tự lấy metrics, không phụ thuộc helper).
 
 Chạy contract suite trên chính máy đó (cần root; X11 cần một X server, Wayland cần phiên có portal):
 
