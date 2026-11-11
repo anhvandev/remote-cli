@@ -120,3 +120,9 @@
   only-changed-fields, `name()` == serde value). Not verified visually; still for the manual checklist: load once
   (one OS prompt), edit one field and confirm the other two are unchanged in `sudo rcli agent info --json`, cancel
   the prompt and confirm nothing changed.
+
+- code-review fix (round 4): "Reveal Server Key and unlock password" is now "Reveal Server Key"; the unlock password
+  shows only whether one is set (ticket 09). The root service opens the window on Linux as the console session's user
+  with that session's display environment (shared with the screen helper: `session_env`, `console_target`), and on
+  Windows with `CreateProcessAsUser` as the console user. Compile-checked for Linux (Debian container) and Windows
+  (`cargo xwin`); not run on a real desktop.

@@ -81,3 +81,6 @@
   on `Request::Prompts` in `crates/agent/src/ipc.rs` records why (story 27 needs the person at the Device — not
   necessarily root — to see who asks; accepting stays root-only and refusing is like `disconnect`) and the tension
   with the spec's IPC split. No protocol or enforcement change.
+
+- Decision (round 4): accepting a new connection stays root-only, for the same reason as the root prompt (ticket 07):
+  a local process must not let a Controller in behind the person's back. Refusing and Disconnect stay open.

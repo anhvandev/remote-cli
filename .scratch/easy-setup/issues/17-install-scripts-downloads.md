@@ -61,3 +61,7 @@
   Playwright 2/2 passed through the Dashboard origin (ports 18087/3107).
 - **Not verified:** "The one-line install works end to end on a real Linux machine" — needs a real Linux machine and
   ticket 16's `rcli agent install`. The script passes `--key` but not `--allow-root`/`--name`.
+
+- code-review fix (round 4): install packages. `rcli package publish <file> --arch <arch>` (Admin) stores a .dmg,
+  .deb or .rpm, one per kind and arch; `GET /download/package/<kind>/<arch>` serves it to anyone as
+  `rcli-<arch>.<kind>`, also through the Dashboard origin.

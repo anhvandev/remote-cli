@@ -84,3 +84,7 @@
   the clean run alone; leave them as separate flakes, not ticket 04 defects.
 - Still not verified: real NAT behaviour, `X-Forwarded-For` behind a real reverse proxy (the shortcut above),
   and the `sign_in` name-spraying limit (ticket-unrelated, already noted in `auth.rs`).
+
+- code-review fix (round 4): behind the TLS reverse proxy every Controller had the proxy's IP, so one guesser
+  locked everyone out and the audit named only the proxy. `RCLI_TRUSTED_PROXIES` (compose, `docs/deploy.md`) lists
+  the proxies whose last `X-Forwarded-For` entry is the client's IP; any other peer's header is ignored.

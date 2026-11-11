@@ -173,3 +173,8 @@
   is covered by the Linux container test (`cargo test -p rcli --lib linux_install`).
 
 - 2026-11-11: Resolved after the final merge. The code is on the integration branch `easy-setup` (tip 63398c2) and the automated gates pass: `cargo test --workspace` 238 passed (the one failure is the environmental macOS display/wake test on this host), clippy, Windows `cargo xwin` clippy/build, Linux container 79 passed, Dashboard Playwright 42 passed. Real-hardware acceptance (see the steps above) remains for the user; the checkboxes stay unticked until that run.
+
+- code-review fix (round 4): the deb and rpm are built with `--features gui` (eframe loads X11/Wayland with dlopen,
+  so a headless machine still runs the binary), and the root service opens the prompt window with the console
+  session's DISPLAY/XAUTHORITY or WAYLAND_DISPLAY/session bus instead of a bare `sudo -u`. Without both, `ask` and
+  `password+accept` refused after 30 s and the audit said `rejected`.

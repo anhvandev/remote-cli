@@ -77,3 +77,6 @@
 - final code-review fix (P4): the guide's `rcli setup` guidance no longer offers `--insecure-http` (the flag is gone).
   `http://` is accepted only for loopback/same computer; every other Server Address must be `https://` behind the TLS
   reverse proxy. docs/usage.md and ADR 0003 updated; no dashboard code change, the http warning banner is unchanged.
+
+- code-review fix (round 4): the rcli.dmg / rcli.deb / rcli.rpm links point to `/download/package/...` (the
+  uploaded packages, ticket 17) instead of the raw rolled-out binary; rcli.exe is still the rolled-out build.

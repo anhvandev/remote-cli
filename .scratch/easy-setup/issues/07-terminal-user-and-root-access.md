@@ -82,3 +82,11 @@
   `prompts` IPC deviation is documented at `Request::Prompts` (`shortcut:` naming story 27 vs the IPC split), and the
   GUI now reads and writes these Settings elevated, sending only the changed fields (P6), so a stale window cannot
   rewrite `never`/`always`.
+
+- code-review fix (round 4): a session grant given by a bare name (`alice`) covers only the Dashboard User
+  `alice (Dashboard)`; a password connection is covered only by its full `<host> (<IP>)`, because it picks its own
+  host name. The Server drops brackets from that host name, so `alice (Dashboard)` cannot be spoofed either
+  (`a_password_connection_cannot_borrow_a_grant_by_its_machine_name`).
+- Decision (round 4): accepting a prompt stays root-only. Letting the console user accept would let any process
+  running as that user grant root or let a Controller in; the person at the Device answers through the GUI's
+  elevation prompt (polkit, macOS authorization, UAC). Refusing stays open to everyone.

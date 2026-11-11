@@ -80,3 +80,7 @@
 
 
 - code-review fix: `Config.token` / `config::set_token` are renamed to `Config.session` / `set_session` (the "token" vocabulary the glossary retires); the saved config key becomes `"session"`, so a saved session from an older build needs one `rcli login` again (no migration policy).
+
+- code-review fix (round 4): tokens with no expiry (made by the removed `rcli token`) no longer authenticate, and
+  no longer count as an admin's live session for the bootstrap token. Only Dashboard sessions, which always expire,
+  sign in.

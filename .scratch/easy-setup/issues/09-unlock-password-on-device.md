@@ -21,3 +21,6 @@
 - Merged into `easy-setup` (fast-forward to `f1b46bb`). Merge-review fixes: `docs/deploy.md` still claimed `RCLI_MASTER_KEY` "mã hoá mật khẩu unlock" and named the removed `vault_unavailable` error — now it documents the CA key and TOTP secrets only; restored a lost newline in `dashboard/lib/api.ts`.
 - Verified on the merged integration tree: `cargo test --workspace` 177 passed / 0 failed; `cargo clippy --workspace --all-targets` clean; `cd dashboard && npx tsc --noEmit` clean; Playwright `tests/admin.spec.ts` 9 passed (ports 18092/3112).
 - Not verified: a real OS lock/login screen (FakePlatform only; tickets 15+ adapters). Left in place: the unused `Status::unlock_password()` accessor in `crates/agent/src/ipc.rs` — likely the seam for the ticket 14 GUI.
+
+- code-review fix (round 4): the unlock password is never read back. `info` (root) reports only
+  `unlock_password_set`, and the GUI's Reveal shows the Server Key and "an unlock password is set" / "none is set".

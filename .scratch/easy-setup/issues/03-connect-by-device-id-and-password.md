@@ -98,3 +98,8 @@
   asserts the whole alphabet and the testkit IPC test rejects the whole `0Oo1lIL` set. Human step (desktop Linux):
   `rcli connect <id>` then `secret-tool search service rcli` (or Seahorse) shows the entry; on a headless host the
   0600 password file remains.
+
+- code-review fix (round 4): `rcli setup` asks for the Server Address and Server Key when `--server`/`--key` are left
+  out (the key without echo), as story 17 says. A global `--server` now gets the same https-or-loopback rule as
+  `rcli setup` for every command (`connect`, `login`, Device commands), so it cannot send the saved Server Key or a
+  remembered Device Password over plain http.
