@@ -11,3 +11,5 @@ Devices must be controllable unattended, including at the lock screen and the lo
 - macOS login window is view-only. A probe on macOS 15.8.1 (`prototype/lockscreen-probe/`, 2026-11-04) showed that a root LoginWindow agent can capture the screen once Screen Recording is granted, but every CGEvent key-injection variant (including RustDesk's) failed to reach the password field. Lock screen capture and input both work. Macs therefore need auto-login (or a person logging in once) after a reboot, and the Dashboard shows when a Device is at the login window.
 
 - The admin-only `--as root` rule is superseded by ADR 0004: root access is now a Device Setting, and unlock passwords are stored on the Device instead of the Server.
+
+- The unlock passwords are dropped altogether by ADR 0005: rcli stores no OS password, and the Controller types it.

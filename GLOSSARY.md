@@ -52,8 +52,12 @@ _Avoid_: enrollment code, install key, token
 The host and port Agents use to reach the Server, set by an Admin; together with the Server Key it is all a new install needs.
 _Avoid_: hostname, server URL, endpoint
 
+**API Address**:
+The public `https://` URL of the Dashboard, through which Controllers also call the Server. The Server learns it from an Admin's visit and hands it to every install, so nobody types it; an Admin can correct it.
+_Avoid_: Controller API URL, Controller Address
+
 **Secret Store**:
-The encrypted place on a Device where its Agent keeps the Device Password and the unlock password, readable only with root/Administrator rights on that Device.
+The encrypted place on a Device where its Agent keeps the Device Password, readable only with root/Administrator rights on that Device. It never holds the Device's OS login passwords: a Controller types those itself at the lock or login screen.
 _Avoid_: vault, keystore, credential store
 
 **Device ID**:
@@ -62,7 +66,7 @@ _Avoid_: device uuid, machine id
 
 **Device Password**:
 The static secret of a Device, generated at install and viewable and changeable on the Device, that lets a Controller connect to that Device by its Device ID without a User account.
-_Avoid_: access code, PIN, one-time password
+_Avoid_: access code, PIN, one-time password, login password, password máy agent (the Device Password is not the OS account's password)
 
 **Device Settings**:
 The rules set on the Device itself, not on the Server, that govern every Controller connecting to it: which Terminal User runs commands, whether root is never allowed, asked for or always allowed, and whether a person at the Device must accept each connection.
@@ -79,6 +83,10 @@ _Avoid_: session lock, ownership
 **Live View**:
 A continuous stream of a Device's screen to a person in the Dashboard; the holder of the Control Lock can also send mouse and keyboard Actions through it. Unlike an Observation, it is not tied to any Action.
 _Avoid_: screen share, remote desktop, xem màn hình
+
+**Live View Quality**:
+The level one viewer picks for their own Live View: Quality, Balanced (the default) or Speed. Every level keeps the Device screen's native resolution; they differ only in sharpness against smoothness.
+_Avoid_: preset, stream mode, bitrate mode
 
 **Operator**:
 A User who observes and controls Devices but cannot administer the Server.

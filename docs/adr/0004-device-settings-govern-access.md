@@ -7,3 +7,5 @@ Like TeamViewer and RustDesk, the person who owns a Device decides what remote u
 - Unlock passwords move from the Server's Secrets Vault to the Device. They are stored encrypted in the OS secret store, as the Device Password is, and are set only at the Device. A Server breach no longer exposes Device login passwords, but nobody can set an unlock password remotely.
 - On Linux and macOS, `sudo` inside the terminal works as it does over SSH. `--as root` (the only route on Windows) follows the Device's root setting, and the person at the Device can grant root to the current session from the GUI.
 - A person at the Device can see who is controlling it and disconnect them without being root.
+
+- Superseded by ADR 0005: rcli no longer stores unlock passwords at all.
