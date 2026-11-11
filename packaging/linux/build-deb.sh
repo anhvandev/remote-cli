@@ -4,7 +4,7 @@
 #   sudo apt install dpkg-dev
 #   packaging/linux/build-deb.sh                 # -> packaging/linux/out/rcli_<version>_<arch>.deb
 #
-# The package installs only /usr/bin/rcli. Its postinst runs the same `rcli agent install` path as the curl
+# The package installs only /usr/bin/rcli. Its postinst runs the same `rcli install` path as the curl
 # one-liner, so the service, Device Settings, secret store and registration logic live in exactly one place.
 set -eu
 

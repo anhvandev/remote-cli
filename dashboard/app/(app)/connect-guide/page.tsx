@@ -57,14 +57,14 @@ export default async function ConnectGuidePage() {
       </div>
 
       <div className="mt-5 grid items-start gap-5">
-        <section className={card} aria-label="Cài đặt Agent">
+        <section className={card} aria-label="Cài đặt rcli">
           <div className={cardHead}>
-            <h3 className={title}>Cài đặt Agent</h3>
+            <h3 className={title}>Cài đặt rcli</h3>
           </div>
           <div className="grid gap-3 p-5 text-sm">
             <p className="text-muted-foreground">
-              Chạy trên Device: script tải <code className="font-mono text-xs">rcli</code> và cài dịch vụ nền,
-              Device tự đăng ký vào fleet.
+              Chạy trên mỗi máy: script tải <code className="font-mono text-xs">rcli</code>, cài dịch vụ nền và in Device
+              ID cùng Device Password. Máy đó thành một Device và điều khiển được các Device khác ngay.
             </p>
             <CopyRow label="Linux / macOS (curl)" value={`curl -fsSL ${origin}/install.sh | sudo sh -s -- --key ${key}`} />
             <CopyRow label="Windows (PowerShell)" value={`iwr ${origin}/install.ps1 -OutFile install.ps1; .\\install.ps1 -Key ${key}`} />
@@ -119,22 +119,17 @@ export default async function ConnectGuidePage() {
               Trên Device không có màn hình (headless): tải <code className="font-mono text-xs">rcli</code> cho đúng hệ điều hành ở
               trên, rồi chạy:
             </p>
-            <CopyRow value={`sudo rcli agent install --server ${server} --key ${key}`} />
+            <CopyRow value={`sudo rcli install --server ${server} --key ${key}`} />
           </div>
         </section>
 
-        <section className={card} aria-label="Thiết lập Controller">
+        <section className={card} aria-label="Kết nối Device">
           <div className={cardHead}>
-            <h3 className={title}>Thiết lập Controller</h3>
+            <h3 className={title}>Kết nối Device</h3>
           </div>
           <div className="grid gap-3 p-5 text-sm">
             <p className="text-muted-foreground">
-              Trên Controller, chạy <code className="font-mono text-xs">rcli setup</code> một lần với URL của
-              Controller API (ví dụ https://server.example.com:8080) và Server Key ở trên:
-            </p>
-            <CopyRow value={`rcli setup --server <Controller API URL> --key ${key}`} />
-            <p className="text-muted-foreground">
-              Rồi kết nối Device bằng Device ID và Device Password (hiện ở Device đó qua{" "}
+              Trên máy đã cài, kết nối Device khác bằng Device ID và Device Password của nó (hiện ở Device đó qua{" "}
               <code className="font-mono text-xs">rcli agent info</code>):
             </p>
             <CopyRow value="rcli connect <Device ID>" />
@@ -147,8 +142,7 @@ export default async function ConnectGuidePage() {
           </div>
           <div className="grid gap-3 p-5 text-sm">
             <p className="text-muted-foreground">
-              Sau khi đã <code className="font-mono text-xs">rcli setup</code> và{" "}
-              <code className="font-mono text-xs">rcli connect</code>, thêm <code className="font-mono text-xs">rcli</code>{" "}
+              Sau khi <code className="font-mono text-xs">rcli connect</code>, thêm <code className="font-mono text-xs">rcli</code>{" "}
               làm MCP server (dùng cùng cấu hình và Device Password đã nhớ):
             </p>
             <CopyRow value="claude mcp add rcli -- rcli mcp" />
