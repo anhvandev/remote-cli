@@ -1,6 +1,6 @@
 //! Small helpers shared by the per-OS `rcli agent install` implementations: the options every install takes, the
-//! command seam, the rooted path, the file writer, the Device Settings an install records and the Terminal User
-//! fallback.
+//! command seam, the rooted path, the file writer, the Device Settings an install records, the Terminal User
+//! fallback, and the registration an install starts with and an uninstall undoes.
 
 use std::path::{Path, PathBuf};
 
@@ -59,6 +59,44 @@ pub fn save_settings(state: &Path, opts: &Options) -> anyhow::Result<()> {
         settings.root = RootAccess::Always;
     }
     settings.save(state)
+}
+
+/// This Device's credentials as the Agent saved them in `state`, if it is registered.
+pub fn device_credentials(state: &Path) -> Option<rcli_agent::Credentials> {
+    serde_json::from_slice(&std::fs::read(state.join("credentials.json")).ok()?).ok()
+}
+
+/// Registers this Device with the Server the install was given (or keeps its existing registration), so a wrong
+/// Server Key fails before the service starts. Returns the credentials and the Device Password, for the install to
+/// print.
+pub async fn register(
+    opts: &Options,
+    platform: &dyn rcli_agent::platform::Platform,
+    state: &Path,
+) -> anyhow::Result<(rcli_agent::Credentials, String)> {
+    let server = rcli_agent::ServerAccess { addr: opts.server.clone(), server_key: opts.key.clone() };
+    let secrets = crate::agent::secret_store(state);
+    let creds = crate::agent::load_or_register(&server, platform, state, secrets.as_ref()).await?;
+    let password = secrets.get(rcli_agent::ipc::DEVICE_PASSWORD)?.unwrap_or_default();
+    Ok((creds, password))
+}
+
+/// An uninstall's first steps: removes the Device from the Server at `server` (the Server Address the install
+/// recorded), then deletes its secrets. An unreachable Server is a warning, not a failure: the local install must
+/// still be removable, and an Admin can delete the Device from the Dashboard.
+pub async fn unregister(server: Option<String>, state: &Path, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    if let (Some(server), Some(creds)) = (server, device_credentials(state)) {
+        if let Err(e) = rcli_agent::unregister_at(&server, &creds).await {
+            writeln!(out, "warning: could not remove the Device from the Server: {e:#}")?;
+        }
+    }
+    let secrets = crate::agent::secret_store(state);
+    for name in [rcli_agent::ipc::DEVICE_PASSWORD, rcli_agent::ipc::UNLOCK_PASSWORD] {
+        if let Err(e) = secrets.remove(name) {
+            writeln!(out, "warning: {e:#}")?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

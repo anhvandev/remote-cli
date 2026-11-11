@@ -183,12 +183,9 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     let layout = Layout { root: "/".into() };
     install_files(&layout, &opts, &std::env::current_exe()?, &mut system)?;
     // Register now, so a wrong Server Key fails here and the Device ID can be shown; the service finds the credentials.
-    let server = rcli_agent::ServerEndpoint { addr: opts.server.clone(), server_key: opts.key.clone() };
     let platform = rcli_agent::macos::MacPlatform::new(opts.name.clone())?;
-    let secrets = crate::agent::secret_store(&layout.state_dir());
-    let creds = crate::agent::load_or_register(&server, &platform, &layout.state_dir(), secrets.as_ref()).await?;
+    let (creds, password) = crate::install::register(&opts, &platform, &layout.state_dir()).await?;
     install_jobs(&layout, &opts, console_uid(), &mut system)?;
-    let password = secrets.get(rcli_agent::ipc::DEVICE_PASSWORD)?.unwrap_or_default();
     writeln!(
         out,
         "installed {} with the launchd jobs {DAEMON} and {SESSION}\nDevice ID: {}\nDevice Password: {password}\n\
@@ -200,9 +197,8 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     Ok(())
 }
 
-/// `sudo rcli agent uninstall`: removes the Device from the Server, then stops and removes both jobs, the app and
-/// the Device's local data and secrets. An unreachable Server is a warning, not a failure: the local install must
-/// still go away, and an Admin can delete the Device from the Dashboard.
+/// `sudo rcli agent uninstall`: removes the Device from the Server (see `install::unregister`), then stops and removes
+/// both jobs, the app and the Device's local data.
 pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli agent uninstall");
     let layout = Layout { root: "/".into() };
@@ -210,20 +206,7 @@ pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .and_then(|v| v["server"].as_str().map(str::to_owned));
-    let creds = std::fs::read(layout.state_dir().join("credentials.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<rcli_agent::Credentials>(&bytes).ok());
-    if let (Some(server), Some(creds)) = (server, creds) {
-        if let Err(e) = rcli_agent::unregister_at(&server, &creds).await {
-            writeln!(out, "warning: could not remove the Device from the Server: {e:#}")?;
-        }
-    }
-    let secrets = crate::agent::secret_store(&layout.state_dir());
-    for name in [rcli_agent::ipc::DEVICE_PASSWORD, rcli_agent::ipc::UNLOCK_PASSWORD] {
-        if let Err(e) = secrets.remove(name) {
-            writeln!(out, "warning: {e:#}")?;
-        }
-    }
+    crate::install::unregister(server, &layout.state_dir(), out).await?;
     uninstall_files(&layout, console_uid(), &mut system)?;
     writeln!(out, "removed the launchd jobs {DAEMON} and {SESSION}, {} and the Device's local data", layout.app().display())?;
     Ok(())

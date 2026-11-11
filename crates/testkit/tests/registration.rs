@@ -1,4 +1,4 @@
-use rcli_agent::ServerEndpoint;
+use rcli_agent::ServerAccess;
 use rcli_testkit::{FakePlatform, StatusCode, TestSystem};
 
 #[tokio::test]
@@ -29,9 +29,9 @@ async fn a_wrong_server_key_secret_is_refused_and_leaves_no_device() {
     let key = sys.server_key().to_owned();
     let (prefix, _) = key.rsplit_once('_').unwrap();
     let wrong = format!("{prefix}_{}", "0".repeat(32));
-    let endpoint = ServerEndpoint { addr: sys.agent_addr(), server_key: wrong };
+    let server_access = ServerAccess { addr: sys.agent_addr(), server_key: wrong };
 
-    let err = rcli_agent::register(&endpoint, &FakePlatform::new("impostor")).await.unwrap_err();
+    let err = rcli_agent::register(&server_access, &FakePlatform::new("impostor")).await.unwrap_err();
     assert!(err.to_string().contains("invalid_server_key"), "{err}");
     let (_, devices) = sys.api.get("/api/v1/devices").await;
     assert_eq!(devices, serde_json::json!([]), "nothing was registered");
@@ -43,9 +43,9 @@ async fn a_server_key_with_another_fingerprint_refuses_the_server() {
     let key = sys.server_key().to_owned();
     let (_, secret) = key.rsplit_once('_').unwrap();
     let wrong = format!("rk_{}_{secret}", "00".repeat(32));
-    let endpoint = ServerEndpoint { addr: sys.agent_addr(), server_key: wrong };
+    let server_access = ServerAccess { addr: sys.agent_addr(), server_key: wrong };
 
-    let err = rcli_agent::register(&endpoint, &FakePlatform::new("lab-pc")).await.unwrap_err();
+    let err = rcli_agent::register(&server_access, &FakePlatform::new("lab-pc")).await.unwrap_err();
     assert!(err.to_string().contains("fingerprint"), "{err}");
     let (_, devices) = sys.api.get("/api/v1/devices").await;
     assert_eq!(devices, serde_json::json!([]), "nothing was sent to the Server");

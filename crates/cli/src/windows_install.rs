@@ -272,11 +272,9 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     let reinstall = layout.config().exists();
     install_files(&layout, &opts, &std::env::current_exe()?, &mut crate::install::system)?;
     // Register now, so the Device ID and password exist before the service starts and a wrong key is caught here.
-    let server = rcli_agent::ServerEndpoint { addr: opts.server.clone(), server_key: opts.key.clone() };
     let platform = rcli_agent::windows_platform::WindowsPlatform::new(opts.name.clone())?;
-    let secrets = crate::agent::secret_store(&layout.state_dir());
-    let creds = match crate::agent::load_or_register(&server, &platform, &layout.state_dir(), secrets.as_ref()).await {
-        Ok(creds) => creds,
+    let (creds, password) = match crate::install::register(&opts, &platform, &layout.state_dir()).await {
+        Ok(registered) => registered,
         Err(e) => {
             // Leave no half-installed Device behind; on a reinstall keep the existing one and its credentials.
             if !reinstall {
@@ -291,7 +289,6 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
         }
         return Err(e.context("cannot install the rcli-agent service"));
     }
-    let password = secrets.get(rcli_agent::ipc::DEVICE_PASSWORD)?.unwrap_or_default();
     writeln!(
         out,
         "installed {} and started the service {SERVICE}\nDevice ID: {}\nDevice Password: {password}\n\
@@ -304,35 +301,14 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     Ok(())
 }
 
-/// The Server Address and this Device's credentials, read while they still exist: `uninstall` removes the Device
-/// from the Server with them before it deletes the local data.
-#[cfg(windows)]
-fn recorded_install(layout: &Layout) -> (Option<String>, Option<rcli_agent::Credentials>) {
-    let server = ServiceConfig::load(&layout.config()).ok().map(|config| config.server);
-    let creds = std::fs::read(layout.state_dir().join("credentials.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<rcli_agent::Credentials>(&bytes).ok());
-    (server, creds)
-}
-
-/// `rcli agent uninstall` from an elevated shell: removes the Device from the Server, then stops and deletes the
-/// service and deletes the local data and secrets. An unreachable Server is a warning, not a failure: the local
-/// install must still be removable, and an Admin can delete the Device from the Dashboard.
+/// `rcli agent uninstall` from an elevated shell: removes the Device from the Server (see `install::unregister`),
+/// then stops and deletes the service and deletes the local data.
 #[cfg(windows)]
 pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     anyhow::ensure!(crate::upgrade::is_root(), "run it from an elevated shell (Run as administrator): rcli agent uninstall");
     let layout = Layout::real();
-    if let (Some(server), Some(creds)) = recorded_install(&layout) {
-        if let Err(e) = rcli_agent::unregister_at(&server, &creds).await {
-            writeln!(out, "warning: could not remove the Device from the Server: {e:#}")?;
-        }
-    }
-    let secrets = crate::agent::secret_store(&layout.state_dir());
-    for name in [rcli_agent::ipc::DEVICE_PASSWORD, rcli_agent::ipc::UNLOCK_PASSWORD] {
-        if let Err(e) = secrets.remove(name) {
-            writeln!(out, "warning: {e:#}")?;
-        }
-    }
+    let server = ServiceConfig::load(&layout.config()).ok().map(|config| config.server);
+    crate::install::unregister(server, &layout.state_dir(), out).await?;
     uninstall_files(&layout, &mut crate::install::system)?;
     writeln!(out, "stopped and deleted the service {SERVICE}; removed {} and the Device's local data", layout.exe().display())?;
     Ok(())

@@ -1,4 +1,4 @@
-use rcli_agent::ServerEndpoint;
+use rcli_agent::ServerAccess;
 use rcli_testkit::{FakePlatform, StatusCode, TestSystem};
 
 #[tokio::test]
@@ -43,10 +43,10 @@ async fn replacing_the_server_key_keeps_registered_devices_and_retires_the_old_k
     assert_eq!(device["status"], "Online");
 
     // The old key no longer registers a Device; the new one does.
-    let old = ServerEndpoint { addr: sys.agent_addr(), server_key: old_key };
+    let old = ServerAccess { addr: sys.agent_addr(), server_key: old_key };
     let err = rcli_agent::register(&old, &FakePlatform::new("impostor")).await.unwrap_err();
     assert!(err.to_string().contains("invalid_server_key"), "{err}");
-    let new = ServerEndpoint { addr: sys.agent_addr(), server_key: new_key.to_owned() };
+    let new = ServerAccess { addr: sys.agent_addr(), server_key: new_key.to_owned() };
     rcli_agent::register(&new, &FakePlatform::new("new-pc")).await.unwrap();
 }
 
@@ -55,7 +55,7 @@ async fn setting_the_server_address_reissues_the_certificate_and_is_refused_to_o
     let sys = TestSystem::start().await;
     let port = sys.server.agent_addr.port();
     // Only `localhost` is in the certificate at first, so the Agent's pinning refuses another name.
-    let by_ip = ServerEndpoint { addr: format!("127.0.0.1:{port}"), server_key: sys.server_key() };
+    let by_ip = ServerAccess { addr: format!("127.0.0.1:{port}"), server_key: sys.server_key() };
     assert!(rcli_agent::register(&by_ip, &FakePlatform::new("lab-pc")).await.is_err());
 
     sys.rcli(&["server-address", "set", "127.0.0.1"]).await.unwrap();

@@ -22,7 +22,7 @@ async fn every_change_is_refused_to_a_non_root_caller() {
     let sys = TestSystem::start().await;
     let dir = temp_dir("gate");
     let creds = sys.register(&rcli_testkit::FakePlatform::new("lab-pc")).await.unwrap();
-    let mut agent = rcli_testkit::TestAgent::with_secrets_dir(sys.endpoint(), rcli_testkit::FakePlatform::new("lab-pc"), creds, dir.clone());
+    let mut agent = rcli_testkit::TestAgent::with_secrets_dir(sys.server_access(), rcli_testkit::FakePlatform::new("lab-pc"), creds, dir.clone());
     agent.start();
     let socket = dir.join("agent.sock");
     tokio::spawn(rcli_agent::ipc::serve(socket.clone(), agent.status.clone()));
@@ -50,7 +50,7 @@ async fn every_change_is_refused_to_a_non_root_caller() {
         let info: serde_json::Value =
             serde_json::from_str(&sys.agent_rcli(&socket, &["agent", "info", "--json"]).await.unwrap()).unwrap();
         assert_eq!(info["device_id"], agent.device_id());
-        assert_eq!(info["server"], agent.status.endpoint().addr);
+        assert_eq!(info["server"], agent.status.server_access().addr);
         let device = sys.wait_device(agent.device_id(), |d| d["name"] == "lab-pc").await;
         assert_eq!(device["device_id"], agent.device_id());
     }
@@ -145,7 +145,7 @@ async fn a_server_address_change_reconnects_without_a_restart() {
     let (agent, socket) = device(&sys, "server").await;
     let id = agent.device_id().to_owned();
     let key = sys.server_key();
-    let real = agent.status.endpoint().addr;
+    let real = agent.status.server_access().addr;
 
     // A malformed Server Key is refused and changes nothing.
     let bad = sys.agent_rcli(&socket, &["agent", "server", "set", "localhost:1", "--key", "nonsense"]).await;

@@ -11,7 +11,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 pub use live::{local_candidate_type, LiveViewer, TestTurn};
 
 pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState, UiElement};
-use rcli_agent::{Credentials, ServerEndpoint};
+use rcli_agent::{Credentials, ServerAccess};
 pub use rcli_server::clock::{Clock, ManualClock};
 pub use reqwest::StatusCode;
 pub use rmcp;
@@ -167,8 +167,8 @@ impl TestSystem {
         format!("localhost:{}", self.server.agent_addr.port())
     }
 
-    pub fn endpoint(&self) -> ServerEndpoint {
-        ServerEndpoint { addr: self.agent_addr(), server_key: self.server_key() }
+    pub fn server_access(&self) -> ServerAccess {
+        ServerAccess { addr: self.agent_addr(), server_key: self.server_key() }
     }
 
     /// Runs `rcli <args>` in-process against this Server as the admin; returns stdout.
@@ -245,7 +245,7 @@ impl TestSystem {
 
     /// Registers a Device on `platform` with the Server Key (not started).
     pub async fn register(&self, platform: &FakePlatform) -> anyhow::Result<Credentials> {
-        rcli_agent::register(&self.endpoint(), platform).await
+        rcli_agent::register(&self.server_access(), platform).await
     }
 
     /// Registers a new Device named `hostname` and starts its Agent.
@@ -257,7 +257,7 @@ impl TestSystem {
     /// The Agent's Secret Store lives in `dir` too, as on a real Device.
     pub async fn start_agent_with_socket(&self, hostname: &str, dir: &std::path::Path) -> TestAgent {
         let creds = self.register(&FakePlatform::new(hostname)).await.expect("register");
-        let mut agent = TestAgent::with_secrets_dir(self.endpoint(), FakePlatform::new(hostname), creds, dir.to_path_buf());
+        let mut agent = TestAgent::with_secrets_dir(self.server_access(), FakePlatform::new(hostname), creds, dir.to_path_buf());
         agent.start();
         tokio::spawn(rcli_agent::ipc::serve(dir.join("agent.sock"), agent.status.clone()));
         agent
@@ -272,7 +272,7 @@ impl TestSystem {
     /// Like `start_agent_trusting_socket`, on `platform` so the test can script it.
     pub async fn start_agent_trusting_socket_on(&self, platform: FakePlatform, dir: &std::path::Path) -> TestAgent {
         let creds = self.register(&platform).await.expect("register");
-        let mut agent = TestAgent::with_secrets_dir(self.endpoint(), platform, creds, dir.to_path_buf());
+        let mut agent = TestAgent::with_secrets_dir(self.server_access(), platform, creds, dir.to_path_buf());
         agent.start();
         tokio::spawn(rcli_agent::ipc::serve_trusting_all(dir.join("agent.sock"), agent.status.clone()));
         agent
@@ -281,7 +281,7 @@ impl TestSystem {
     /// Starts a stopped `agent` again with its credentials and socket directory (the same Device, a new session).
     pub async fn resume_agent_on(&self, agent: TestAgent, platform: FakePlatform, dir: &std::path::Path) -> TestAgent {
         let mut resumed =
-            TestAgent::with_secrets_dir(agent.endpoint.clone(), platform, agent.creds.clone(), dir.to_path_buf());
+            TestAgent::with_secrets_dir(agent.server_access.clone(), platform, agent.creds.clone(), dir.to_path_buf());
         resumed.start();
         resumed
     }
@@ -310,7 +310,7 @@ impl TestSystem {
     /// Registers a new Device and starts its Agent on `platform` (keep a clone to script it).
     pub async fn start_agent_on(&self, platform: FakePlatform) -> TestAgent {
         let creds = self.register(&platform).await.expect("register");
-        let mut agent = TestAgent::new(self.endpoint(), platform, creds);
+        let mut agent = TestAgent::new(self.server_access(), platform, creds);
         agent.start();
         agent
     }
@@ -352,7 +352,7 @@ impl TestSystem {
 
 /// A real Agent running on a FakePlatform. Dropping it disconnects.
 pub struct TestAgent {
-    pub endpoint: ServerEndpoint,
+    pub server_access: ServerAccess,
     pub platform: FakePlatform,
     pub creds: Credentials,
     /// The Agent's local IPC view (Device ID and connection status).
@@ -363,24 +363,24 @@ pub struct TestAgent {
 
 impl TestAgent {
     /// An Agent for already-enrolled credentials; call `start` to connect.
-    /// It reaches `endpoint` through a link the test can cut (`cut_network`). Needs a Tokio runtime.
-    pub fn new(endpoint: ServerEndpoint, platform: FakePlatform, creds: Credentials) -> Self {
+    /// It reaches `server_access` through a link the test can cut (`cut_network`). Needs a Tokio runtime.
+    pub fn new(server_access: ServerAccess, platform: FakePlatform, creds: Credentials) -> Self {
         let dir = std::env::temp_dir().join(format!("rcli-test-agent-{}-{}", std::process::id(), creds.device_id));
-        Self::with_secrets_dir(endpoint, platform, creds, dir)
+        Self::with_secrets_dir(server_access, platform, creds, dir)
     }
 
     /// An Agent that keeps its Device Password in `secrets_dir`.
-    pub fn with_secrets_dir(endpoint: ServerEndpoint, platform: FakePlatform, creds: Credentials, secrets_dir: std::path::PathBuf) -> Self {
-        let network = NetworkLink::new(&endpoint.addr);
+    pub fn with_secrets_dir(server_access: ServerAccess, platform: FakePlatform, creds: Credentials, secrets_dir: std::path::PathBuf) -> Self {
+        let network = NetworkLink::new(&server_access.addr);
         use rcli_agent::secret_store::SecretStore;
         let secrets = std::sync::Arc::new(rcli_agent::secret_store::FileSecretStore::new(secrets_dir.clone()));
         if !creds.device_password.is_empty() {
             secrets.set(rcli_agent::ipc::DEVICE_PASSWORD, &creds.device_password).expect("store the Device Password");
         }
-        let status = Arc::new(rcli_agent::ipc::Status::new(&creds.device_id, endpoint.clone(), secrets));
+        let status = Arc::new(rcli_agent::ipc::Status::new(&creds.device_id, server_access.clone(), secrets));
         // Device Settings live beside the credentials, as on a real Device.
         status.set_settings_dir(secrets_dir);
-        Self { endpoint, platform, creds, status, task: None, network }
+        Self { server_access, platform, creds, status, task: None, network }
     }
 
     /// The Device Password generated at registration.
@@ -402,9 +402,9 @@ impl TestAgent {
     }
 
     pub fn start(&mut self) {
-        let endpoint = ServerEndpoint { addr: self.network.addr.clone(), ..self.endpoint.clone() };
-        self.status.set_endpoint(endpoint.clone());
-        let run = rcli::agent::serve(endpoint, self.creds.clone(), Arc::new(self.platform.clone()), Some(self.status.clone()));
+        let server_access = ServerAccess { addr: self.network.addr.clone(), ..self.server_access.clone() };
+        self.status.set_server_access(server_access.clone());
+        let run = rcli::agent::serve(server_access, self.creds.clone(), Arc::new(self.platform.clone()), Some(self.status.clone()));
         self.task = Some(tokio::spawn(run));
     }
 

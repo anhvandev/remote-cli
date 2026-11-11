@@ -20,7 +20,7 @@ use tokio::{
     sync::{mpsc, oneshot, watch},
 };
 
-use crate::{secret_store::SecretStore, settings, ServerEndpoint};
+use crate::{secret_store::SecretStore, settings, ServerAccess};
 
 /// The Device Password's name in the Secret Store.
 pub const DEVICE_PASSWORD: &str = "device_password";
@@ -209,7 +209,7 @@ impl Prompts {
 pub struct Status {
     device_id: RwLock<String>,
     /// The Server the Agent connects to; a change reconnects it without a restart.
-    endpoint: watch::Sender<ServerEndpoint>,
+    server_access: watch::Sender<ServerAccess>,
     connected: AtomicBool,
     secrets: Arc<dyn SecretStore>,
     /// Where `rcli agent run` keeps its credentials, so a new Device ID survives a restart (None in tests).
@@ -232,12 +232,12 @@ pub struct Status {
 }
 
 impl Status {
-    pub fn new(device_id: &str, endpoint: ServerEndpoint, secrets: Arc<dyn SecretStore>) -> Self {
+    pub fn new(device_id: &str, server_access: ServerAccess, secrets: Arc<dyn SecretStore>) -> Self {
         let (changes, changes_rx) = mpsc::unbounded_channel();
         let (disconnects, disconnects_rx) = mpsc::unbounded_channel();
         Self {
             device_id: RwLock::new(device_id.into()),
-            endpoint: watch::channel(endpoint).0,
+            server_access: watch::channel(server_access).0,
             connected: AtomicBool::new(false),
             secrets,
             credentials: Mutex::new(None),
@@ -290,17 +290,17 @@ impl Status {
         self.device_id.read().unwrap().clone()
     }
 
-    pub fn endpoint(&self) -> ServerEndpoint {
-        self.endpoint.borrow().clone()
+    pub fn server_access(&self) -> ServerAccess {
+        self.server_access.borrow().clone()
     }
 
-    pub fn subscribe(&self) -> watch::Receiver<ServerEndpoint> {
-        self.endpoint.subscribe()
+    pub fn subscribe(&self) -> watch::Receiver<ServerAccess> {
+        self.server_access.subscribe()
     }
 
     /// Points the Agent at another Server: the running session reconnects with the new values.
-    pub fn set_endpoint(&self, endpoint: ServerEndpoint) {
-        self.endpoint.send_replace(endpoint);
+    pub fn set_server_access(&self, server_access: ServerAccess) {
+        self.server_access.send_replace(server_access);
     }
 
     /// Tells the Agent to rewrite `credentials.json` (so a new Device ID survives a restart).
@@ -372,7 +372,7 @@ impl Status {
     fn info(&self, is_root: bool) -> Value {
         let mut info = json!({
             "device_id": self.device_id(),
-            "server": self.endpoint.borrow().addr,
+            "server": self.server_access.borrow().addr,
             "connected": self.connected.load(Ordering::Relaxed),
             "controllers": self.controllers.list(),
         });
@@ -381,7 +381,7 @@ impl Status {
         // one is set.
         if is_root {
             info["settings"] = json!(self.settings.get());
-            info["server_key"] = self.endpoint.borrow().server_key.clone().into();
+            info["server_key"] = self.server_access.borrow().server_key.clone().into();
             info["unlock_password_set"] = matches!(self.unlock_password(), Ok(Some(_))).into();
         }
         info
@@ -655,7 +655,7 @@ async fn dispatch(status: &Status, request: &Value, is_root: bool) -> Value {
             if addr.is_empty() || ServerKey::parse(key).is_none() {
                 return json!({ "error": "give the Server Address (host:port) and a Server Key rk_<fingerprint>_<secret>" });
             }
-            status.set_endpoint(ServerEndpoint { addr: addr.into(), server_key: key.into() });
+            status.set_server_access(ServerAccess { addr: addr.into(), server_key: key.into() });
             json!({ "server": addr, "message": format!("the Agent is reconnecting to {addr}") })
         }
     }
@@ -692,7 +692,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let store = FileSecretStore::new(&dir);
         store.set(DEVICE_PASSWORD, "abcd2345ef").unwrap();
-        let status = Status::new("123456789", ServerEndpoint { addr: "localhost:1".into(), server_key: String::new() }, Arc::new(store));
+        let status = Status::new("123456789", ServerAccess { addr: "localhost:1".into(), server_key: String::new() }, Arc::new(store));
 
         let show = json!({ "command": "password.show" });
         let block = tokio::runtime::Runtime::new().unwrap();
@@ -710,7 +710,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rcli-ipc-short-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = FileSecretStore::new(&dir);
-        let status = Status::new("123456789", ServerEndpoint { addr: "localhost:1".into(), server_key: String::new() }, Arc::new(store));
+        let status = Status::new("123456789", ServerAccess { addr: "localhost:1".into(), server_key: String::new() }, Arc::new(store));
 
         let reply = tokio::runtime::Runtime::new().unwrap().block_on(dispatch(&status, &json!({ "command": "password.set", "password": "short" }), true));
         assert!(reply["error"].as_str().unwrap().contains("8 characters"), "{reply}");
@@ -750,7 +750,7 @@ mod tests {
         store.set(UNLOCK_PASSWORD, "at-the-lock-screen").unwrap();
         let status = Status::new(
             "123456789",
-            ServerEndpoint { addr: "localhost:1".into(), server_key: "rk_deadbeef_secret".into() },
+            ServerAccess { addr: "localhost:1".into(), server_key: "rk_deadbeef_secret".into() },
             Arc::new(store),
         );
         let block = tokio::runtime::Runtime::new().unwrap();

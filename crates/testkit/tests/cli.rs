@@ -35,7 +35,7 @@ async fn rcli_agent_run_registers_and_connects_a_device() {
 async fn rcli_devices_shows_device_status_as_text_and_json() {
     let sys = TestSystem::start().await;
     let creds = sys.register(&rcli_testkit::FakePlatform::new("lab-pc")).await.unwrap();
-    let mut agent = rcli_testkit::TestAgent::new(sys.endpoint(), rcli_testkit::FakePlatform::new("lab-pc"), creds);
+    let mut agent = rcli_testkit::TestAgent::new(sys.server_access(), rcli_testkit::FakePlatform::new("lab-pc"), creds);
     agent.start();
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
 

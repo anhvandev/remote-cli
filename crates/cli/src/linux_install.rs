@@ -193,10 +193,6 @@ fn recorded_server(layout: &Layout) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(&text).ok()?["server"].as_str().map(str::to_owned)
 }
 
-fn device_credentials(layout: &Layout) -> Option<rcli_agent::Credentials> {
-    serde_json::from_slice(&std::fs::read(layout.state_dir().join("credentials.json")).ok()?).ok()
-}
-
 /// `sudo rcli agent install`: files, Device Settings, registration, then the systemd service. Registering first
 /// makes a wrong Server Key fail at the install and lets the Device ID and Device Password be printed.
 pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
@@ -204,12 +200,9 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     let layout = Layout { root: "/".into() };
     let exe = std::env::current_exe()?;
     install_files(&layout, &opts, &exe, &mut system)?;
-    let server = rcli_agent::ServerEndpoint { addr: opts.server.clone(), server_key: opts.key.clone() };
     let platform = rcli_agent::linux::LinuxPlatform::new(opts.name.clone())?;
-    let secrets = crate::agent::secret_store(&layout.state_dir());
-    let creds = crate::agent::load_or_register(&server, &platform, &layout.state_dir(), secrets.as_ref()).await?;
+    let (creds, password) = crate::install::register(&opts, &platform, &layout.state_dir()).await?;
     install_service(&layout, &opts, &mut system)?;
-    let password = secrets.get(rcli_agent::ipc::DEVICE_PASSWORD)?.unwrap_or_default();
     writeln!(
         out,
         "installed {UNIT} and {}\nDevice ID: {}\nDevice Password: {password}\n\
@@ -229,23 +222,12 @@ pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Res
     Ok(())
 }
 
-/// `sudo rcli agent uninstall`: removes the Device from the Server, then stops and removes the service and deletes
-/// the Device's local data and secrets. A Server that cannot be reached is a warning, not a failure: the local
-/// install must still be removable, and an Admin can delete the Device from the Dashboard.
+/// `sudo rcli agent uninstall`: removes the Device from the Server (see `install::unregister`), then stops and removes
+/// the service and deletes the Device's local data.
 pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     anyhow::ensure!(crate::upgrade::is_root(), "run it as root: sudo rcli agent uninstall");
     let layout = Layout { root: "/".into() };
-    if let (Some(server), Some(creds)) = (recorded_server(&layout), device_credentials(&layout)) {
-        if let Err(e) = rcli_agent::unregister_at(&server, &creds).await {
-            writeln!(out, "warning: could not remove the Device from the Server: {e:#}")?;
-        }
-    }
-    let secrets = crate::agent::secret_store(&layout.state_dir());
-    for name in [rcli_agent::ipc::DEVICE_PASSWORD, rcli_agent::ipc::UNLOCK_PASSWORD] {
-        if let Err(e) = secrets.remove(name) {
-            writeln!(out, "warning: {e:#}")?;
-        }
-    }
+    crate::install::unregister(recorded_server(&layout), &layout.state_dir(), out).await?;
     uninstall_files(&layout, &mut system)?;
     writeln!(out, "removed {UNIT}, {} and the Device's local data", layout.exe().display())?;
     Ok(())

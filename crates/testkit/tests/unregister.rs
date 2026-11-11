@@ -16,7 +16,7 @@ async fn an_agent_removes_its_own_device_and_the_server_audits_it() {
     sys.wait_device(other.device_id(), |d| d["status"] == "Online").await;
 
     // What `rcli agent uninstall` does before it deletes the local credentials.
-    rcli_agent::unregister(&agent.endpoint, &agent.creds).await.unwrap();
+    rcli_agent::unregister(&agent.server_access, &agent.creds).await.unwrap();
 
     // Gone from the fleet, its detail 404s; the Server closed its connection.
     eventually(|| async {
@@ -42,6 +42,6 @@ async fn an_agent_removes_its_own_device_and_the_server_audits_it() {
 
     // The Agent's old credentials can no longer connect: a reconnect is refused and registers nothing.
     agent.stop();
-    let err = rcli_agent::unregister(&agent.endpoint, &agent.creds).await;
+    let err = rcli_agent::unregister(&agent.server_access, &agent.creds).await;
     assert!(err.is_ok(), "removing an already removed Device is not an error: {err:?}");
 }

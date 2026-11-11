@@ -7,12 +7,12 @@ use rcli_agent::{
     ipc,
     secret_store::SecretStore,
     settings::{AcceptMode, RootAccess},
-    Credentials, ServerEndpoint,
+    Credentials, ServerAccess,
 };
 
 /// Keeps a registered Device connected: the Agent entry point `rcli agent run` and the test system share.
 pub async fn serve(
-    server: ServerEndpoint,
+    server: ServerAccess,
     creds: Credentials,
     platform: Arc<dyn rcli_agent::platform::Platform>,
     status: Option<Arc<ipc::Status>>,
@@ -37,7 +37,7 @@ pub struct DeviceConfig {
 
 /// Starts the Agent: registers on first start, serves the local IPC and the Server connection.
 pub async fn serve_device(config: DeviceConfig) -> anyhow::Result<()> {
-    let server = ServerEndpoint { addr: config.server, server_key: config.key };
+    let server = ServerAccess { addr: config.server, server_key: config.key };
     #[cfg(target_os = "linux")]
     let platform = Arc::new(rcli_agent::linux::LinuxPlatform::with_state_dir(config.name.clone(), &config.state_dir)?);
     #[cfg(target_os = "macos")]
@@ -114,7 +114,7 @@ pub struct Run {
 /// The Device's credentials from `state_dir`, or a new registration saved there. The Device Password goes to
 /// `secrets`, never into `credentials.json`.
 pub async fn load_or_register(
-    server: &ServerEndpoint,
+    server: &ServerAccess,
     platform: &dyn rcli_agent::platform::Platform,
     state_dir: &std::path::Path,
     secrets: &dyn SecretStore,

@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
             platform.displays()?.iter().map(|d| Display { name: format!("Display {}", d.index + 1), width: d.width, height: d.height }).collect();
         platform.update(|s| s.inventory.displays = displays);
         let creds = sys.register(&platform).await?;
-        let mut agent = TestAgent::new(sys.endpoint(), platform, creds);
+        let mut agent = TestAgent::new(sys.server_access(), platform, creds);
         agent.start();
         sys.wait_device_details(agent.device_id(), |d| !d["inventory"].is_null() && !d["resources"].is_null()).await;
         agents.push(agent);

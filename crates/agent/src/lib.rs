@@ -61,7 +61,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// Where the Server's Agent port is and the Server Key that pins its CA.
 #[derive(Clone, Debug)]
-pub struct ServerEndpoint {
+pub struct ServerAccess {
     /// `host:port`; `host` must be one of the Server's `agent_hostnames`.
     pub addr: String,
     /// `rk_<CA fingerprint>_<secret>`.
@@ -157,7 +157,7 @@ pub fn ca_fingerprint(ca_pem: &str) -> anyhow::Result<String> {
     Ok(hex::encode(sha256(&CertificateDer::from_pem_slice(ca_pem.as_bytes())?)))
 }
 
-fn config(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow::Result<ClientConfig> {
+fn config(server: &ServerAccess, creds: Option<&Credentials>) -> anyhow::Result<ClientConfig> {
     config_pinned(&parse_server_key(&server.server_key)?.fingerprint, creds)
 }
 
@@ -181,7 +181,7 @@ fn config_pinned(fingerprint: &str, creds: Option<&Credentials>) -> anyhow::Resu
     })
 }
 
-async fn connect(server: &ServerEndpoint, creds: Option<&Credentials>) -> anyhow::Result<Conn<TlsStream<TcpStream>>> {
+async fn connect(server: &ServerAccess, creds: Option<&Credentials>) -> anyhow::Result<Conn<TlsStream<TcpStream>>> {
     let config = config(server, creds)?;
     connect_with_config(&server.addr, config).await
 }
@@ -197,7 +197,7 @@ async fn connect_with_config(addr: &str, config: ClientConfig) -> anyhow::Result
 /// Registers this Device with the Server Key: checks the Server's CA against the key's fingerprint, presents its
 /// secret, and gets back this Device's mTLS certificate, 9-digit Device ID and update key to pin.
 /// The private key never leaves the Agent; only a CSR is sent.
-pub async fn register(server: &ServerEndpoint, platform: &dyn Platform) -> anyhow::Result<Credentials> {
+pub async fn register(server: &ServerAccess, platform: &dyn Platform) -> anyhow::Result<Credentials> {
     let server_key = parse_server_key(&server.server_key)?;
     let key = rcgen::KeyPair::generate()?;
     let csr = rcgen::CertificateParams::new(vec![])?.serialize_request(&key)?.pem()?;
@@ -229,7 +229,7 @@ pub async fn register(server: &ServerEndpoint, platform: &dyn Platform) -> anyho
 /// Removes this Device from the Server, what `sudo rcli agent uninstall` does before it deletes the local
 /// credentials. It authenticates with the Device's certificate, not the Server Key: the Device may already have
 /// forgotten the key, and the Server only needs to know which Device asks.
-pub async fn unregister(server: &ServerEndpoint, creds: &Credentials) -> anyhow::Result<()> {
+pub async fn unregister(server: &ServerAccess, creds: &Credentials) -> anyhow::Result<()> {
     unregister_at(&server.addr, creds).await
 }
 
@@ -246,12 +246,12 @@ pub async fn unregister_at(addr: &str, creds: &Credentials) -> anyhow::Result<()
 
 /// Keeps a connection to the Server open forever, reconnecting with backoff.
 /// Resources are sampled every 5 s whether connected or not; samples taken offline are backfilled on reconnect.
-/// With a `status`, a changed Server endpoint reconnects at once and Device identity changes go over the connection.
-pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<dyn Platform>, status: Option<Arc<ipc::Status>>) {
-    // With IPC, the Status owns the endpoint (a change reconnects) and receives the changes to forward.
-    let mut endpoint = status.as_ref().map_or(server, |s| s.endpoint());
+/// With a `status`, a changed Server Address or Server Key reconnects at once and Device identity changes go over the connection.
+pub async fn run(server: ServerAccess, mut creds: Credentials, platform: Arc<dyn Platform>, status: Option<Arc<ipc::Status>>) {
+    // With IPC, the Status owns the Server Address and Server Key (a change reconnects) and receives the changes to forward.
+    let mut server_access = status.as_ref().map_or(server, |s| s.server_access());
     let mut inbox = Inbox {
-        endpoints: status.as_ref().map(|s| s.subscribe()),
+        server_access: status.as_ref().map(|s| s.subscribe()),
         changes: status.as_ref().and_then(|s| s.take_changes()),
         disconnects: status.as_ref().and_then(|s| s.take_disconnects()),
     };
@@ -285,11 +285,11 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
     let mut backoff = Duration::from_secs(1);
     loop {
         // Another Server Address is one switch away; pick up whichever is current.
-        if let Some(rx) = &mut inbox.endpoints {
-            endpoint = rx.borrow_and_update().clone();
+        if let Some(rx) = &mut inbox.server_access {
+            server_access = rx.borrow_and_update().clone();
         }
         let mut reconnect = false;
-        match connect(&endpoint, Some(&creds)).await {
+        match connect(&server_access, Some(&creds)).await {
             Ok(conn) => {
                 backoff = Duration::from_secs(1);
                 // A session grant belongs to the session that ended with the last connection.
@@ -316,7 +316,7 @@ pub async fn run(server: ServerEndpoint, mut creds: Credentials, platform: Arc<d
         if reconnect {
             continue;
         }
-        match &mut inbox.endpoints {
+        match &mut inbox.server_access {
             Some(rx) => tokio::select! {
                 _ = tokio::time::sleep(backoff) => {}
                 changed = rx.changed() => if changed.is_ok() { continue },
@@ -346,7 +346,7 @@ struct AgentState {
 /// What the person at the Device sends the running Agent over the IPC; all `None` without a Status.
 struct Inbox {
     /// A new Server Address or Key.
-    endpoints: Option<tokio::sync::watch::Receiver<ServerEndpoint>>,
+    server_access: Option<tokio::sync::watch::Receiver<ServerAccess>>,
     /// Device identity changes to forward to the Server.
     changes: Option<tokio::sync::mpsc::UnboundedReceiver<ipc::Change>>,
     /// Controllers the person at the Device disconnected.
@@ -354,7 +354,7 @@ struct Inbox {
 }
 
 /// Waits until the Server Address changes; never, without a Status.
-async fn endpoints_changed(rx: &mut Option<tokio::sync::watch::Receiver<ServerEndpoint>>) -> bool {
+async fn server_access_changed(rx: &mut Option<tokio::sync::watch::Receiver<ServerAccess>>) -> bool {
     match rx {
         Some(rx) => rx.changed().await.is_ok(),
         None => std::future::pending().await,
@@ -460,7 +460,7 @@ async fn session(
                 conn.send(&send(agent_message::Msg::DisconnectController(DisconnectController { controller }))).await?;
             }
             // A new Server Address or Key: drop this connection so `run` connects with the new values.
-            _ = endpoints_changed(&mut inbox.endpoints) => return Ok(true),
+            _ = server_access_changed(&mut inbox.server_access) => return Ok(true),
             msg = conn.recv::<ServerMessage>() => {
                 match msg?.and_then(|m| m.msg) {
                     None => anyhow::bail!("server closed the connection"),
