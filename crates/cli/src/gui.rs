@@ -29,15 +29,13 @@ struct App {
     password: String,
     /// The Device Password after a reveal (root), for the Copy button.
     shown: Option<String>,
-    /// The Server Key and whether an unlock password is set, after an elevated reveal.
+    /// The Server Key, after an elevated reveal.
     secrets: Option<Value>,
     /// The Device Settings as the Agent last reported them (root-only), once the person loaded them. `None` until
     /// then, so the editors never start from made-up defaults.
     loaded: Option<DeviceSettings>,
     /// The Device Settings editor: seeded from `loaded`, never sent as a whole (only changed fields are).
     edited: DeviceSettings,
-    /// The new unlock password being typed.
-    unlock: String,
     /// The last action's message.
     note: String,
     /// The install form (macOS and Windows, shown while no Agent answers): Server Address and Server Key.
@@ -61,7 +59,6 @@ impl App {
             secrets: None,
             loaded: None,
             edited: DeviceSettings::default(),
-            unlock: String::new(),
             note: String::new(),
             #[cfg(any(target_os = "macos", windows))]
             install_server: String::new(),
@@ -79,12 +76,12 @@ impl App {
     }
 
     /// One IPC request, run elevated when the Agent refuses only for lack of root.
-    fn ipc_elevated(&self, request: &Request, args: &[&str], stdin: Option<&str>) -> Value {
+    fn ipc_elevated(&self, request: &Request, args: &[&str]) -> Value {
         let reply = self.ipc(request);
         if reply.get("error").is_none() || !refused_for_root(&reply) {
             return reply;
         }
-        match elevated(args, stdin) {
+        match elevated(args, None) {
             // Most commands print one human line; `info --json` prints the reply as JSON.
             Ok(out) => serde_json::from_str(&out).unwrap_or_else(|_| json!({ "message": out })),
             Err(e) => json!({ "error": e.to_string() }),
@@ -178,7 +175,7 @@ impl App {
 
     /// One changed setting, run elevated when the Agent refuses only for lack of root; `Err` names the setting.
     fn send_setting(&self, field: &str, request: &Request, args: &[&str]) -> Result<String, String> {
-        let reply = self.ipc_elevated(request, args, None);
+        let reply = self.ipc_elevated(request, args);
         match reply["message"].as_str() {
             Some(message) => Ok(message.to_owned()),
             None => Err(format!("{field}: {}", reply["error"].as_str().unwrap_or("the Agent did not report a result"))),
@@ -213,21 +210,7 @@ impl App {
         }
     }
 
-    /// Stores a new unlock password (root; over stdin, never on a command line).
-    fn set_unlock(&mut self) {
-        let request = Request::UnlockPasswordSet { password: self.unlock.clone() };
-        let reply = self.ipc_elevated(&request, &["agent", "unlock-password", "set"], Some(&self.unlock));
-        self.note = note(&reply);
-        self.unlock.clear();
-    }
-
-    fn clear_unlock(&mut self) {
-        let reply = self.ipc_elevated(&Request::UnlockPasswordClear, &["agent", "unlock-password", "clear"], None);
-        self.note = note(&reply);
-    }
-
-    /// The Server Key and whether an unlock password is set: root-only fields of `info`, so this asks the OS when not
-    /// root.
+    /// The Server Key: a root-only field of `info`, so this asks the OS when not root.
     fn reveal_secrets(&mut self) {
         match self.root_info() {
             Ok(reply) if reply.get("server_key").is_some() => self.secrets = Some(reply),
@@ -266,7 +249,7 @@ impl App {
 
     /// Grants root to one Controller for this session only (root).
     fn grant_root(&mut self, who: &str) {
-        let reply = self.ipc_elevated(&Request::RootGrant { who: who.to_owned() }, &["agent", "root", "grant", who], None);
+        let reply = self.ipc_elevated(&Request::RootGrant { who: who.to_owned() }, &["agent", "root", "grant", who]);
         self.note = note(&reply);
     }
 
@@ -276,7 +259,7 @@ impl App {
         let request = Request::PromptAnswer { id, accept };
         let reply = if accept {
             let id = id.to_string();
-            self.ipc_elevated(&request, &["agent", "prompt", "answer", &id, "accept"], None)
+            self.ipc_elevated(&request, &["agent", "prompt", "answer", &id, "accept"])
         } else {
             self.ipc(&request)
         };
@@ -390,21 +373,6 @@ impl eframe::App for App {
                     ui.text_edit_singleline(&mut self.password);
                     if ui.button("Change").clicked() {
                         self.change();
-                    }
-                });
-                ui.separator();
-                ui.label("Unlock password");
-                if let Some(secrets) = &self.secrets {
-                    ui.label(if secrets["unlock_password_set"] == true { "an unlock password is set" } else { "no unlock password is set" });
-                }
-                ui.horizontal(|ui| {
-                    ui.label("New:");
-                    ui.text_edit_singleline(&mut self.unlock);
-                    if ui.button("Set").clicked() {
-                        self.set_unlock();
-                    }
-                    if ui.button("Clear").clicked() {
-                        self.clear_unlock();
                     }
                 });
                 ui.separator();

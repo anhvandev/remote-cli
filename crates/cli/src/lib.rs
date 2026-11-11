@@ -172,13 +172,6 @@ enum Command {
         state: String,
         device: String,
     },
-    /// Make the Agent type the unlock password stored on the Device + Enter (needs the Control Lock).
-    Unlock {
-        device: String,
-        /// Directory to save the Observation in.
-        #[arg(long, default_value = ".")]
-        out: PathBuf,
-    },
     /// Interactive shell on a Device, like SSH. Exits with the remote shell's exit code.
     Shell {
         device: String,
@@ -307,14 +300,6 @@ enum AgentCommand {
     Accept(agent::Accept),
     /// End a Controller's sessions and Control Lock (any local user).
     Disconnect(agent::Disconnect),
-    /// The password `unlock` types at the lock or login screen: set or clear it (root only).
-    UnlockPassword {
-        #[command(subcommand)]
-        command: agent::UnlockPasswordCommand,
-        /// Local IPC socket of the running Agent.
-        #[arg(long, env = "RCLI_AGENT_SOCKET", global = true)]
-        socket: Option<PathBuf>,
-    },
     /// The prompts waiting for the person at the Device (any local user).
     Prompts(agent::Prompts),
     /// Answer one of those prompts: refusing is open to anyone, accepting needs root.
@@ -635,7 +620,6 @@ where
             AgentCommand::Root(root) => root.run(out).await,
             AgentCommand::Accept(accept) => accept.run(out).await,
             AgentCommand::Disconnect(disconnect) => disconnect.run(out).await,
-            AgentCommand::UnlockPassword { command, socket } => agent::run_unlock_password(command, socket, out).await,
             AgentCommand::Prompts(prompts) => prompts.run(out).await,
             AgentCommand::Prompt(prompt) => agent::run_prompt(prompt.command, prompt.socket, out).await,
         };
@@ -963,11 +947,6 @@ where
                 }
             }
             (r, String::new())
-        }
-        Command::Unlock { device, out } => {
-            let obs = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{}/unlock", path_segment(&device)), None).await?;
-            let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
-            (obs, text)
         }
         Command::Root { state, device } => {
             let root = state == "on";
