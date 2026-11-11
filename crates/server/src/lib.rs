@@ -46,6 +46,9 @@ pub struct Config {
     pub turn_secret: Option<String>,
     /// Raw Ed25519 public key handed to Agents at registration so they pin Agent updates; None = no updates.
     pub update_public_key: Option<Vec<u8>>,
+    /// Reverse proxies in front of the Controller API (`RCLI_TRUSTED_PROXIES`): from these peers the Controller's
+    /// IP is read from `X-Forwarded-For`, so the Device Password limiter and audit see the real client.
+    pub trusted_proxies: Vec<std::net::IpAddr>,
 }
 
 impl Config {
@@ -66,6 +69,12 @@ impl Config {
             ice_urls: var("RCLI_ICE_URLS", Some(""))?.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
             turn_secret: std::env::var("RCLI_TURN_SECRET").ok().filter(|s| !s.is_empty()),
             update_public_key: std::env::var("RCLI_UPDATE_PUBLIC_KEY").ok().filter(|s| !s.is_empty()).map(hex::decode).transpose()?,
+            trusted_proxies: var("RCLI_TRUSTED_PROXIES", Some(""))?
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.parse().map_err(|e| anyhow::anyhow!("RCLI_TRUSTED_PROXIES: {s}: {e}")))
+                .collect::<anyhow::Result<_>>()?,
         })
     }
 }

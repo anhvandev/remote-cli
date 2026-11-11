@@ -29,6 +29,9 @@ services:
       RCLI_MASTER_KEY: ${RCLI_MASTER_KEY:-}
       # Public half of the key that signs Agent builds (`rcli rollout keygen`); Devices pin it at registration.
       RCLI_UPDATE_PUBLIC_KEY: ${RCLI_UPDATE_PUBLIC_KEY:-}
+      # IPs of the TLS reverse proxy in front of port 8080 (comma-separated); from them the Controller's IP is read
+      # from X-Forwarded-For, so wrong Device Passwords are counted per real client. Empty = the TCP peer.
+      RCLI_TRUSTED_PROXIES: ${RCLI_TRUSTED_PROXIES:-}
       # WebRTC (live view): peers try direct paths first, then relay through coturn with short-lived credentials.
       RCLI_ICE_URLS: stun:${RCLI_TURN_HOST:-localhost}:3478,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=udp,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=tcp
       RCLI_TURN_SECRET: ${RCLI_TURN_SECRET:?set RCLI_TURN_SECRET}

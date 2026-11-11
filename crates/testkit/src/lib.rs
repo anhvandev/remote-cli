@@ -104,6 +104,7 @@ impl TestSystem {
             ice_urls: turn.iter().map(|t| format!("turn:{}?transport=udp", t.addr)).collect(),
             turn_secret: turn.as_ref().map(|_| TURN_SECRET.into()),
             update_public_key: Some(update_public_key),
+            trusted_proxies: Vec::new(),
         };
         let server = rcli_server::start(config.clone(), clock.clone()).await.expect("start server");
         let mut sys = Self {

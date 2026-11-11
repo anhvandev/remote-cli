@@ -150,6 +150,17 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
+/// The Controller's IP: the TCP peer, or, when the peer is a trusted reverse proxy, the address that proxy appended
+/// last to `X-Forwarded-For` (anything before it is the client's own word). A missing peer is a test without one.
+fn client_ip(peer: Option<std::net::IpAddr>, forwarded: Option<&str>, trusted: &[std::net::IpAddr]) -> String {
+    let peer = peer.unwrap_or(std::net::Ipv4Addr::LOCALHOST.into());
+    let from_proxy = || forwarded?.rsplit(',').next()?.trim().parse::<std::net::IpAddr>().ok();
+    match trusted.contains(&peer) {
+        true => from_proxy().unwrap_or(peer).to_string(),
+        false => peer.to_string(),
+    }
+}
+
 /// Extractor: the request is either a User session (bearer token) or a password connection
 /// (`X-Rcli-Server-Key`, `X-Rcli-Device`, `X-Rcli-Device-Password`, `X-Rcli-Controller`).
 pub struct Caller(pub crate::auth::User);
@@ -172,13 +183,9 @@ impl FromRequestParts<State> for Caller {
             return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"));
         };
         let controller = header("x-rcli-controller").unwrap_or("unknown");
-        // shortcut: this is the TCP peer, so behind a reverse proxy every Controller shares the proxy's IP and
-        // bucket; trust `X-Forwarded-For` only once the proxy is a known, configured hop.
-        let ip = parts
-            .extensions
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|c| c.0.ip().to_string())
-            .unwrap_or_else(|| "127.0.0.1".into());
+        let peer = parts.extensions.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip());
+        let forwarded = parts.headers.get_all("x-forwarded-for").iter().last().and_then(|v| v.to_str().ok());
+        let ip = client_ip(peer, forwarded, &state.config.trusted_proxies);
         crate::auth::authenticate_controller(state, server_key, device, password, controller, &ip)
             .await?
             .map(Caller)
@@ -210,5 +217,24 @@ impl FromRequestParts<State> for Admin {
             return Err(ApiError::new(StatusCode::FORBIDDEN, "admin_required", "this operation requires the admin role"));
         }
         Ok(Admin(user))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::client_ip;
+
+    #[test]
+    fn the_forwarded_client_ip_is_used_only_from_a_trusted_proxy() {
+        let proxy = "10.0.0.2".parse().unwrap();
+        let trusted = [proxy];
+        // The proxy appended the real client last; the first entry is whatever the client sent.
+        assert_eq!(client_ip(Some(proxy), Some("6.6.6.6, 203.0.113.7"), &trusted), "203.0.113.7");
+        // Anyone else's header is ignored: a client cannot pick its own rate-limit bucket.
+        assert_eq!(client_ip(Some("198.51.100.1".parse().unwrap()), Some("203.0.113.7"), &trusted), "198.51.100.1");
+        assert_eq!(client_ip(Some(proxy), Some("6.6.6.6"), &[]), "10.0.0.2");
+        // A trusted proxy that sent no usable header is counted as itself.
+        assert_eq!(client_ip(Some(proxy), None, &trusted), "10.0.0.2");
+        assert_eq!(client_ip(Some(proxy), Some("garbage"), &trusted), "10.0.0.2");
     }
 }
