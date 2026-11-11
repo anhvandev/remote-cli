@@ -250,6 +250,10 @@ pub async fn unregister_at(addr: &str, creds: &Credentials) -> anyhow::Result<()
 pub async fn run(server: ServerAccess, mut creds: Credentials, platform: Arc<dyn Platform>, status: Option<Arc<ipc::Status>>) {
     // With IPC, the Status owns the Server Address and Server Key (a change reconnects) and receives the changes to forward.
     let mut server_access = status.as_ref().map_or(server, |s| s.server_access());
+    // ADR 0005: rcli stores no OS password; delete the unlock password an older Agent may have left.
+    if let Some(Err(e)) = status.as_ref().map(|s| s.secrets().remove("unlock_password")) {
+        tracing::warn!("cannot delete the leftover unlock password: {e:#}");
+    }
     let mut inbox = Inbox {
         server_access: status.as_ref().map(|s| s.subscribe()),
         changes: status.as_ref().and_then(|s| s.take_changes()),
@@ -465,11 +469,10 @@ async fn session(
                 match msg?.and_then(|m| m.msg) {
                     None => anyhow::bail!("server closed the connection"),
                     Some(server_message::Msg::Error(e)) => anyhow::bail!("server refused: {}: {}", e.code, e.message),
-                    Some(server_message::Msg::Act(mut req)) => {
+                    Some(server_message::Msg::Act(req)) => {
                         // The Executor's lock runs requests one at a time, in arrival order.
                         let (platform, executor, replies) = (agent.platform.clone(), agent.executor.clone(), replies.clone());
                         let (media, rt) = (agent.media.clone(), tokio::runtime::Handle::current());
-                        let secrets = status.map(|s| s.secrets());
                         let gate = gate();
                         tokio::task::spawn_blocking(move || {
                             let failed = |error| {
@@ -481,13 +484,6 @@ async fn session(
                             };
                             if let Err(e) = gate.admit(&req.controller) {
                                 return failed(e);
-                            }
-                            // `unlock`: type this Device's own password; the Server never has it.
-                            if req.unlock {
-                                match unlock_actions(secrets.as_deref()) {
-                                    Ok(actions) => req.actions = actions,
-                                    Err(e) => return failed(e),
-                                }
                             }
                             let mut result = executor.lock().unwrap().act(platform.as_ref(), &req);
                             if !req.media_session.is_empty() {
@@ -644,25 +640,6 @@ const ROOT_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long the person at the Device has to accept a new connection.
 const ACCEPT_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// The Actions `unlock` types: the Device's own unlock password, then Enter. None set is a typed error.
-fn unlock_actions(secrets: Option<&dyn secret_store::SecretStore>) -> Result<Vec<rcli_protocol::agent::Action>, Error> {
-    let Some(secrets) = secrets else {
-        return Err(not_set("this Agent has no Secret Store, so it has no unlock password"));
-    };
-    match secrets.get(ipc::UNLOCK_PASSWORD) {
-        Ok(Some(password)) => Ok(vec![
-            rcli_protocol::agent::Action { kind: Some(rcli_protocol::agent::action::Kind::TypeText(password)) },
-            rcli_protocol::agent::Action { kind: Some(rcli_protocol::agent::action::Kind::Key("enter".into())) },
-        ]),
-        Ok(None) => Err(not_set("no unlock password is set on this Device; set one with `sudo rcli agent unlock-password set`")),
-        Err(e) => Err(Error { code: "secret_store".into(), message: format!("cannot read the unlock password: {e:#}") }),
-    }
-}
-
-fn not_set(message: &str) -> Error {
-    Error { code: "unlock_password_not_set".into(), message: message.into() }
-}
 
 /// Whether the Controller display name `name` (e.g. "alice (Dashboard)", "dev-laptop (10.0.0.5)") is the one the
 /// person at the Device means by `who`: the full name, or the part before " (".

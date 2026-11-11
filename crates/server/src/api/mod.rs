@@ -127,8 +127,6 @@ pub fn agent_error(e: rcli_protocol::agent::Error) -> ApiError {
         "text_not_found" => (StatusCode::BAD_REQUEST, "text_not_found"),
         "invalid_offer" => (StatusCode::BAD_REQUEST, "invalid_offer"),
         "no_display" => (StatusCode::CONFLICT, "no_display"),
-        // The password lives only on the Device; this is the Device's own report, not the Server's.
-        "unlock_password_not_set" => (StatusCode::CONFLICT, "unlock_password_not_set"),
         // The Device's root setting refused, or asked and nobody answered.
         "root_denied" => (StatusCode::FORBIDDEN, "root_denied"),
         // `password+accept` refused this Controller (rejected, timed out, or no session to ask in).
