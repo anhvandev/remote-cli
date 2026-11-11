@@ -5,7 +5,7 @@
 #   packaging/linux/build-rpm.sh                 # -> packaging/linux/out/rcli-<version>-1.<arch>.rpm
 #
 # Same payload and the same maintainer scripts as the .deb: the package only places /usr/bin/rcli and its hooks
-# call `rcli agent install` / `rcli agent uninstall`, so no install logic is duplicated here.
+# call `rcli install` / `rcli uninstall`, so no install logic is duplicated here.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)

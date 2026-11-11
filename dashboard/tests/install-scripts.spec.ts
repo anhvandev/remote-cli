@@ -7,7 +7,8 @@ test("install scripts come through the Dashboard origin", async ({ request }) =>
   expect(sh.ok()).toBeTruthy();
   const script = await sh.text();
   expect(script.startsWith("#!/bin/sh")).toBeTruthy();
-  expect(script).toContain("rcli agent install");
+  expect(script).toContain("rcli install --server");
+  expect(script).not.toContain("agent install");
   expect(script).toContain("--key");
   expect(script).not.toContain("rk_"); // the Server Key must never be in a public script
   // The script downloads from the origin it was served on (the Dashboard), not the internal API.
@@ -16,7 +17,8 @@ test("install scripts come through the Dashboard origin", async ({ request }) =>
   const ps1 = await request.get("/install.ps1");
   expect(ps1.ok()).toBeTruthy();
   const powershell = await ps1.text();
-  expect(powershell).toContain("agent install");
+  expect(powershell).toContain(" install --server");
+  expect(powershell).not.toContain("agent install");
   expect(powershell).toContain("RunAs"); // the one-liner installs the service elevated (UAC)
   expect(powershell).toContain(`${new URL(ps1.url()).origin}/download/windows/`);
   expect(powershell).not.toContain("rk_"); // the Server Key must never be in a public script

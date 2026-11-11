@@ -227,7 +227,7 @@ impl App {
     #[cfg(any(target_os = "macos", windows))]
     fn install(&mut self) {
         let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
-        let mut args = vec!["agent", "install", "--server", self.install_server.trim(), "--key", self.install_key.trim()];
+        let mut args = vec!["install", "--server", self.install_server.trim(), "--key", self.install_key.trim()];
         if !user.is_empty() {
             args.extend(["--terminal-user", &user]);
         }
