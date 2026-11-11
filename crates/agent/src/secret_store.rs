@@ -89,7 +89,7 @@ impl SecretStore for FileSecretStore {
 /// `--with-key=auto` uses the host key and the TPM when the Device has one, so a copied disk or backup does not
 /// reveal the secret; the credential name is bound into the key, and system-scope credentials are readable only by
 /// root (the root service's user binding). `systemd-creds` is not a link-time dependency, so a system without it
-/// falls back to `FileSecretStore` (chosen by `rcli agent install`).
+/// falls back to `FileSecretStore` (chosen by `rcli install`).
 #[cfg(target_os = "linux")]
 pub struct SystemdCredsSecretStore {
     dir: PathBuf,

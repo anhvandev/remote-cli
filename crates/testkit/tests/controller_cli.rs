@@ -1,24 +1,6 @@
-//! Controller setup: `rcli setup`, `connect <Device ID>` and `forget`; then Device commands need only the ID.
+//! On an installed machine (`install.rs`): `connect <Device ID>` and `forget`; then Device commands need only the ID.
 
 use rcli_testkit::{StatusCode, temp_dir, TestSystem};
-
-fn http_addr(sys: &TestSystem) -> String {
-    format!("http://{}", sys.server.http_addr)
-}
-
-#[tokio::test]
-async fn setup_saves_the_server_address_key_and_pinned_update_key() {
-    let sys = TestSystem::start().await;
-    let dir = temp_dir("setup");
-    let out = sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
-    assert!(out.contains("saved"), "{out}");
-
-    let config: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
-    assert_eq!(config["server"], http_addr(&sys));
-    assert_eq!(config["server_key"], sys.server_key());
-    let pinned = hex::encode(sys.config.update_public_key.clone().unwrap());
-    assert_eq!(config["update_key"], pinned, "the update key is pinned at setup");
-}
 
 #[tokio::test]
 async fn connect_then_shot_works_with_no_env_vars_and_the_password_is_not_in_the_config() {
@@ -27,7 +9,7 @@ async fn connect_then_shot_works_with_no_env_vars_and_the_password_is_not_in_the
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
     let dir = temp_dir("connect");
     let password = agent.device_password().unwrap();
-    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.controller_config(&dir, None).await;
 
     let out = sys.rcli_in(&dir, &["connect", agent.device_id(), "--password", &password]).await.unwrap();
     assert!(out.contains(agent.device_id()), "{out}");
@@ -57,7 +39,7 @@ async fn devices_lists_only_the_connected_device_and_another_device_is_refused()
     sys.wait_device(mine.device_id(), |d| d["status"] == "Online").await;
     sys.wait_device(other.device_id(), |d| d["status"] == "Online").await;
     let dir = temp_dir("devices");
-    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.controller_config(&dir, None).await;
     sys.rcli_in(&dir, &["connect", mine.device_id(), "--password", &mine.device_password().unwrap()]).await.unwrap();
 
     let list = sys.rcli_in(&dir, &["devices"]).await.unwrap();
@@ -75,7 +57,7 @@ async fn a_wrong_password_is_reported_and_not_saved() {
     let agent = sys.start_agent("lab-pc").await;
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
     let dir = temp_dir("wrong-password");
-    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.controller_config(&dir, None).await;
 
     let err = sys.rcli_in(&dir, &["connect", agent.device_id(), "--password", "wrongpassword"]).await.unwrap_err();
     assert!(err.to_string().contains("Device Password"), "{err}");
@@ -91,7 +73,7 @@ async fn forget_removes_the_remembered_password() {
     let agent = sys.start_agent("lab-pc").await;
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
     let dir = temp_dir("forget");
-    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.controller_config(&dir, None).await;
     sys.rcli_in(&dir, &["connect", agent.device_id(), "--password", &agent.device_password().unwrap()]).await.unwrap();
 
     let out = sys.rcli_in(&dir, &["forget", agent.device_id()]).await.unwrap();
@@ -111,14 +93,14 @@ async fn the_server_does_not_store_the_device_password_in_plaintext() {
     assert!(device["device_password"].is_null(), "{device}");
 }
 
-/// `--server` cannot skip the https rule `rcli setup` applies: the saved Server Key would travel in plaintext.
+/// `--server` cannot skip the https rule: the installed Server Key would travel in plaintext.
 #[tokio::test]
-async fn a_plain_http_server_flag_is_refused_like_setup() {
+async fn a_plain_http_server_flag_is_refused() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     let dir = temp_dir("server-flag-http");
     let password = agent.device_password().unwrap();
-    sys.rcli_in(&dir, &["setup", "--server", &http_addr(&sys), "--key", &sys.server_key()]).await.unwrap();
+    sys.controller_config(&dir, None).await;
     sys.rcli_in(&dir, &["connect", agent.device_id(), "--password", &password]).await.unwrap();
     let args = ["--server", "http://server.example.com:8080", "exec", agent.device_id(), "--", "whoami"];
     let err = sys.rcli_in(&dir, &args).await.unwrap_err();

@@ -1,4 +1,4 @@
-//! Small helpers shared by the per-OS `rcli agent install` implementations: the options every install takes, the
+//! Small helpers shared by the per-OS `rcli install` implementations: the options every install takes, the
 //! command seam, the rooted path, the file writer, the Device Settings an install records, the Terminal User
 //! fallback, and the registration an install starts with and an uninstall undoes.
 
@@ -16,7 +16,7 @@ pub fn system(program: &str, args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// What `rcli agent install` was given, on every platform.
+/// What `rcli install` was given, on every platform.
 pub struct Options {
     pub server: String,
     pub key: String,
@@ -67,18 +67,46 @@ pub fn device_credentials(state: &Path) -> Option<rcli_agent::Credentials> {
 }
 
 /// Registers this Device with the Server the install was given (or keeps its existing registration), so a wrong
-/// Server Key fails before the service starts. Returns the credentials and the Device Password, for the install to
-/// print.
+/// Server Key fails before the service starts, then writes the machine-wide Controller configuration at `machine`
+/// (ADR 0006). Returns the Device ID and Device Password lines the install prints.
 pub async fn register(
     opts: &Options,
     platform: &dyn rcli_agent::platform::Platform,
     state: &Path,
-) -> anyhow::Result<(rcli_agent::Credentials, String)> {
+    machine: &Path,
+) -> anyhow::Result<String> {
     let server = rcli_agent::ServerAccess { addr: opts.server.clone(), server_key: opts.key.clone() };
     let secrets = crate::agent::secret_store(state);
     let creds = crate::agent::load_or_register(&server, platform, state, secrets.as_ref()).await?;
     let password = secrets.get(rcli_agent::ipc::DEVICE_PASSWORD)?.unwrap_or_default();
-    Ok((creds, password))
+    // A reinstall keeps its saved registration, which does not carry the API Address: keep the one already known.
+    let known = crate::config::load_machine(machine).ok().flatten().map(|m| m.api_address).unwrap_or_default();
+    let api_address = if creds.api_address.is_empty() { known } else { creds.api_address.clone() };
+    let config = crate::config::Machine {
+        server: opts.server.clone(),
+        server_key: opts.key.clone(),
+        update_key: hex::encode(&creds.update_key),
+        api_address,
+    };
+    crate::config::save_machine(machine, &config)?;
+    let mut text = format!("Device ID: {}\nDevice Password: {password}\n", creds.device_id);
+    if config.api_address.is_empty() {
+        text += "The Server has no API Address yet, so `rcli connect` and `rcli mcp` wait until an Admin opens the \
+                 Dashboard over https:// once.\n";
+    }
+    Ok(text)
+}
+
+/// The Device's state directory under `root` (the `--root` test seam): credentials, Device Settings, Secret Store.
+pub fn state_dir(root: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    return crate::macos_install::Layout { root: root.into() }.state_dir();
+    #[cfg(target_os = "linux")]
+    return crate::linux_install::Layout { root: root.into() }.state_dir();
+    #[cfg(windows)]
+    return crate::windows_install::Layout::under(root).state_dir();
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    root.join("rcli")
 }
 
 /// An uninstall's first steps: removes the Device from the Server at `server` (the Server Address the install

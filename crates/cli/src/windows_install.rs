@@ -1,4 +1,4 @@
-//! `rcli agent install|uninstall` on Windows (ticket 22): `rcli.exe` in `%ProgramFiles%\rcli`, the Server Key in a
+//! `rcli install|uninstall` on Windows (ticket 22): `rcli.exe` in `%ProgramFiles%\rcli`, the Server Key in a
 //! SYSTEM/Administrators-only config file (never on the service's command line, which `sc qc` and the registry show
 //! to every user), the Device's data in `%ProgramData%\rcli`, and a SYSTEM service `rcli-agent`. The service itself
 //! is hosted with the `windows-service` crate (`windows_service.rs`), so it reports SCM status instead of dying
@@ -37,8 +37,18 @@ impl Layout {
         Self { program_files: dir("ProgramFiles", r"C:\Program Files"), program_data: dir("ProgramData", r"C:\ProgramData") }
     }
 
+    /// Both roots under `root` (the `--root` test seam).
+    pub fn under(root: &Path) -> Self {
+        Self { program_files: root.join("Program Files"), program_data: root.join("ProgramData") }
+    }
+
     pub fn exe(&self) -> PathBuf {
         self.program_files.join("rcli").join("rcli.exe")
+    }
+
+    /// The machine-wide Controller configuration; `share_controller_config` makes it readable by every local user.
+    pub fn controller_config(&self) -> PathBuf {
+        self.state_dir().join("controller.json")
     }
 
     /// The Device's credentials, Device Settings and Secret Store.
@@ -207,6 +217,14 @@ pub fn restrict(run: Run, path: &Path) -> anyhow::Result<()> {
     run("icacls.exe", &[&path.display().to_string(), "/inheritance:r", "/grant:r", &system, &administrators])
 }
 
+/// The machine-wide Controller configuration sits in the restricted state directory: give it its own ACL, read-only
+/// for the Users group. Users reach it by its full path (every account may traverse folders it cannot list), and the
+/// Agent rewrites it in place, so the ACL stays.
+pub fn share_controller_config(layout: &Layout, run: Run) -> anyhow::Result<()> {
+    let path = layout.controller_config().display().to_string();
+    run("icacls.exe", &[&path, "/inheritance:r", "/grant:r", "*S-1-5-18:F", "*S-1-5-32-544:F", "*S-1-5-32-545:R"])
+}
+
 /// Creates and starts the SYSTEM service; a reinstall replaces the old one (stopping it first is not an error if it
 /// was not running).
 pub fn install_service(layout: &Layout, run: Run) -> anyhow::Result<()> {
@@ -259,57 +277,69 @@ pub fn device_name() -> String {
     crate::config::hostname_or("windows")
 }
 
-/// `rcli agent install --server … --key …` from an elevated shell. Files, registration, then the service; a wrong
-/// Server Key fails here, before anything runs as SYSTEM, and the Device ID and password are printed on success.
+/// `rcli install --server … --key …` from an elevated shell. Files, registration and the machine-wide Controller
+/// configuration, then the service; a wrong Server Key fails here, before anything runs as SYSTEM, and the Device ID
+/// and password are printed on success.
 #[cfg(windows)]
 pub async fn install(opts: Options, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        crate::upgrade::is_root(),
-        "run it from an elevated shell (Run as administrator): rcli agent install --server … --key …"
-    );
-    let layout = Layout::real();
+    anyhow::ensure!(crate::upgrade::is_root(), "run it from an elevated shell (Run as administrator): rcli install --server … --key …");
+    let platform = rcli_agent::windows_platform::WindowsPlatform::new(opts.name.clone())?;
+    install_at(&Layout::real(), opts, &platform, &mut crate::install::system, out).await
+}
+
+/// `install` on `layout`, registering with `platform`'s inventory; the `--root` test seam calls it directly.
+#[cfg(windows)]
+pub async fn install_at(
+    layout: &Layout,
+    opts: Options,
+    platform: &dyn rcli_agent::platform::Platform,
+    run: Run<'_>,
+    out: &mut dyn std::io::Write,
+) -> anyhow::Result<()> {
     // A reinstall must not destroy a working install when the new Server Key is wrong.
     let reinstall = layout.config().exists();
-    install_files(&layout, &opts, &std::env::current_exe()?, &mut crate::install::system)?;
+    install_files(layout, &opts, &std::env::current_exe()?, run)?;
     // Register now, so the Device ID and password exist before the service starts and a wrong key is caught here.
-    let platform = rcli_agent::windows_platform::WindowsPlatform::new(opts.name.clone())?;
-    let (creds, password) = match crate::install::register(&opts, &platform, &layout.state_dir()).await {
+    let registered = match crate::install::register(&opts, platform, &layout.state_dir(), &layout.controller_config()).await {
         Ok(registered) => registered,
         Err(e) => {
             // Leave no half-installed Device behind; on a reinstall keep the existing one and its credentials.
             if !reinstall {
-                let _ = uninstall_files(&layout, &mut crate::install::system);
+                let _ = uninstall_files(layout, run);
             }
             return Err(e.context("cannot register this Device; is the Server Address and Server Key right?"));
         }
     };
-    if let Err(e) = install_service(&layout, &mut crate::install::system) {
+    if let Err(e) = share_controller_config(layout, run).and_then(|()| install_service(layout, run)) {
         if !reinstall {
-            let _ = uninstall_files(&layout, &mut crate::install::system);
+            let _ = uninstall_files(layout, run);
         }
         return Err(e.context("cannot install the rcli-agent service"));
     }
-    writeln!(
+    write!(
         out,
-        "installed {} and started the service {SERVICE}\nDevice ID: {}\nDevice Password: {password}\n\
+        "installed {} and started the service {SERVICE}\n{registered}\
          The service runs as SYSTEM and drives the screen in the active session (the lock and sign-in screens and \
          UAC prompts too).\nNext: for Ctrl+Alt+Del, allow software SAS once (see docs/usage.md), then \
-         `rcli act <Device ID> key ctrl+alt+del` from a Controller.",
+         `rcli act <Device ID> key ctrl+alt+del` from a Controller.\n",
         layout.exe().display(),
-        creds.device_id,
     )?;
     Ok(())
 }
 
-/// `rcli agent uninstall` from an elevated shell: removes the Device from the Server (see `install::unregister`),
-/// then stops and deletes the service and deletes the local data.
+/// `rcli uninstall` from an elevated shell: removes the Device from the Server (see `install::unregister`), then
+/// stops and deletes the service and deletes the local data, the machine-wide Controller configuration with it.
 #[cfg(windows)]
 pub async fn uninstall(out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-    anyhow::ensure!(crate::upgrade::is_root(), "run it from an elevated shell (Run as administrator): rcli agent uninstall");
-    let layout = Layout::real();
+    anyhow::ensure!(crate::upgrade::is_root(), "run it from an elevated shell (Run as administrator): rcli uninstall");
+    uninstall_at(&Layout::real(), &mut crate::install::system, out).await
+}
+
+#[cfg(windows)]
+pub async fn uninstall_at(layout: &Layout, run: Run<'_>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     let server = ServiceConfig::load(&layout.config()).ok().map(|config| config.server);
     crate::install::unregister(server, &layout.state_dir(), out).await?;
-    uninstall_files(&layout, &mut crate::install::system)?;
+    uninstall_files(layout, run)?;
     writeln!(out, "stopped and deleted the service {SERVICE}; removed {} and the Device's local data", layout.exe().display())?;
     Ok(())
 }
@@ -326,7 +356,7 @@ mod tests {
             std::env::temp_dir().join(format!("rcli-win-install-{name}-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let layout = Layout { program_files: root.join("Program Files"), program_data: root.join("ProgramData") };
+        let layout = Layout::under(&root);
         (layout, root)
     }
 
@@ -463,6 +493,26 @@ mod tests {
         assert_eq!(calls, vec!["sc.exe stop rcli-agent".to_owned(), "sc.exe delete rcli-agent".to_owned()]);
         assert!(!layout.state_dir().exists() && !layout.program_files.join("rcli").exists(), "an install file is left behind");
         assert!(!layout.shortcut().exists(), "the Start Menu shortcut is left behind");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Every local user reads the machine-wide Controller configuration; only SYSTEM and Administrators change it.
+    #[test]
+    fn the_controller_configuration_is_read_only_for_users() {
+        let (layout, root) = temp_layout("controller-config");
+        let mut calls: Vec<String> = vec![];
+        share_controller_config(&layout, &mut |program: &str, args: &[&str]| {
+            calls.push(format!("{program} {}", args.join(" ")));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            calls,
+            vec![format!(
+                "icacls.exe {} /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F *S-1-5-32-545:R",
+                layout.controller_config().display()
+            )]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

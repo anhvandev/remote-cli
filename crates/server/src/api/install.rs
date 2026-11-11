@@ -88,7 +88,7 @@ fn origin(headers: &HeaderMap) -> String {
     format!("{scheme}://{host}")
 }
 
-/// The first `host:port` of the (comma-separated) Server Address: the one `rcli agent install` dials.
+/// The first `host:port` of the (comma-separated) Server Address: the one `rcli install` dials.
 fn first_address(address: &str) -> &str {
     address.split(',').next().unwrap_or("").trim()
 }

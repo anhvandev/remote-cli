@@ -194,7 +194,7 @@ async fn rcli_root_on_makes_exec_request_root_by_default() {
     let dev = agent.device_id().to_owned();
     let _alice = sys.create_user("alice", "operator").await;
     let config_dir = temp_dir("controller-root-config");
-    // A Controller that connected with the Device Password, as `rcli setup` + `rcli connect` leave it.
+    // A Controller that connected with the Device Password, as `rcli install` + `rcli connect` leave it.
     sys.controller_config(&config_dir, Some((&dev, &agent.device_password().unwrap()))).await;
 
     // Without `root on`, plain exec is not root.

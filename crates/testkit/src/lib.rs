@@ -177,14 +177,46 @@ impl TestSystem {
         self.rcli_as(&self.admin_token, args).await
     }
 
-    /// Runs `rcli <args>` in-process with `config_dir` as the Controller configuration, so `setup`, `connect` and
-    /// remembered Device Passwords work per test. No token is added: password connections are the point.
-    pub async fn rcli_in(&self, config_dir: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {
-        let mut argv = vec!["rcli".to_owned(), "--config-dir".to_owned(), config_dir.to_string_lossy().into_owned()];
+    /// Runs `rcli <args>` in-process on the machine `dir` as one local user whose own config is `dir` too: the
+    /// machine-wide configuration is under `dir` (see `controller_config`). No token is added: password connections
+    /// are the point.
+    pub async fn rcli_in(&self, dir: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {
+        self.rcli_user(dir, dir, args).await
+    }
+
+    /// Runs `rcli <args>` in-process as the local user whose config directory is `home`, on a machine installed under
+    /// `root` (`rcli --root`), so several local users can share one install.
+    pub async fn rcli_user(&self, root: &std::path::Path, home: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {
+        let mut argv = vec!["rcli".to_owned(), "--root".to_owned(), root.to_string_lossy().into_owned()];
+        argv.extend(["--config-dir".to_owned(), home.to_string_lossy().into_owned()]);
         argv.extend(args.iter().map(|s| s.to_string()));
         let mut out = Vec::new();
         rcli::run(argv, &mut out).await?;
         Ok(String::from_utf8(out)?)
+    }
+
+    /// `rcli install` with this Server's Server Address and `key`, into `root` instead of `/` (no service, no real
+    /// screen); returns what it printed. `start_installed` then runs the Agent the service would.
+    pub async fn install_with_key(&self, root: &std::path::Path, key: &str) -> anyhow::Result<String> {
+        let name = root.file_name().unwrap().to_string_lossy().into_owned();
+        let args = ["install", "--server", &self.agent_addr(), "--key", key, "--name", &name];
+        self.rcli_user(root, root, &args).await
+    }
+
+    pub async fn install(&self, root: &std::path::Path) -> anyhow::Result<String> {
+        self.install_with_key(root, &self.server_key()).await
+    }
+
+    /// Starts the Agent `install` left under `root`, as its service would: its credentials, its Secret Store, and the
+    /// machine-wide Controller configuration it keeps current.
+    pub fn start_installed(&self, root: &std::path::Path) -> TestAgent {
+        let state = rcli::install::state_dir(root);
+        let creds: Credentials = serde_json::from_slice(&std::fs::read(state.join("credentials.json")).expect("installed")).unwrap();
+        let name = root.file_name().unwrap().to_string_lossy().into_owned();
+        let mut agent = TestAgent::with_secrets_dir(self.server_access(), FakePlatform::new(&name), creds, state);
+        agent.status.set_controller_config(rcli::config::machine_path(Some(root)));
+        agent.start();
+        agent
     }
 
     /// Runs `rcli <args>` in-process with the API token `token`; returns stdout.
@@ -210,11 +242,12 @@ impl TestSystem {
         ().serve(client).await.expect("MCP handshake")
     }
 
-    /// Starts `rcli mcp` like `mcp_as`, but from a config directory: the Server and the session (or a remembered
-    /// Device Password) come only from `rcli setup` / `rcli login` / `rcli connect`, as `rcli mcp` does.
-    pub async fn mcp_in(&self, config_dir: &std::path::Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    /// Starts `rcli mcp` like `mcp_as`, but as the local user `home` on the machine installed under `root`: the
+    /// Server and the session (or a remembered Device Password) come only from the install, `rcli login` and
+    /// `rcli connect`, as `rcli mcp` does.
+    pub async fn mcp_user(&self, root: &std::path::Path, home: &std::path::Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
         use rmcp::ServiceExt;
-        let api = rcli::Api::from_config(config_dir).expect("MCP config");
+        let api = rcli::Api::from_config(home, &rcli::config::machine_path(Some(root))).expect("MCP config");
         let (client, server) = tokio::io::duplex(1 << 20);
         tokio::spawn(async move {
             let (read, write) = tokio::io::split(server);
@@ -223,10 +256,21 @@ impl TestSystem {
         ().serve(client).await.expect("MCP handshake")
     }
 
-    /// A Controller config directory with `rcli setup` (and `rcli connect` when a password is given).
+    /// `mcp_user` as the user `rcli_in(dir, …)` runs as.
+    pub async fn mcp_in(&self, dir: &std::path::Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+        self.mcp_user(dir, dir).await
+    }
+
+    /// The machine-wide configuration `rcli install` leaves under `dir`, with this Server's API Address (no Device is
+    /// registered or started), then `rcli connect` when a password is given.
     pub async fn controller_config(&self, dir: &std::path::Path, device: Option<(&str, &str)>) {
-        let server = format!("http://{}", self.server.http_addr);
-        self.rcli_in(dir, &["setup", "--server", &server, "--key", &self.server_key()]).await.unwrap();
+        let machine = rcli::config::Machine {
+            server: self.agent_addr(),
+            server_key: self.server_key(),
+            update_key: hex::encode(self.config.update_public_key.clone().unwrap_or_default()),
+            api_address: format!("http://{}", self.server.http_addr),
+        };
+        rcli::config::save_machine(&rcli::config::machine_path(Some(dir)), &machine).unwrap();
         if let Some((device, password)) = device {
             self.rcli_in(dir, &["connect", device, "--password", password]).await.unwrap();
         }

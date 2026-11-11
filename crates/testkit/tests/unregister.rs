@@ -1,4 +1,4 @@
-//! A Device removes itself from the Server when its Agent is uninstalled (`sudo rcli agent uninstall` on that
+//! A Device removes itself from the Server when its Agent is uninstalled (`sudo rcli uninstall` on that
 //! Device): the Server treats it as an Admin's Device delete, audits it, and closes the connection. The Agent
 //! asks before it deletes its own credentials, so the Device ID and password never outlive the install.
 
@@ -15,7 +15,7 @@ async fn an_agent_removes_its_own_device_and_the_server_audits_it() {
     let other = sys.start_agent("kept-box").await;
     sys.wait_device(other.device_id(), |d| d["status"] == "Online").await;
 
-    // What `rcli agent uninstall` does before it deletes the local credentials.
+    // What `rcli uninstall` does before it deletes the local credentials.
     rcli_agent::unregister(&agent.server_access, &agent.creds).await.unwrap();
 
     // Gone from the fleet, its detail 404s; the Server closed its connection.

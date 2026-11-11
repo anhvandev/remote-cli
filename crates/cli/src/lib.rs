@@ -35,7 +35,7 @@ pub mod mcp;
 #[derive(Parser)]
 #[command(name = "rcli", about = "Remote CLI controller")]
 struct Cli {
-    /// Controller API base URL; default: the one `rcli setup` saved.
+    /// Controller API base URL; default: the API Address this machine's install keeps.
     #[arg(long, global = true)]
     server: Option<String>,
     /// User session token (tests and scripting); default: the one `rcli login` saved.
@@ -44,6 +44,10 @@ struct Cli {
     /// Controller config directory; default: the platform's per-user location.
     #[arg(long, global = true, hide = true)]
     config_dir: Option<String>,
+    /// Test seam: machine-wide paths hang off this directory instead of `/`; `install` and `uninstall` there need no
+    /// root rights and touch no service or real screen.
+    #[arg(long, global = true, hide = true)]
+    root: Option<PathBuf>,
     /// Machine-readable JSON output.
     #[arg(long, global = true)]
     json: bool,
@@ -53,15 +57,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Save the Server Address and Server Key (once per Controller); asks for any not given.
-    Setup {
-        /// Server Address, e.g. https://server.example.com:8080.
-        #[arg(long)]
-        server: Option<String>,
-        /// Server Key, rk_<CA fingerprint>_<secret>.
-        #[arg(long, hide_env_values = true)]
-        key: Option<String>,
-    },
+    /// Make this machine a Device and a Controller (root/Administrator): installs the Agent, registers the Device,
+    /// prints its Device ID and Device Password, and sets up `rcli connect` and `rcli mcp` for every local user.
+    Install(agent::Install),
+    /// Undo `rcli install` (root/Administrator); each user's remembered Device Passwords stay.
+    Uninstall(agent::Uninstall),
     /// Sign in with a Dashboard account and save the session (Admin commands need it).
     Login {
         /// Dashboard user name.
@@ -245,10 +245,6 @@ enum Command {
 enum AgentCommand {
     /// Register on first start, then keep the Agent connected to the Server.
     Run(agent::Run),
-    /// Install the Agent as a background service and register this Device (root).
-    Install(agent::Install),
-    /// Remove the background service and this Device's local data (root).
-    Uninstall(agent::Uninstall),
     /// The console-session helper the service starts (macOS LaunchAgent, Linux systemd service, Windows service).
     #[command(hide = true)]
     Session(agent::Session),
@@ -619,8 +615,6 @@ where
     if let Command::Agent(command) = cli.command {
         return match command {
             AgentCommand::Run(run) => run.run().await,
-            AgentCommand::Install(install) => install.run(out).await,
-            AgentCommand::Uninstall(uninstall) => uninstall.run(out).await,
             AgentCommand::Session(session) => session.run().await,
             AgentCommand::Service(service) => service.run(),
             AgentCommand::Info(info) => info.run(out).await,
@@ -636,32 +630,21 @@ where
             AgentCommand::Prompt(prompt) => agent::run_prompt(prompt.command, prompt.socket, out).await,
         };
     }
+    let cli = match cli.command {
+        Command::Install(install) => return install.run(cli.root.as_deref(), out).await,
+        Command::Uninstall(uninstall) => return uninstall.run(cli.root.as_deref(), out).await,
+        command => Cli { command, ..cli },
+    };
     let dir = cli.config_dir.clone().map_or_else(config::dir, Into::into);
-    if let Command::Setup { server, key } = &cli.command {
-        let server = match server {
-            Some(s) => s.clone(),
-            None => prompt_line("Server Address (https://...): ")?,
-        };
-        let key = match key {
-            Some(k) => k.clone(),
-            None => prompt_password("Server Key: ")?,
-        };
-        let text = config::setup(&dir, &server, &key).await?;
-        let body = config::load_at(&dir)?.map(|c| config::json(&c)).unwrap_or(serde_json::Value::Null);
-        return match cli.json {
-            true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),
-            false => Ok(write!(out, "{text}")?),
-        };
-    }
-    // `--server` gets the same https rule as `rcli setup`: passwords, the Server Key and sessions travel to it.
+    let machine = config::machine_path(cli.root.as_deref());
+    // `--server` gets the https rule: passwords, the Server Key and sessions travel to it.
     if let Some(server) = &cli.server {
         config::check_transport(server.trim().trim_end_matches('/'))?;
     }
     if let Command::Login { name, password, totp } = &cli.command {
-        let base = match (cli.server.clone(), config::load_at(&dir)?) {
-            (Some(server), _) => server,
-            (None, Some(config)) if !config.server.is_empty() => config.server,
-            _ => anyhow::bail!("run `rcli setup` first (no saved Server Address)"),
+        let base = match cli.server.clone() {
+            Some(server) => server,
+            None => config::api_address(&config::installed(&machine)?)?,
         };
         let password = match password {
             Some(p) => p.clone(),
@@ -691,14 +674,16 @@ where
         };
     }
     if let Command::Logout = &cli.command {
-        let saved = config::load_at(&dir)?;
-        if let (Some(session), Some(server)) = (saved.as_ref().and_then(|c| c.session.clone()), saved.as_ref().map(|c| c.server.clone())) {
+        if let Some(session) = config::load_at(&dir)?.and_then(|c| c.session) {
+            let base = cli.server.clone().or_else(|| config::load_machine(&machine).ok().flatten().map(|m| m.api_address));
             // Best effort: an already expired session needs no revoking.
-            let _ = reqwest::Client::new()
-                .delete(format!("{}/api/v1/session", server.trim_end_matches('/')))
-                .bearer_auth(session)
-                .send()
-                .await;
+            if let Some(base) = base.filter(|b| !b.is_empty()) {
+                let _ = reqwest::Client::new()
+                    .delete(format!("{}/api/v1/session", base.trim_end_matches('/')))
+                    .bearer_auth(session)
+                    .send()
+                    .await;
+            }
             config::set_session(&dir, None)?;
         }
         return match cli.json {
@@ -707,11 +692,12 @@ where
         };
     }
     if let Command::Connect { device, password } = &cli.command {
-        let (server, key) = match (cli.server.clone(), config::load_at(&dir)?) {
-            (Some(server), config) => (server, config.map(|c| c.server_key).unwrap_or_default()),
-            (None, Some(config)) if !config.server_key.is_empty() => (config.server, config.server_key),
-            _ => anyhow::bail!("run `rcli setup` first (no saved Server Address or Server Key)"),
+        let installed = config::installed(&machine)?;
+        let server = match cli.server.clone() {
+            Some(server) => server,
+            None => config::api_address(&installed)?,
         };
+        let key = installed.server_key;
         let password = match password {
             Some(p) => p.clone(),
             None => prompt_password("Device Password: ")?,
@@ -726,9 +712,9 @@ where
         };
     }
     if let Command::Upgrade { target, socket } = &cli.command {
-        let config = config::load_at(&dir)?.ok_or_else(|| anyhow::anyhow!("run `rcli setup` first (no pinned update key)"))?;
+        let installed = config::installed(&machine)?;
         let path = target.clone().unwrap_or_else(|| std::env::current_exe().unwrap_or_default());
-        let done = upgrade::run(&config, &path, socket.clone()).await?;
+        let done = upgrade::run(&installed, &path, socket.clone()).await?;
         let text = format!(
             "upgraded {} to {} for {}{}\n",
             done.path.display(),
@@ -749,13 +735,19 @@ where
             false => Ok(writeln!(out, "forgot {device}")?),
         };
     }
-    let (base, connection) = api_target(&dir, cli.server, cli.token)?;
+    let (base, connection) = api_target(&dir, &machine, cli.server, cli.token)?;
     let api = Api { base, dir, connection, http: reqwest::Client::new() };
     if admin_only(&cli.command) && api.connection.token.is_none() {
         anyhow::bail!("this command needs an Admin account: run `rcli login <name>` (or `rcli connect <Device ID>` for Device commands)");
     }
     let (body, human) = match cli.command {
-        Command::Setup { .. } | Command::Login { .. } | Command::Logout | Command::Upgrade { .. } | Command::Connect { .. } | Command::Forget { .. } => {
+        Command::Install(_)
+        | Command::Uninstall(_)
+        | Command::Login { .. }
+        | Command::Logout
+        | Command::Upgrade { .. }
+        | Command::Connect { .. }
+        | Command::Forget { .. } => {
             unreachable!("handled before connecting")
         }
         Command::Devices => {
@@ -1226,23 +1218,22 @@ pub struct Connection {
     pub controller: String,
 }
 
-/// The Controller API target: `--server`/`--token`, else the saved `rcli setup` config.
-fn api_target(dir: &std::path::Path, server: Option<String>, token: Option<String>) -> anyhow::Result<(String, Connection)> {
-    let saved = config::load_at(dir)?;
+/// The Controller API target: `--server`/`--token`, else this machine's install (API Address, Server Key) and this
+/// user's `rcli login` session.
+fn api_target(dir: &Path, machine: &Path, server: Option<String>, token: Option<String>) -> anyhow::Result<(String, Connection)> {
     let controller = config::hostname();
+    let session = || anyhow::Ok(config::load_at(dir)?.and_then(|c| c.session));
     let (base, token, server_key) = match (server, token) {
         (Some(base), Some(token)) => (base, Some(token), None),
-        (Some(base), None) => {
-            (base, saved.as_ref().and_then(|c| c.session.clone()), saved.map(|c| c.server_key))
+        (Some(base), None) => (base, session()?, config::load_machine(machine)?.map(|m| m.server_key)),
+        (None, token) => {
+            let installed = config::installed(machine)?;
+            let token = match token {
+                Some(token) => Some(token),
+                None => session()?,
+            };
+            (config::api_address(&installed)?, token, Some(installed.server_key))
         }
-        (None, Some(token)) => {
-            let base = saved.map(|c| c.server).ok_or_else(|| anyhow::anyhow!("run `rcli setup` or pass --server"))?;
-            (base, Some(token), None)
-        }
-        (None, None) => match saved.filter(|c| !c.server.is_empty()) {
-            Some(c) => (c.server, c.session, Some(c.server_key)),
-            None => anyhow::bail!("run `rcli setup` first (no saved Server Address or Server Key)"),
-        },
     };
     Ok((base, Connection { token, server_key, controller }))
 }
@@ -1282,10 +1273,10 @@ impl Api {
         }
     }
 
-    /// The Controller from the saved `rcli setup`/`rcli login` config and remembered Device Passwords
-    /// (what `rcli mcp` uses): no env vars and no flags.
-    pub fn from_config(dir: &std::path::Path) -> anyhow::Result<Self> {
-        let (base, connection) = api_target(dir, None, None)?;
+    /// The Controller from this machine's install (`machine`, the machine-wide configuration), and the user's
+    /// `rcli login` session and remembered Device Passwords in `dir` (what `rcli mcp` uses): no env vars and no flags.
+    pub fn from_config(dir: &Path, machine: &Path) -> anyhow::Result<Self> {
+        let (base, connection) = api_target(dir, machine, None, None)?;
         Ok(Self { base, dir: dir.to_path_buf(), connection, http: reqwest::Client::new() })
     }
 
