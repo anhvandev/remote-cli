@@ -158,7 +158,7 @@ enum Command {
         device: String,
         /// `root`: run as root/SYSTEM (the Device's root setting decides). Default: the Device's Terminal User.
         #[arg(long = "as")]
-        run_as: Option<String>,
+        account: Option<String>,
         /// Seconds before the command is killed (default 60).
         #[arg(long)]
         timeout: Option<u32>,
@@ -184,7 +184,7 @@ enum Command {
         device: String,
         /// `root`: run as root/SYSTEM (the Device's root setting decides). Default: the Device's Terminal User.
         #[arg(long = "as")]
-        run_as: Option<String>,
+        account: Option<String>,
     },
     /// Audit log of Actions, oldest first (admin).
     Audit {
@@ -950,9 +950,9 @@ where
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
             (obs, text)
         }
-        Command::Exec { device, run_as, timeout, command } => {
-            let run_as = run_as.or_else(|| saved_root(&api.dir, &device));
-            let body = json!({ "command": command.join(" "), "as": run_as, "timeout_secs": timeout });
+        Command::Exec { device, account, timeout, command } => {
+            let account = account.or_else(|| saved_root(&api.dir, &device));
+            let body = json!({ "command": command.join(" "), "as": account, "timeout_secs": timeout });
             let r = api.call(reqwest::Method::POST, &format!("/api/v1/devices/{}/exec", path_segment(&device)), Some(&body)).await?;
             if !cli.json {
                 write!(out, "{}", str_of(&r["stdout"]))?;
@@ -975,9 +975,9 @@ where
             let text = format!("root {state} for {device}\n");
             (json!({ "device": device, "root": state }), text)
         }
-        Command::Shell { device, run_as } => {
-            let run_as = run_as.or_else(|| saved_root(&api.dir, &device));
-            let code = shell(&api, &device, run_as, input.unwrap_or_else(stdin_input), out).await?;
+        Command::Shell { device, account } => {
+            let account = account.or_else(|| saved_root(&api.dir, &device));
+            let code = shell(&api, &device, account, input.unwrap_or_else(stdin_input), out).await?;
             if code != 0 {
                 return Err(RemoteExit { code, timed_out: false }.into());
             }
@@ -1096,7 +1096,7 @@ fn saved_root(dir: &Path, device: &str) -> Option<String> {
 async fn shell(
     api: &Api,
     device: &str,
-    run_as: Option<String>,
+    account: Option<String>,
     mut input: mpsc::UnboundedReceiver<Vec<u8>>,
     out: &mut dyn Write,
 ) -> anyhow::Result<i32> {
@@ -1106,7 +1106,7 @@ async fn shell(
     let (cols, rows) = size().unwrap_or((80, 24));
     let path = format!("/api/v1/devices/{}/shell", path_segment(device));
     let url = format!("{}{path}", api.base.trim_end_matches('/'));
-    let body = json!({ "as": run_as, "cols": cols, "rows": rows });
+    let body = json!({ "as": account, "cols": cols, "rows": rows });
     let mut resp = api.check(api.auth(api.http.post(url).json(&body), Some(&path))?.send().await?).await?;
     let _raw = if tty { crossterm::terminal::enable_raw_mode().map(|()| RawMode).ok() } else { None };
     let session_url = |session: &str, what: &str| format!("{}/api/v1/shell-sessions/{session}/{what}", api.base.trim_end_matches('/'));

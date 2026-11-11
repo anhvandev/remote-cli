@@ -23,7 +23,7 @@ use sysinfo::{Components, Disks, Networks, ProcessesToUpdate, System, Users};
 
 use crate::platform::{
     Disk, Display, DisplayInfo, Frame, Input, Inventory, NetworkInterface, Platform, PowerAction, Process, Pty,
-    Resources, RunAs, SessionState, ShellOutput, UiElement,
+    Resources, Account, SessionState, ShellOutput, UiElement,
 };
 
 /// Which screen adapter a session needs.
@@ -317,12 +317,12 @@ impl Platform for LinuxPlatform {
             .collect())
     }
 
-    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
-        shell::run(command, &run_as, timeout)
+    fn shell(&self, command: &str, account: Account, timeout: Duration) -> anyhow::Result<ShellOutput> {
+        shell::run(command, &account, timeout)
     }
 
-    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
-        shell::pty(&run_as, cols, rows)
+    fn pty(&self, account: Account, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+        shell::pty(&account, cols, rows)
     }
 
     fn power(&self, action: PowerAction) -> anyhow::Result<()> {

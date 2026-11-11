@@ -29,13 +29,13 @@ const REPLY_SLACK: Duration = Duration::from_secs(10);
 struct ExecBody {
     command: String,
     #[serde(rename = "as")]
-    run_as: Option<RunAs>,
+    account: Option<Account>,
     timeout_secs: Option<u32>,
 }
 
 #[derive(Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-enum RunAs {
+enum Account {
     Root,
 }
 
@@ -56,7 +56,7 @@ async fn exec(
         return Err(bad_request(format!("timeout_secs must be 1..={MAX_TIMEOUT_SECS}")));
     }
     // Server roles no longer gate what runs on a Device: the Device's own settings do (ticket 07).
-    let as_root = body.run_as == Some(RunAs::Root);
+    let as_root = body.account == Some(Account::Root);
     // The Device names who asks in a root prompt; a password connection already reads `<host> (<IP>)`.
     let requester = user.name.clone();
     let controller = user.controller_display();

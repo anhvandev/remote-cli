@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::platform::{Pty, PtyControl, RunAs, ShellOutput};
+use crate::platform::{Pty, PtyControl, Account, ShellOutput};
 
 /// The account this Agent runs as.
 pub fn current_user() -> String {
@@ -20,12 +20,12 @@ pub fn current_user() -> String {
     out.unwrap_or_default()
 }
 
-/// `program` as `run_as`, in that account's home: directly when the Agent already is that account, else through
+/// `program` as `account`, in that account's home: directly when the Agent already is that account, else through
 /// `sudo -n` (passwordless for the root service; a user Agent needs a sudoers rule to switch accounts).
-fn command(run_as: &RunAs, program: &[&str]) -> Command {
-    let user = match run_as {
-        RunAs::User(u) => u.clone(),
-        RunAs::Root => "root".into(),
+fn command(account: &Account, program: &[&str]) -> Command {
+    let user = match account {
+        Account::User(u) => u.clone(),
+        Account::Root => "root".into(),
     };
     let mut cmd = if user == current_user() {
         Command::new(program[0])
@@ -47,8 +47,8 @@ fn passwd(user: &str, index: usize) -> Option<String> {
     String::from_utf8_lossy(&out.stdout).trim().split(':').nth(index).filter(|f| !f.is_empty()).map(str::to_owned)
 }
 
-pub fn run(command_line: &str, run_as: &RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
-    let mut cmd = command(run_as, &["sh", "-c", command_line]);
+pub fn run(command_line: &str, account: &Account, timeout: Duration) -> anyhow::Result<ShellOutput> {
+    let mut cmd = command(account, &["sh", "-c", command_line]);
     // Own process group, so a timeout kills everything the command started.
     let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn()?;
     let (stdout, out_done) = collect(child.stdout.take().unwrap());
@@ -89,19 +89,19 @@ fn collect(mut r: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, std::thre
     (buf, reader)
 }
 
-pub fn pty(run_as: &RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+pub fn pty(account: &Account, cols: u16, rows: u16) -> anyhow::Result<Pty> {
     let (mut master, mut slave) = (0, 0);
     let size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
     if unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), &size) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
     let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-    let user = match run_as {
-        RunAs::User(u) => u.as_str(),
-        RunAs::Root => "root",
+    let user = match account {
+        Account::User(u) => u.as_str(),
+        Account::Root => "root",
     };
     let shell = passwd(user, 6).unwrap_or_else(|| "/bin/sh".into());
-    let mut cmd = command(run_as, &[&shell, "-l"]);
+    let mut cmd = command(account, &[&shell, "-l"]);
     cmd.env("TERM", "xterm-256color")
         .stdin(Stdio::from(slave.try_clone()?))
         .stdout(Stdio::from(slave.try_clone()?))

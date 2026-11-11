@@ -5,7 +5,7 @@ use std::time::Duration;
 use rcli_agent::{
     contract::{self, Env, Step},
     platform::{
-        DisplayInfo, FakePlatform, Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, RunAs, SessionState,
+        DisplayInfo, FakePlatform, Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, Account, SessionState,
         ShellOutput, UiElement,
     },
 };
@@ -109,11 +109,11 @@ impl Platform for Broken {
     fn processes(&self) -> anyhow::Result<Vec<Process>> {
         self.fake.processes()
     }
-    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
-        self.fake.shell(command, run_as, timeout)
+    fn shell(&self, command: &str, account: Account, timeout: Duration) -> anyhow::Result<ShellOutput> {
+        self.fake.shell(command, account, timeout)
     }
-    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
-        self.fake.pty(run_as, cols, rows)
+    fn pty(&self, account: Account, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+        self.fake.pty(account, cols, rows)
     }
     fn power(&self, action: PowerAction) -> anyhow::Result<()> {
         self.fake.power(action)

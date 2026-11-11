@@ -344,9 +344,9 @@ impl Platform for WindowsPlatform {
             .collect())
     }
 
-    // shortcut: runs as the account the Agent runs as, whatever `run_as` says (a user-session Agent cannot switch
+    // shortcut: runs as the account the Agent runs as, whatever `account` says (a user-session Agent cannot switch
     // accounts); ticket 22's SYSTEM service starts it as the Terminal User or SYSTEM.
-    fn shell(&self, command: &str, _run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
+    fn shell(&self, command: &str, _run_as: Account, timeout: Duration) -> anyhow::Result<ShellOutput> {
         let mut child = Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encode(&format!("{UTF8}{command}\n{EXIT_CODE}"))])
             .stdin(Stdio::null())
@@ -379,7 +379,7 @@ impl Platform for WindowsPlatform {
     }
 
     // shortcut: same account rule as `shell`.
-    fn pty(&self, _run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+    fn pty(&self, _run_as: Account, cols: u16, rows: u16) -> anyhow::Result<Pty> {
         let pair = portable_pty::native_pty_system().openpty(size(cols, rows))?;
         let mut cmd = CommandBuilder::new("powershell.exe");
         cmd.arg("-NoLogo");

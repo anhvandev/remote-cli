@@ -36,14 +36,14 @@ pub fn routes() -> Router<super::State> {
 #[serde(deny_unknown_fields)]
 struct OpenBody {
     #[serde(rename = "as")]
-    run_as: Option<RunAs>,
+    account: Option<Account>,
     cols: Option<u32>,
     rows: Option<u32>,
 }
 
 #[derive(Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-enum RunAs {
+enum Account {
     Root,
 }
 
@@ -87,7 +87,7 @@ async fn open(
     let (cols, rows) = (body.cols.unwrap_or(80), body.rows.unwrap_or(24));
     check_size(cols, rows)?;
     // Server roles no longer gate what runs on a Device: the Device's own settings do (ticket 07).
-    let as_root = body.run_as == Some(RunAs::Root);
+    let as_root = body.account == Some(Account::Root);
     let session = Uuid::new_v4();
     // Registered before the Agent starts the shell so no output is lost.
     let mut output = state.shells.open(session, device, user.id);

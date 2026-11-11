@@ -27,12 +27,12 @@ pub trait Platform: Send + Sync + 'static {
     /// `session` is left unset: the Agent fills it from `session_state`.
     fn metrics(&self) -> anyhow::Result<Resources>;
     fn processes(&self) -> anyhow::Result<Vec<Process>>;
-    /// One-shot command through the OS shell, as `run_as`. Kills it after `timeout` and returns what it printed
-    /// so far with `timed_out` set. `RunAs::User` always names an account; `sudo` inside works as over SSH.
-    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput>;
-    /// Interactive login shell on a new PTY of `cols` x `rows`, as `run_as` (same rule as `shell`).
+    /// One-shot command through the OS shell, as `account`. Kills it after `timeout` and returns what it printed
+    /// so far with `timed_out` set. `Account::User` always names an account; `sudo` inside works as over SSH.
+    fn shell(&self, command: &str, account: Account, timeout: Duration) -> anyhow::Result<ShellOutput>;
+    /// Interactive login shell on a new PTY of `cols` x `rows`, as `account` (same rule as `shell`).
     /// Full PTY semantics: input goes to the terminal as typed (Ctrl-C = 0x03 interrupts), TERM supports full-screen programs.
-    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty>;
+    fn pty(&self, account: Account, cols: u16, rows: u16) -> anyhow::Result<Pty>;
     fn power(&self, action: PowerAction) -> anyhow::Result<()>;
     /// Sends a Wake-on-LAN magic packet for `mac` on the local network.
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()>;
@@ -129,7 +129,7 @@ pub trait PtyControl: Send {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RunAs {
+pub enum Account {
     /// The Terminal User: the account Device Settings say commands and shells run as.
     User(String),
     /// root, or SYSTEM on Windows.
@@ -333,14 +333,14 @@ impl Platform for FakePlatform {
         Ok(self.state.lock().unwrap().processes.clone())
     }
 
-    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
-        Ok(fake_shell(command, run_as, timeout))
+    fn shell(&self, command: &str, account: Account, timeout: Duration) -> anyhow::Result<ShellOutput> {
+        Ok(fake_shell(command, account, timeout))
     }
 
-    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+    fn pty(&self, account: Account, cols: u16, rows: u16) -> anyhow::Result<Pty> {
         let state = FakePtyState { output: b"$ ".to_vec(), size: (cols, rows), ..Default::default() };
         let shared = Arc::new((Mutex::new(state), std::sync::Condvar::new()));
-        let pty = FakePty { shared, run_as };
+        let pty = FakePty { shared, account };
         Ok(Pty { output: Box::new(pty.clone()), input: Box::new(pty.clone()), control: Box::new(pty) })
     }
 
@@ -391,7 +391,7 @@ impl Platform for FakePlatform {
 }
 
 // shortcut: only `echo X`, `whoami` ("user" or "root") and `sleep SECS` are emulated; anything else exits 127.
-fn fake_shell(command: &str, run_as: RunAs, timeout: Duration) -> ShellOutput {
+fn fake_shell(command: &str, account: Account, timeout: Duration) -> ShellOutput {
     let ok = |stdout: String| ShellOutput { exit_code: 0, stdout, stderr: String::new(), timed_out: false };
     if let Some(secs) = command.strip_prefix("sleep ").and_then(|s| s.parse().ok()) {
         let wanted = Duration::from_secs(secs);
@@ -400,13 +400,13 @@ fn fake_shell(command: &str, run_as: RunAs, timeout: Duration) -> ShellOutput {
     }
     match (command, command.strip_prefix("echo ")) {
         (_, Some(text)) => ok(format!("{text}\n")),
-        ("whoami", _) => ok(match &run_as {
-            RunAs::User(user) => format!("{user}\n"),
-            RunAs::Root => "root\n".into(),
+        ("whoami", _) => ok(match &account {
+            Account::User(user) => format!("{user}\n"),
+            Account::Root => "root\n".into(),
         }),
         // `sudo` inside the terminal works as over SSH: the command then runs as root.
         _ => match command.strip_prefix("sudo ") {
-            Some(inner) => fake_shell(inner, RunAs::Root, timeout),
+            Some(inner) => fake_shell(inner, Account::Root, timeout),
             None => ShellOutput { exit_code: 127, stdout: String::new(), stderr: format!("{command}: not found\n"), timed_out: false },
         },
     }
@@ -417,7 +417,7 @@ fn fake_shell(command: &str, run_as: RunAs, timeout: Duration) -> ShellOutput {
 #[derive(Clone)]
 struct FakePty {
     shared: Arc<(Mutex<FakePtyState>, std::sync::Condvar)>,
-    run_as: RunAs,
+    account: Account,
 }
 
 #[derive(Default)]
@@ -449,7 +449,7 @@ impl std::io::Read for FakePty {
 
 impl std::io::Write for FakePty {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let run_as = self.run_as.clone();
+        let account = self.account.clone();
         self.update(|s| {
             for &b in buf {
                 if s.exit.is_some() {
@@ -472,7 +472,7 @@ impl std::io::Write for FakePty {
                                 break;
                             }
                             l => {
-                                let out = fake_shell(l, run_as.clone(), Duration::ZERO);
+                                let out = fake_shell(l, account.clone(), Duration::ZERO);
                                 out.stdout + &out.stderr
                             }
                         };

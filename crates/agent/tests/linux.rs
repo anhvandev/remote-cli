@@ -10,12 +10,12 @@ use std::{
 
 use rcli_agent::{
     linux::LinuxPlatform,
-    platform::{Button, Input, Platform, RunAs, UiElement},
+    platform::{Button, Input, Platform, Account, UiElement},
 };
 
-fn me() -> RunAs {
+fn me() -> Account {
     let out = Command::new("id").arg("-un").output().unwrap();
-    RunAs::User(String::from_utf8_lossy(&out.stdout).trim().into())
+    Account::User(String::from_utf8_lossy(&out.stdout).trim().into())
 }
 
 #[test]

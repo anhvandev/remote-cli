@@ -27,7 +27,7 @@ use objc2_vision::{VNImageRequestHandler, VNRecognizeTextRequest, VNRequest};
 
 use crate::platform::{
     Button, DisplayInfo, Disk, Display, Frame, Input, Inventory, NetworkInterface, Platform, PowerAction, Process, Pty,
-    PtyControl, Resources, RunAs, SessionState, ShellOutput, UiElement,
+    PtyControl, Resources, Account, SessionState, ShellOutput, UiElement,
 };
 
 pub struct MacPlatform {
@@ -273,16 +273,16 @@ fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
-/// argv for `run_as`: `command` = None is an interactive login shell.
+/// argv for `account`: `command` = None is an interactive login shell.
 // shortcut: zsh (the macOS default) rather than each account's login shell from the directory service.
-fn shell_argv(run_as: &RunAs, command: Option<&str>) -> Vec<String> {
-    let mut argv: Vec<String> = match (run_as, is_root()) {
+fn shell_argv(account: &Account, command: Option<&str>) -> Vec<String> {
+    let mut argv: Vec<String> = match (account, is_root()) {
         // As root, the Terminal User is one `sudo -u` away; `-i` gives that account's login environment.
-        (RunAs::User(user), true) => vec!["sudo".into(), "-n".into(), "-u".into(), user.clone(), "-i".into()],
-        (RunAs::Root, true) => vec![],
+        (Account::User(user), true) => vec!["sudo".into(), "-n".into(), "-u".into(), user.clone(), "-i".into()],
+        (Account::Root, true) => vec![],
         // An Agent in a user session can only be itself; `sudo` works as over SSH.
-        (RunAs::User(_), false) => vec![],
-        (RunAs::Root, false) => vec!["sudo".into(), "-i".into()],
+        (Account::User(_), false) => vec![],
+        (Account::Root, false) => vec!["sudo".into(), "-i".into()],
     };
     if argv.last().is_some_and(|a| a == "-i") {
         if let Some(c) = command {
@@ -554,8 +554,8 @@ impl Platform for MacPlatform {
             .collect())
     }
 
-    fn shell(&self, command_line: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
-        let mut child = command(&shell_argv(&run_as, Some(command_line)))
+    fn shell(&self, command_line: &str, account: Account, timeout: Duration) -> anyhow::Result<ShellOutput> {
+        let mut child = command(&shell_argv(&account, Some(command_line)))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -589,13 +589,13 @@ impl Platform for MacPlatform {
         })
     }
 
-    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+    fn pty(&self, account: Account, cols: u16, rows: u16) -> anyhow::Result<Pty> {
         let (mut master, mut slave) = (0, 0);
         let mut size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
         let ok = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut size) };
         anyhow::ensure!(ok == 0, "openpty failed: {}", std::io::Error::last_os_error());
         let (master, slave) = unsafe { (std::fs::File::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-        let mut cmd = command(&shell_argv(&run_as, None));
+        let mut cmd = command(&shell_argv(&account, None));
         cmd.env("TERM", "xterm-256color")
             .stdin(slave.try_clone()?)
             .stdout(slave.try_clone()?)
@@ -757,13 +757,13 @@ mod tests {
 
     #[test]
     fn interactive_shells_and_commands_get_the_right_argv() {
-        let user = RunAs::User("alice".into());
+        let user = Account::User("alice".into());
         if is_root() {
             assert_eq!(shell_argv(&user, Some("id")), ["sudo", "-n", "-u", "alice", "-i", "/bin/zsh", "-c", "id"]);
         } else {
             assert_eq!(shell_argv(&user, Some("id")), ["/bin/zsh", "-l", "-c", "id"]);
             assert_eq!(shell_argv(&user, None), ["/bin/zsh", "-l"]);
-            assert_eq!(shell_argv(&RunAs::Root, None), ["sudo", "-i"]);
+            assert_eq!(shell_argv(&Account::Root, None), ["sudo", "-i"]);
         }
     }
 
@@ -776,17 +776,17 @@ mod tests {
     #[test]
     fn shell_runs_and_times_out() {
         let p = mac();
-        let out = p.shell("echo hi; echo err >&2; exit 4", RunAs::User("x".into()), Duration::from_secs(5)).unwrap();
+        let out = p.shell("echo hi; echo err >&2; exit 4", Account::User("x".into()), Duration::from_secs(5)).unwrap();
         assert_eq!((out.exit_code, out.stdout.as_str(), out.stderr.as_str(), out.timed_out), (4, "hi\n", "err\n", false));
         let start = Instant::now();
-        let out = p.shell("echo started; sleep 30 & wait", RunAs::User("x".into()), Duration::from_millis(500)).unwrap();
+        let out = p.shell("echo started; sleep 30 & wait", Account::User("x".into()), Duration::from_millis(500)).unwrap();
         assert!(out.timed_out && out.stdout == "started\n", "{out:?}");
         assert!(start.elapsed() < Duration::from_secs(3), "child of the shell kept the pipes open");
     }
 
     #[test]
     fn pty_echoes_and_reports_the_exit_code() {
-        let mut pty = mac().pty(RunAs::User("x".into()), 80, 24).unwrap();
+        let mut pty = mac().pty(Account::User("x".into()), 80, 24).unwrap();
         pty.control.resize(100, 30).unwrap();
         pty.input.write_all(b"stty size\rexit 3\r").unwrap();
         let mut text = String::new();

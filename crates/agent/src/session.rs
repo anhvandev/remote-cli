@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::platform::{
-    DisplayInfo, Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, RunAs, SessionState, ShellOutput, UiElement,
+    DisplayInfo, Frame, Input, Inventory, Platform, PowerAction, Process, Pty, Resources, Account, SessionState, ShellOutput, UiElement,
 };
 
 /// Where a helper's new portal restore token goes (Linux Wayland); the Agent service persists it.
@@ -191,11 +191,11 @@ impl Platform for SessionPlatform {
     fn processes(&self) -> anyhow::Result<Vec<Process>> {
         self.inner.processes()
     }
-    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
-        self.inner.shell(command, run_as, timeout)
+    fn shell(&self, command: &str, account: Account, timeout: Duration) -> anyhow::Result<ShellOutput> {
+        self.inner.shell(command, account, timeout)
     }
-    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
-        self.inner.pty(run_as, cols, rows)
+    fn pty(&self, account: Account, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+        self.inner.pty(account, cols, rows)
     }
     fn power(&self, action: PowerAction) -> anyhow::Result<()> {
         match action {

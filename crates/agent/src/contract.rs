@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::platform::{Input, Platform, PowerAction, RunAs, SessionState};
+use crate::platform::{Input, Platform, PowerAction, Account, SessionState};
 
 /// Locally administered MAC that belongs to no real NIC, so the Wake check wakes nothing.
 pub const WAKE_TEST_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x27];
@@ -177,7 +177,7 @@ pub fn run(p: &dyn Platform, operator: &mut dyn FnMut(Step)) -> Report {
     operator(Step::LogOut);
     screen_checks(p, Env::LoginScreen, SessionState::LoginScreen, &mut r);
     r.check("shell as root", Env::LoginScreen, || {
-        let out = p.shell("whoami", RunAs::Root, SHELL_TIMEOUT)?;
+        let out = p.shell("whoami", Account::Root, SHELL_TIMEOUT)?;
         let who = out.stdout.trim().to_lowercase();
         anyhow::ensure!(out.exit_code == 0 && (who == "root" || who.ends_with("\\system")), "unexpected {out:?}");
         Ok(())
@@ -236,8 +236,8 @@ fn screen_checks(p: &dyn Platform, env: Env, expected: SessionState, r: &mut Rep
 }
 
 /// The account running the suite: on a real Device the Terminal User must be an account that exists.
-fn me() -> RunAs {
-    RunAs::User(std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "user".into()))
+fn me() -> Account {
+    Account::User(std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "user".into()))
 }
 
 fn primary(p: &dyn Platform) -> anyhow::Result<u32> {

@@ -789,32 +789,32 @@ type Refusal = (Error, Option<Decision>);
 
 /// Who a terminal command or session runs as: the Device's Terminal User, or root when asked and allowed.
 /// `grant` is the current session's root grant, held by `controller` (a display name). `requester` is who the root
-/// prompt names. Returns the account, whether it is root, and how root was decided (for the audit entry).
-fn run_as(
+/// prompt names. Returns the account and how root was decided (for the audit entry).
+fn account_for(
     platform: &dyn Platform,
     settings: &settings::DeviceSettings,
     as_root: bool,
     requester: &str,
     controller: &str,
     grant: &Grant,
-) -> Result<(platform::RunAs, bool, Option<Decision>), Refusal> {
+) -> Result<(platform::Account, Option<Decision>), Refusal> {
     let denied = |message: &str, decision| (Error { code: "root_denied".into(), message: message.into() }, Some(decision));
     if !as_root {
-        return Ok((platform::RunAs::User(settings.terminal_user.clone()), false, None));
+        return Ok((platform::Account::User(settings.terminal_user.clone()), None));
     }
     match settings.root {
-        settings::RootAccess::Always => return Ok((platform::RunAs::Root, true, Some(Decision::Always))),
+        settings::RootAccess::Always => return Ok((platform::Account::Root, Some(Decision::Always))),
         settings::RootAccess::Never => return Err(denied("root access is turned off on this Device", Decision::Never)),
         settings::RootAccess::Ask => {}
     }
     if grant.holds(controller) {
-        return Ok((platform::RunAs::Root, true, Some(Decision::Session)));
+        return Ok((platform::Account::Root, Some(Decision::Session)));
     }
     if nobody_to_ask(platform) {
         return Err(denied("root access needs a person at the Device to accept, and nobody can be asked right now", Decision::NoSession));
     }
     match platform.ask_root(requester, ROOT_PROMPT_TIMEOUT) {
-        Ok(true) => Ok((platform::RunAs::Root, true, Some(Decision::Accepted))),
+        Ok(true) => Ok((platform::Account::Root, Some(Decision::Accepted))),
         Ok(false) => Err(denied("the person at the Device did not accept root access", Decision::Rejected)),
         Err(e) => Err((platform_error(format!("cannot ask at the Device: {e:#}")), None)),
     }
@@ -854,6 +854,12 @@ impl Gate {
         let _ = self.replies.send(agent_message::Msg::ConnectDecision(answer));
         result
     }
+
+    /// Admits `controller`, then decides the account its command or shell runs as (see `account_for`).
+    fn account(&self, controller: &str, as_root: bool, requester: &str, grant: &Grant) -> Result<(platform::Account, Option<Decision>), Refusal> {
+        self.admit(controller).map_err(|e| (e, None))?;
+        account_for(self.platform.as_ref(), &self.settings, as_root, requester, controller, grant)
+    }
 }
 
 /// Applies an Admin's identity change from the Dashboard: writes a new Device Password to the Secret Store and keeps
@@ -879,7 +885,7 @@ fn server_identity_change(u: &IdentityUpdate, status: Option<&ipc::Status>, cred
     IdentityUpdated { request_id: u.request_id, error: None, device_id: in_effect }
 }
 
-/// Runs a one-shot command (see `run_as`).
+/// Runs a one-shot command (see `account_for`).
 fn exec(gate: &Gate, req: &ExecRequest, grant: &Grant) -> ExecResult {
     let failed = |error, decision| ExecResult {
         request_id: req.request_id,
@@ -887,15 +893,12 @@ fn exec(gate: &Gate, req: &ExecRequest, grant: &Grant) -> ExecResult {
         root_decision: decision_name(decision),
         ..Default::default()
     };
-    if let Err(e) = gate.admit(&req.controller) {
-        return failed(e, None);
-    }
-    let platform = gate.platform.as_ref();
-    let (run_as, as_root, decision) = match run_as(platform, &gate.settings, req.as_root, &req.requester, &req.controller, grant) {
+    let (account, decision) = match gate.account(&req.controller, req.as_root, &req.requester, grant) {
         Ok(r) => r,
         Err((e, decision)) => return failed(e, decision),
     };
-    match platform.shell(&req.command, run_as, Duration::from_millis(req.timeout_ms.into())) {
+    let as_root = account == platform::Account::Root;
+    match gate.platform.shell(&req.command, account, Duration::from_millis(req.timeout_ms.into())) {
         Ok(out) => ExecResult {
             request_id: req.request_id,
             exit_code: out.exit_code,
@@ -944,22 +947,19 @@ impl Drop for Shells {
     }
 }
 
-/// Starts a PTY session (see `run_as`) and answers with ShellOpened; a thread then relays its output, then its exit
+/// Starts a PTY session (see `account_for`) and answers with ShellOpened; a thread then relays its output, then its exit
 /// code, through the gate's replies.
 fn open_shell(gate: &Gate, req: &ShellOpen, grant: &Grant, shells: &Mutex<Shells>) {
     let opened = |as_root, error, decision| {
         let reply = ShellOpened { request_id: req.request_id, as_root, error, root_decision: decision_name(decision) };
         let _ = gate.replies.send(agent_message::Msg::ShellOpened(reply));
     };
-    if let Err(e) = gate.admit(&req.controller) {
-        return opened(false, Some(e), None);
-    }
-    let platform = gate.platform.as_ref();
-    let (run_as, as_root, decision) = match run_as(platform, &gate.settings, req.as_root, &req.requester, &req.controller, grant) {
+    let (account, decision) = match gate.account(&req.controller, req.as_root, &req.requester, grant) {
         Ok(r) => r,
         Err((e, decision)) => return opened(false, Some(e), decision),
     };
-    let pty = match platform.pty(run_as, clamp_u16(req.cols), clamp_u16(req.rows)) {
+    let as_root = account == platform::Account::Root;
+    let pty = match gate.platform.pty(account, clamp_u16(req.cols), clamp_u16(req.rows)) {
         Ok(p) => p,
         Err(e) => return opened(false, Some(platform_error(format!("{e:#}"))), decision),
     };

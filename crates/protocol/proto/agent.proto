@@ -381,7 +381,7 @@ message ExecResult {
 }
 
 // --- Interactive shell (ticket 12) ---
-// A PTY session named by `session` (chosen by the Server). Run-as rules are the same as ExecRequest.
+// A PTY session named by `session` (chosen by the Server). The account it runs as follows the same rules as ExecRequest.
 
 // Answered with ShellOpened carrying the same request_id; then ShellOutput until one ShellExit.
 message ShellOpen {

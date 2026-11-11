@@ -645,7 +645,7 @@ fn shell_quote(s: &str) -> String {
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rcli_agent::platform::{Frame, Input, Inventory, PowerAction, Process, Pty, Resources, RunAs, SessionState, ShellOutput, UiElement};
+use rcli_agent::platform::{Frame, Input, Inventory, PowerAction, Process, Pty, Resources, Account, SessionState, ShellOutput, UiElement};
 
 /// The Agent's platform seen from a desktop: prompts (tickets 07/08) go to the GUI window over the IPC, and the
 /// window opens when someone starts controlling the Device or a prompt needs the person's answer (ticket 14).
@@ -782,13 +782,13 @@ impl rcli_agent::platform::Platform for WindowPlatform {
     fn processes(&self) -> anyhow::Result<Vec<Process>> {
         self.inner.processes()
     }
-    fn shell(&self, command: &str, run_as: RunAs, timeout: Duration) -> anyhow::Result<ShellOutput> {
+    fn shell(&self, command: &str, account: Account, timeout: Duration) -> anyhow::Result<ShellOutput> {
         (self.open)();
-        self.inner.shell(command, run_as, timeout)
+        self.inner.shell(command, account, timeout)
     }
-    fn pty(&self, run_as: RunAs, cols: u16, rows: u16) -> anyhow::Result<Pty> {
+    fn pty(&self, account: Account, cols: u16, rows: u16) -> anyhow::Result<Pty> {
         (self.open)();
-        self.inner.pty(run_as, cols, rows)
+        self.inner.pty(account, cols, rows)
     }
     fn power(&self, action: PowerAction) -> anyhow::Result<()> {
         self.inner.power(action)
