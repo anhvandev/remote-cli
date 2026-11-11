@@ -117,6 +117,34 @@ async fn coordinates_in_observation_space_map_to_real_pixels_per_display() {
     assert_eq!(obs["images"][0]["display"], 1);
 }
 
+/// Direct control from Live View addresses the streamed (native) pixels, so a click lands on the pixel under the
+/// pointer instead of the nearest point of the 1280 px Observation grid.
+#[tokio::test]
+async fn native_points_address_real_pixels_for_direct_control() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent_on(two_displays("native")).await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online").await;
+    sys.api.post(&format!("/api/v1/devices/{dev}/lock")).await;
+    let actions = format!("/api/v1/devices/{dev}/actions");
+
+    let moved = act(json!({"type": "move", "display": 0, "x": 2559, "y": 1439, "native": true}), "none");
+    let (status, body) = sys.api.post_json(&actions, &moved).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let dragged = json!({"type": "drag", "display": 0, "x": 1, "y": 3, "native": true, "to": {"display": 0, "x": 5, "y": 7, "native": true}});
+    let (status, body) = sys.api.post_json(&actions, &act(dragged, "none")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let inputs = agent.platform.inputs();
+    assert_eq!(inputs[0], Input::Move { display: 0, x: 2559, y: 1439 });
+    assert_eq!(inputs[1], Input::Move { display: 0, x: 1, y: 3 });
+    assert_eq!(inputs.iter().filter(|i| matches!(i, Input::Move { x: 5, y: 7, .. })).count(), 1, "{inputs:?}");
+
+    let outside = act(json!({"type": "move", "display": 0, "x": 2560, "y": 0, "native": true}), "none");
+    let (status, body) = sys.api.post_json(&actions, &outside).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_action");
+}
+
 #[tokio::test]
 async fn every_action_kind_reaches_the_platform() {
     let sys = TestSystem::start().await;

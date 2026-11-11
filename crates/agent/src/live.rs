@@ -32,7 +32,10 @@ use webrtc::{
     track::track_local::track_local_static_sample::TrackLocalStaticSample,
 };
 
-use crate::{encoder::H264, platform::Platform};
+use crate::{
+    encoder::{self, H264},
+    platform::Platform,
+};
 
 /// A viewer that has not connected by then is gone (e.g. closed the tab before ICE finished).
 const CONNECT_WITHIN: Duration = Duration::from_secs(30);
@@ -126,12 +129,20 @@ impl Live {
             return Err(Error { code: "no_display".into(), message: "Device has no display".into() });
         }
         let display = offer.display.or_else(|| displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0);
+        // A hardware encoder sends High profile: only to a viewer that takes it, and only when one starts here.
+        let hardware = takes_high(&offer.sdp)
+            && self.platform.hardware_encoder()
+            && tokio::task::spawn_blocking(encoder::hardware_starts).await.unwrap_or(false);
         let remote = RTCSessionDescription::offer(offer.sdp).map_err(fail("invalid_offer"))?;
         let pc = Arc::new(peer_connection(&offer.ice_servers).await.map_err(fail("live"))?);
+        // The payload type the track binds to is the offered one with this profile, so the viewer decodes it as such.
         let codec = RTCRtpCodecCapability {
             mime_type: MIME_TYPE_H264.into(),
             clock_rate: 90_000,
-            sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".into(),
+            sdp_fmtp_line: format!(
+                "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={}",
+                encoder::profile_level_id(hardware)
+            ),
             ..Default::default()
         };
         let track = Arc::new(TrackLocalStaticSample::new(codec, "screen".into(), "rcli".into()));
@@ -189,7 +200,7 @@ impl Live {
         let (me, session, platform) = (Arc::downgrade(self), offer.session, self.platform.clone());
         let rt = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            if let Err(e) = stream(platform.as_ref(), &session, display, &level, &pc, &track, &stop, &keyframe, &rt) {
+            if let Err(e) = stream(platform.as_ref(), &session, display, hardware, &level, &pc, &track, &stop, &keyframe, &rt) {
                 tracing::warn!("live stream {session} ended: {e:#}");
             }
             if let Some(me) = me.upgrade() {
@@ -198,6 +209,13 @@ impl Live {
         });
         Ok(sdp)
     }
+}
+
+/// Whether the viewer's offer takes High profile H.264 with packetization mode 1, as Chrome does and Firefox does not.
+fn takes_high(sdp: &str) -> bool {
+    sdp.lines().filter(|l| l.starts_with("a=fmtp:")).map(str::to_ascii_lowercase).any(|l| {
+        l.contains("profile-level-id=6400") && l.contains("packetization-mode=1")
+    })
 }
 
 pub(crate) async fn peer_connection(ice_servers: &[rcli_protocol::agent::IceServer]) -> webrtc::error::Result<RTCPeerConnection> {
@@ -219,12 +237,14 @@ pub(crate) async fn peer_connection(ice_servers: &[rcli_protocol::agent::IceServ
     api.new_peer_connection(RTCConfiguration { ice_servers, ..Default::default() }).await
 }
 
-/// Captures `display` at its native size and sends it as H.264 at the viewer's `level` until `stop`.
+/// Captures `display` at its native size and sends it as H.264 at the viewer's `level` until `stop`, on a hardware
+/// encoder while `hardware` allows and one works.
 #[allow(clippy::too_many_arguments)]
 fn stream(
     p: &dyn Platform,
     session: &str,
     display: u32,
+    mut hardware: bool,
     level: &Mutex<Level>,
     pc: &RTCPeerConnection,
     track: &TrackLocalStaticSample,
@@ -255,15 +275,20 @@ fn stream(
         if (w, h) != rgba.dimensions() {
             rgba = imageops::crop_imm(&rgba, 0, 0, w, h).to_image();
         }
-        // A new encoder starts with a keyframe: on a level switch, a new display size, or when the viewer asks.
-        if keyframe.swap(false, Ordering::SeqCst) || current != Some(wanted) || encoder.as_ref().is_some_and(|e| e.size() != (w, h)) {
-            let e = H264::open(w, h, bps, fps, p.hardware_encoder())?;
+        // A new encoder starts with a keyframe: on a level switch or a new display size.
+        if current != Some(wanted) || encoder.as_ref().is_some_and(|e| e.size() != (w, h)) {
+            let e = H264::open(w, h, bps, fps, hardware)?;
             tracing::info!("live stream {session}: H.264 through {} at {wanted:?}", e.name());
             encoder = Some(e);
             current = Some(wanted);
         }
         let encoder = encoder.as_mut().expect("set above");
+        if keyframe.swap(false, Ordering::SeqCst) {
+            encoder.force_intra_frame()?;
+        }
         let data = encoder.encode(&rgba)?;
+        // A hardware encoder that did not start or failed is not tried again in this stream.
+        hardware &= encoder.is_hardware();
         if !data.is_empty() {
             let sample = Sample { data: data.into(), duration: last.elapsed(), ..Default::default() };
             last = Instant::now();

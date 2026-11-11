@@ -23,6 +23,8 @@ echo "building rcli $VERSION for $ARCH"
 cargo build --release --manifest-path "$ROOT/Cargo.toml" -p rcli --features gui,hwcodec
 
 mkdir -p "$STAGE/usr/bin" "$STAGE/DEBIAN"
+# Depends: the libraries the binary links (`readelf -d`): dbus and PipeWire, plus libdrm, libX11 and (x86_64) zlib
+# from hwcodec's FFmpeg. rpmbuild finds these by itself.
 install -m 0755 "$TARGET_DIR/release/rcli" "$STAGE/usr/bin/rcli"
 for hook in postinst prerm postrm; do
     install -m 0755 "$ROOT/packaging/linux/scripts/$hook" "$STAGE/DEBIAN/$hook"
@@ -34,7 +36,7 @@ Architecture: $ARCH
 Maintainer: Remote CLI <dev@remotecli.invalid>
 Section: admin
 Priority: optional
-Depends: systemd
+Depends: systemd, libdbus-1-3, libpipewire-0.3-0 | libpipewire-0.3-0t64, libdrm2, libx11-6, zlib1g, libstdc++6
 Recommends: tesseract-ocr, xauth, libva-drm2, libva-x11-2, va-driver-all
 Description: remote CLI Agent and Controller
  One binary for both sides: the Agent runs as a root systemd service and lets

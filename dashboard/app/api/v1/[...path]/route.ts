@@ -1,39 +1,6 @@
-import { request } from "node:http";
-import { Readable } from "node:stream";
-import { BASE } from "@/lib/api";
+import { forward } from "@/lib/forward";
 
-// Hop-by-hop headers, and `host` (the upstream's own).
-const HOP = ["host", "connection", "keep-alive", "transfer-encoding", "upgrade", "expect"];
+// The whole Controller API through the Dashboard URL (ADR 0006).
+const all = (req: Request) => forward(req);
 
-/** Forwards the whole Controller API (ADR 0006): method, path, query, headers and body pass through unchanged, and
- * the reply streams back (shell, `lock/watch`). `X-Forwarded-For` goes on as received (Next fills in the peer when
- * no proxy set it), so the Server, trusting the Dashboard, sees the Controller's IP. When the Controller disconnects
- * the upstream request is closed, so the Server sees the disconnect too. node:http rather than fetch: fetch drops a
- * stream after 300 s without a byte (an idle shell) and a reply after 300 s without headers (a long `exec`). */
-function forward(req: Request): Promise<Response> {
-  const url = new URL(req.url);
-  const headers = Object.fromEntries([...req.headers].filter(([k]) => !HOP.includes(k)));
-  return new Promise((resolve) => {
-    // RCLI_API_URL is the internal Controller API, plain http.
-    const upstream = request(new URL(url.pathname + url.search, BASE), { method: req.method, headers }, (res) => {
-      const out = new Headers();
-      for (const [k, v] of Object.entries(res.headers)) {
-        if (v === undefined || HOP.includes(k)) continue;
-        for (const value of [v].flat()) out.append(k, value);
-      }
-      out.set("cache-control", "no-transform"); // keeps Next's gzip from buffering a stream
-      const empty = req.method === "HEAD" || res.statusCode === 204 || res.statusCode === 304;
-      if (empty) res.resume();
-      const body = empty ? null : (Readable.toWeb(res) as ReadableStream);
-      resolve(new Response(body, { status: res.statusCode, headers: out }));
-    });
-    upstream.on("error", () =>
-      resolve(Response.json({ error: { code: "bad_gateway", message: "the Controller API is unreachable" } }, { status: 502 })),
-    );
-    req.signal.addEventListener("abort", () => upstream.destroy());
-    if (req.body) Readable.fromWeb(req.body as import("node:stream/web").ReadableStream).pipe(upstream);
-    else upstream.end();
-  });
-}
-
-export { forward as GET, forward as POST, forward as PUT, forward as PATCH, forward as DELETE, forward as HEAD };
+export { all as GET, all as POST, all as PUT, all as PATCH, all as DELETE, all as HEAD };

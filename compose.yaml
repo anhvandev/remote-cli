@@ -30,7 +30,7 @@ services:
       # Public half of the key that signs Agent builds (`rcli rollout keygen`); Devices pin it at registration.
       RCLI_UPDATE_PUBLIC_KEY: ${RCLI_UPDATE_PUBLIC_KEY:-}
       # The Dashboard forwards the Controller API: from its IP the Controller's IP is read from X-Forwarded-For (which
-      # the TLS proxy in front of the Dashboard must append), so wrong Device Passwords are counted per real client.
+      # the TLS proxy in front of the Dashboard must append), so wrong Device Passwords are counted per real Controller.
       RCLI_TRUSTED_PROXIES: ${RCLI_TRUSTED_PROXIES:-172.31.250.10}
       # WebRTC (live view): peers try direct paths first, then relay through coturn with short-lived credentials.
       RCLI_ICE_URLS: stun:${RCLI_TURN_HOST:-localhost}:3478,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=udp,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=tcp

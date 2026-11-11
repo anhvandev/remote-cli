@@ -18,6 +18,15 @@ async fn an_admins_https_visit_through_the_proxy_sets_the_api_address() {
     assert_eq!(api_address(&sys).await, "https://rcli.example.com");
 }
 
+/// Only the Dashboard's own requests count: an Admin's CLI call through the Dashboard URL never sets it.
+#[tokio::test]
+async fn an_admins_controller_call_through_the_dashboard_url_does_not_set_it() {
+    let sys = TestSystem::start().await;
+    let (status, body) = sys.api.via_dashboard_url("https", "other.example.com").get("/api/v1/devices").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(api_address(&sys).await, "");
+}
+
 #[tokio::test]
 async fn an_admin_corrects_it_and_later_visits_keep_the_correction() {
     let sys = TestSystem::start().await;

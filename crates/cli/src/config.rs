@@ -32,14 +32,9 @@ pub struct Machine {
 
 /// The machine-wide configuration file, under `root` instead of `/` for the `--root` test seam.
 pub fn machine_path(root: Option<&Path>) -> PathBuf {
+    // Windows: in the install's state directory (`windows_install::Layout`).
     #[cfg(windows)]
-    {
-        let program_data = match root {
-            Some(root) => root.join("ProgramData"),
-            None => std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData")),
-        };
-        program_data.join("rcli").join("controller.json")
-    }
+    return root.map_or_else(crate::windows_install::Layout::real, crate::windows_install::Layout::under).controller_config();
     #[cfg(not(windows))]
     crate::install::at(root.unwrap_or(Path::new("/")), "/etc/rcli/controller.json")
 }

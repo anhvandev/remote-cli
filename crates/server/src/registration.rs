@@ -22,6 +22,10 @@ pub async fn register(state: &AppState, req: RegisterRequest) -> Result<Register
     if !server_key::admits(state, &req.server_key).await {
         return Err(RegisterError::InvalidKey);
     }
+    // No CSR: a reinstall only checking its Server Key before it touches the existing install.
+    if req.csr_pem.is_empty() {
+        return Ok(RegisterResponse { ca_pem: state.ca.cert_pem.clone(), ..Default::default() });
+    }
     let name = req.hostname.trim();
     if name.is_empty() || name.len() > 255 {
         return Err(RegisterError::BadRequest("hostname must be 1-255 characters".into()));

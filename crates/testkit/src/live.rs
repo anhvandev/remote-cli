@@ -13,7 +13,11 @@ use std::{
 use openh264::{decoder::Decoder, formats::YUVSource};
 use serde_json::{json, Value};
 use webrtc::{
-    api::{interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder},
+    api::{
+        interceptor_registry::register_default_interceptors,
+        media_engine::{MediaEngine, MIME_TYPE_H264},
+        APIBuilder,
+    },
     data_channel::{data_channel_init::RTCDataChannelInit, data_channel_state::RTCDataChannelState, RTCDataChannel},
     ice_transport::{ice_candidate_type::RTCIceCandidateType, ice_server::RTCIceServer},
     interceptor::registry::Registry,
@@ -22,8 +26,9 @@ use webrtc::{
         sdp::session_description::RTCSessionDescription, RTCPeerConnection,
     },
     rtp_transceiver::{
-        rtp_codec::RTPCodecType, rtp_transceiver_direction::RTCRtpTransceiverDirection, RTCRtpTransceiverInit,
+        rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType}, rtp_transceiver_direction::RTCRtpTransceiverDirection, RTCRtpTransceiverInit,
     },
+    rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication,
     rtp::{codecs::h264::H264Packet, packetizer::Depacketizer},
     stats::StatsReportType,
     turn,
@@ -39,6 +44,13 @@ pub struct LiveViewer {
     path: String,
     packets: Arc<AtomicUsize>,
     codec: Arc<Mutex<String>>,
+    /// `profile-level-id` of the payload type the stream arrived on.
+    negotiated: Arc<Mutex<String>>,
+    /// profile_idc of the first SPS received.
+    sent: Arc<Mutex<Option<u8>>>,
+    /// Keyframes (frames with an IDR slice) received, and the SSRC they arrive on.
+    keyframes: Arc<AtomicUsize>,
+    ssrc: Arc<AtomicUsize>,
     /// Every complete video frame received: when, and its encoded size in bytes.
     frames: Arc<Mutex<Vec<(Instant, usize)>>>,
     /// Size of the last decoded picture.
@@ -58,15 +70,26 @@ impl LiveViewer {
     /// Opens a live view of `device` through the Controller API. `relay_only` forces media through TURN.
     /// `Err` = the API refused (status and error body).
     pub async fn open(api: &ApiClient, device: &str, relay_only: bool) -> Result<Self, (StatusCode, Value)> {
-        Self::connect(api, device, relay_only, None).await
+        Self::connect(api, device, relay_only, None, false).await
     }
 
     /// Opens a live view of one `display` of `device`.
     pub async fn open_display(api: &ApiClient, device: &str, display: u32) -> Result<Self, (StatusCode, Value)> {
-        Self::connect(api, device, false, Some(display)).await
+        Self::connect(api, device, false, Some(display), false).await
     }
 
-    async fn connect(api: &ApiClient, device: &str, relay_only: bool, display: Option<u32>) -> Result<Self, (StatusCode, Value)> {
+    /// Opens a live view from a viewer that decodes only Constrained Baseline H.264, as Firefox offers.
+    pub async fn open_baseline_only(api: &ApiClient, device: &str) -> Result<Self, (StatusCode, Value)> {
+        Self::connect(api, device, false, None, true).await
+    }
+
+    async fn connect(
+        api: &ApiClient,
+        device: &str,
+        relay_only: bool,
+        display: Option<u32>,
+        baseline_only: bool,
+    ) -> Result<Self, (StatusCode, Value)> {
         let (status, servers) = api.get("/api/v1/ice-servers").await;
         if status != StatusCode::OK {
             return Err((status, servers));
@@ -82,7 +105,18 @@ impl LiveViewer {
             })
             .collect();
         let mut media = MediaEngine::default();
-        media.register_default_codecs().unwrap();
+        if baseline_only {
+            let capability = RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_H264.into(),
+                clock_rate: 90_000,
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".into(),
+                ..Default::default()
+            };
+            let codec = RTCRtpCodecParameters { capability, payload_type: 125, ..Default::default() };
+            media.register_codec(codec, RTPCodecType::Video).unwrap();
+        } else {
+            media.register_default_codecs().unwrap();
+        }
         let interceptors = register_default_interceptors(Registry::new(), &mut media).unwrap();
         let api_rtc = APIBuilder::new().with_media_engine(media).with_interceptor_registry(interceptors).build();
         let policy = if relay_only { RTCIceTransportPolicy::Relay } else { RTCIceTransportPolicy::All };
@@ -94,10 +128,22 @@ impl LiveViewer {
         let quality = pc.create_data_channel("quality", Some(init)).await.unwrap();
         let (packets, codec) = (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::new(String::new())));
         let (frames, size) = (Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(None)));
+        let (negotiated, sent) = (Arc::new(Mutex::new(String::new())), Arc::new(Mutex::new(None)));
         let (p, c, f, sz) = (packets.clone(), codec.clone(), frames.clone(), size.clone());
+        let (n, s) = (negotiated.clone(), sent.clone());
+        let (keyframes, ssrc) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (k, ss) = (keyframes.clone(), ssrc.clone());
         pc.on_track(Box::new(move |track, _, _| {
-            *c.lock().unwrap() = track.codec().capability.mime_type.clone();
-            let (p, f, sz) = (p.clone(), f.clone(), sz.clone());
+            ss.store(track.ssrc() as usize, Ordering::Relaxed);
+            let capability = track.codec().capability;
+            *c.lock().unwrap() = capability.mime_type.clone();
+            *n.lock().unwrap() = capability
+                .sdp_fmtp_line
+                .split(';')
+                .find_map(|p| p.strip_prefix("profile-level-id="))
+                .unwrap_or_default()
+                .to_owned();
+            let (p, f, sz, s, k) = (p.clone(), f.clone(), sz.clone(), s.clone(), k.clone());
             tokio::spawn(async move {
                 let (mut depacketizer, mut decoder, mut frame) = (H264Packet::default(), Decoder::new().unwrap(), vec![]);
                 while let Ok((packet, _)) = track.read_rtp().await {
@@ -107,6 +153,13 @@ impl LiveViewer {
                     }
                     if packet.header.marker {
                         f.lock().unwrap().push((Instant::now(), frame.len()));
+                        // An SPS NAL (type 7) after a start code; its first byte is profile_idc.
+                        if let Some(at) = frame.windows(4).position(|w| w[..3] == [0, 0, 1] && w[3] & 0x1f == 7) {
+                            s.lock().unwrap().get_or_insert(frame[at + 4]);
+                        }
+                        if frame.windows(4).any(|w| w[..3] == [0, 0, 1] && w[3] & 0x1f == 5) {
+                            k.fetch_add(1, Ordering::Relaxed);
+                        }
                         if let Ok(Some(picture)) = decoder.decode(&frame) {
                             let (w, h) = picture.dimensions();
                             *sz.lock().unwrap() = Some((w as u32, h as u32));
@@ -131,7 +184,7 @@ impl LiveViewer {
         let answer = RTCSessionDescription::answer(body["sdp"].as_str().unwrap().into()).unwrap();
         pc.set_remote_description(answer).await.unwrap();
         let session = body["session"].as_str().unwrap().to_owned();
-        Ok(Self { pc, path: format!("{path}/{session}"), session, packets, codec, frames, size, quality })
+        Ok(Self { pc, path: format!("{path}/{session}"), session, packets, codec, negotiated, sent, keyframes, ssrc, frames, size, quality })
     }
 
     /// Size in pixels of the pictures being streamed, once one has been decoded.
@@ -155,6 +208,18 @@ impl LiveViewer {
         StreamRate { fps: sizes.len() as f64 / window.as_secs_f64(), bytes_per_frame: sizes.iter().sum::<usize>() as f64 / n }
     }
 
+    /// Keyframes received so far.
+    pub fn keyframes(&self) -> usize {
+        self.keyframes.load(Ordering::Relaxed)
+    }
+
+    /// Says the picture was lost (an RTCP PLI), as a browser does after packet loss.
+    pub async fn picture_lost(&self) {
+        let media_ssrc = self.ssrc.load(Ordering::Relaxed) as u32;
+        let pli = PictureLossIndication { sender_ssrc: 0, media_ssrc };
+        self.pc.write_rtcp(&[Box::new(pli)]).await.unwrap();
+    }
+
     /// Waits until at least `n` RTP packets of video have arrived.
     pub async fn wait_packets(&self, n: usize) {
         eventually(|| async { (self.packets.load(Ordering::Relaxed) >= n).then_some(()) }).await
@@ -162,6 +227,14 @@ impl LiveViewer {
 
     pub fn codec(&self) -> String {
         self.codec.lock().unwrap().clone()
+    }
+
+    /// The H.264 profile the stream was negotiated with (profile_idc from its payload type's `profile-level-id`) and
+    /// the one its frames are encoded in (from the first SPS), once that has arrived.
+    pub async fn profiles(&self) -> (u8, u8) {
+        let sent = eventually(|| async { *self.sent.lock().unwrap() }).await;
+        let negotiated = self.negotiated.lock().unwrap().get(..2).and_then(|h| u8::from_str_radix(h, 16).ok());
+        (negotiated.expect("a profile-level-id on the payload type"), sent)
     }
 
     /// Candidate type ("host", "relay", ...) of this side of the selected candidate pair.

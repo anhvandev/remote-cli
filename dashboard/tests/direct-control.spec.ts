@@ -33,8 +33,8 @@ test("wait for the Control Lock, take it, then drive the Device with mouse and k
     await expect(lock).toContainText(`🔒 ${user.name}`, { timeout: 15_000 });
     await expect(live).not.toContainText("Chỉ xem");
 
-    // Click the middle of the view, then type: the Action carries Observation image space (1280x720), not the
-    // video's native pixels.
+    // Click the middle of the view, then type: the Action carries the streamed display's native pixels (1920x1080),
+    // not the Observation grid AI agents see.
     const box = (await video.boundingBox())!;
     await video.click({ position: { x: box.width / 2, y: box.height / 2 } });
     await page.keyboard.press("h");
@@ -44,16 +44,16 @@ test("wait for the Control Lock, take it, then drive the Device with mouse and k
     await expect
       .poll(async () => {
         const entries = await adminApi(`/api/v1/audit?device=charlie&user=${user.name}`);
-        type Entry = { action: string; params: { actions: { x?: number; y?: number }[] }; result: object };
+        type Entry = { action: string; params: { actions: { x?: number; y?: number; native?: boolean }[] }; result: object };
         // Starting the live view is audited too (`live.start`); only the input Actions matter here.
         return entries.filter((e: Entry) => e.action === "act").map(({ params, result }: Entry) => {
           const { x, y, ...a } = params.actions[0];
           // The view's pixel grid isn't the image's, so a point lands within a pixel of the target.
-          return x === undefined ? { ...a, ...result } : { ...a, ...result, near: Math.hypot(x - 640, y! - 360) <= 1.5 };
+          return x === undefined ? { ...a, ...result } : { ...a, ...result, near: Math.hypot(x - 960, y! - 540) <= 1.5 };
         });
       })
       .toEqual([
-        { type: "click", display: 0, near: true, error: null },
+        { type: "click", display: 0, native: true, near: true, error: null },
         // Typed text may be a password: the Dashboard always marks it secret, so it is never audited in clear.
         { type: "type", text: "***", secret: true, error: null },
         { type: "key", keys: "ctrl+enter", error: null },

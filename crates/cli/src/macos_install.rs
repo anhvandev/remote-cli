@@ -199,6 +199,7 @@ pub async fn install_at(
     out: &mut dyn std::io::Write,
 ) -> anyhow::Result<()> {
     // A reinstall must not destroy a working install when the new Server Key is wrong.
+    crate::install::check_server_key(&opts).await?;
     let reinstall = layout.state_dir().join("credentials.json").exists();
     install_files(layout, &opts, &std::env::current_exe()?, run)?;
     // Register now, so a wrong Server Key fails here and the Device ID can be shown; the service finds the credentials.
@@ -208,7 +209,7 @@ pub async fn install_at(
             if !reinstall {
                 let _ = uninstall_files(layout, console_uid, run);
             }
-            return Err(e.context("cannot register this Device; is the Server Address and Server Key right?"));
+            return Err(e.context(crate::install::REGISTER_FAILED));
         }
     };
     install_jobs(layout, &opts, console_uid, run)?;

@@ -9,7 +9,10 @@ use openh264::{
     OpenH264API,
 };
 
-/// `hwcodec` encoders to try, best first. An OS without an entry encodes in software.
+#[cfg(all(feature = "hwcodec", not(any(target_os = "macos", target_os = "linux", windows))))]
+compile_error!("the hwcodec feature has hardware encoders on macOS, Linux and Windows only");
+
+/// `hwcodec` encoders to try, best first.
 #[cfg(all(feature = "hwcodec", target_os = "macos"))]
 const HARDWARE: &[&str] = &["h264_videotoolbox"];
 /// VA-API opens a DRM render node from the Agent service, so it needs no display: the greeter and lock screen too.
@@ -30,14 +33,34 @@ pub struct H264 {
 
 enum Inner {
     Software(Box<Encoder>),
-    #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux", windows)))]
+    #[cfg(feature = "hwcodec")]
     Hardware(Box<hardware::Encoder>),
+}
+
+/// Whether a hardware encoder starts on this machine: a stream decides its H.264 profile before it encodes.
+pub fn hardware_starts() -> bool {
+    #[cfg(feature = "hwcodec")]
+    return HARDWARE.iter().any(|name| hardware::Encoder::open(name, 640, 480, 1_000_000, 10.0).is_ok());
+    #[cfg(not(feature = "hwcodec"))]
+    false
+}
+
+/// The SDP `profile-level-id` of what a stream sends: High from a hardware encoder (`hwcodec` opens every H.264
+/// encoder in High), Constrained Baseline from openh264. A High stream that falls back to openh264 stays decodable:
+/// openh264 marks its streams Main-conformant (constraint_set1), and a High decoder takes those. Level 5.1, the
+/// highest either encoder picks for itself: neither starts above 3840x2160.
+pub fn profile_level_id(hardware: bool) -> &'static str {
+    if hardware {
+        "640033"
+    } else {
+        "42e033"
+    }
 }
 
 impl H264 {
     /// Opens a hardware encoder if `hardware` allows and one starts, else openh264. `width` and `height` are even.
     pub fn open(width: u32, height: u32, bps: u32, fps: f32, hardware: bool) -> anyhow::Result<Self> {
-        #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux", windows)))]
+        #[cfg(feature = "hwcodec")]
         if hardware {
             for name in HARDWARE {
                 match hardware::Encoder::open(name, width, height, bps, fps) {
@@ -54,9 +77,33 @@ impl H264 {
     pub fn name(&self) -> &'static str {
         match &self.inner {
             Inner::Software(_) => "openh264",
-            #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux", windows)))]
+            #[cfg(feature = "hwcodec")]
             Inner::Hardware(e) => e.name,
         }
+    }
+
+    pub fn is_hardware(&self) -> bool {
+        !matches!(self.inner, Inner::Software(_))
+    }
+
+    /// Makes the next frame a keyframe, for a viewer that lost the picture. `hwcodec` cannot ask its encoder for one,
+    /// so a hardware encoder is opened again (it starts with a keyframe); openh264 if that fails.
+    pub fn force_intra_frame(&mut self) -> anyhow::Result<()> {
+        match &mut self.inner {
+            Inner::Software(e) => e.force_intra_frame(),
+            #[cfg(feature = "hwcodec")]
+            Inner::Hardware(e) => {
+                let (name, bps, fps) = (e.name, e.bps, e.fps);
+                self.inner = match hardware::Encoder::open(name, self.width, self.height, bps, fps) {
+                    Ok(e) => Inner::Hardware(Box::new(e)),
+                    Err(()) => {
+                        tracing::warn!("hardware encoder {name} did not restart, switching to openh264");
+                        Inner::Software(Box::new(software(bps, fps)?))
+                    }
+                };
+            }
+        }
+        Ok(())
     }
 
     /// Size this encoder was opened for.
@@ -70,7 +117,7 @@ impl H264 {
         let yuv = YUVBuffer::from_rgba8_source(RgbaSliceU8::new(rgba, (self.width as usize, self.height as usize)));
         match &mut self.inner {
             Inner::Software(e) => Ok(e.encode(&yuv)?.to_vec()),
-            #[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux", windows)))]
+            #[cfg(feature = "hwcodec")]
             Inner::Hardware(e) => match e.encode(&yuv) {
                 Ok(data) => Ok(data),
                 Err(code) => {
@@ -94,7 +141,7 @@ fn software(bps: u32, fps: f32) -> anyhow::Result<Encoder> {
     Ok(Encoder::with_api_config(OpenH264API::from_source(), config)?)
 }
 
-#[cfg(all(feature = "hwcodec", any(target_os = "macos", target_os = "linux", windows)))]
+#[cfg(feature = "hwcodec")]
 mod hardware {
     use std::time::{Duration, Instant};
 
@@ -217,3 +264,4 @@ mod tests {
         assert!(near(at(280, 120), [0, 0, 255]), "{}: right is {:?}", encoder.name(), at(280, 120));
     }
 }
+

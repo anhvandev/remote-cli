@@ -66,6 +66,15 @@ pub fn device_credentials(state: &Path) -> Option<rcli_agent::Credentials> {
     serde_json::from_slice(&std::fs::read(state.join("credentials.json")).ok()?).ok()
 }
 
+/// An install's first step: checks the Server Key with the Server, so a wrong one fails before anything is written
+/// (on a reinstall, before the working install is touched).
+pub async fn check_server_key(opts: &Options) -> anyhow::Result<()> {
+    let server = rcli_agent::ServerAccess { addr: opts.server.clone(), server_key: opts.key.clone() };
+    rcli_agent::check_server_key(&server).await.map_err(|e| e.context(REGISTER_FAILED))
+}
+
+pub const REGISTER_FAILED: &str = "cannot register this Device; is the Server Address and Server Key right?";
+
 /// Registers this Device with the Server the install was given (or keeps its existing registration), so a wrong
 /// Server Key fails before the service starts, then writes the machine-wide Controller configuration at `machine`
 /// (ADR 0006). Returns the Device ID and Device Password lines the install prints.
