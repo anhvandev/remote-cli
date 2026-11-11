@@ -4,6 +4,11 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[features]
+# Live View's hardware H.264 (VideoToolbox) through RustDesk's hwcodec; needs VCPKG_ROOT with RustDesk's FFmpeg
+# (docs/usage.md). Off: openh264 only, nothing extra to build.
+hwcodec = ["dep:hwcodec"]
+
 [dependencies]
 anyhow.workspace = true
 hex.workspace = true
@@ -26,8 +31,7 @@ webrtc.workspace = true
 # The macOS adapter (`macos.rs`): capture, AX tree, session state and OCR through the system frameworks.
 [target.'cfg(target_os = "macos")'.dependencies]
 enigo = { version = "0.6", default-features = false }
-# Live View's hardware H.264 (VideoToolbox) through FFmpeg; needs VCPKG_ROOT with RustDesk's FFmpeg (docs/usage.md).
-hwcodec = { git = "https://github.com/rustdesk-org/hwcodec", rev = "ec38ebaf2454269d4c5668a57e3813c6e5541be7" }
+hwcodec = { git = "https://github.com/rustdesk-org/hwcodec", rev = "ec38ebaf2454269d4c5668a57e3813c6e5541be7", optional = true }
 libc = "0.2"
 objc2 = "0.6"
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "libc", "HIServices", "AXError", "AXUIElement", "AXValue"] }

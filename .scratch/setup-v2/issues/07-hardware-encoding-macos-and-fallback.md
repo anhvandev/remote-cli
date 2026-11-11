@@ -18,10 +18,11 @@
   `h264_videotoolbox`) when `Platform::hardware_encoder()` allows, openh264 otherwise or when none starts. A hardware
   encoder that errors mid-stream is swapped for openh264. The Agent logs
   `live stream <id>: H.264 through <encoder> at <level>` each time it opens an encoder.
-- `hwcodec` is pinned to rustdesk-org/hwcodec `ec38eba` and builds against RustDesk's static FFmpeg from vcpkg
-  (`VCPKG_ROOT`, see docs/usage.md). hwcodec itself only offers `hevc_videotoolbox` on macOS ("h264 encode failed too
+- `hwcodec` is an opt-in cargo feature (`rcli/hwcodec`, forwarded to `rcli-agent/hwcodec`), off by default so dev
+  builds and `cargo test` need no FFmpeg; `packaging/macos/build-dmg.sh` turns it on. It is pinned to
+  rustdesk-org/hwcodec `ec38eba` and builds against RustDesk's static FFmpeg from vcpkg (`VCPKG_ROOT`, see docs/usage.md). hwcodec itself only offers `hevc_videotoolbox` on macOS ("h264 encode failed too
   often"); we open `h264_videotoolbox` by name, which RustDesk's FFmpeg includes.
-- Manual check (2026-11-11), MacBook Pro `MacBookPro18,3` (14-inch 2021, M1 Pro), macOS 15.8.1 (24H32): the live e2e
+- Manual check (2026-11-11, built with `--features rcli/hwcodec`), MacBook Pro `MacBookPro18,3` (14-inch 2021, M1 Pro), macOS 15.8.1 (24H32): the live e2e
   tests stream through `h264_videotoolbox` (FakePlatform capture, real Agent encode path, openh264 decode in the
   viewer). At 3024x1964 the log named `h264_videotoolbox` at Balanced, Speed and Quality, measured 13 / 20.5 / 9 fps.
   Not checked: a real screen through the macOS adapter in a browser.

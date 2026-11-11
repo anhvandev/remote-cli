@@ -1,5 +1,6 @@
 //! H.264 for Live View: a hardware encoder through RustDesk's `hwcodec` when one starts, openh264 otherwise.
-//! This is the one place that picks the encoder; each OS lists its hardware encoders in `HARDWARE`.
+//! This is the one place that picks the encoder; each OS lists its hardware encoders in `HARDWARE`. Without the
+//! `hwcodec` feature every build encodes with openh264.
 
 use image::RgbaImage;
 use openh264::{
@@ -9,7 +10,7 @@ use openh264::{
 };
 
 /// `hwcodec` encoders to try, best first. An OS without an entry encodes in software.
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "hwcodec", target_os = "macos"))]
 const HARDWARE: &[&str] = &["h264_videotoolbox"];
 
 /// An H.264 encoder for one stream at a fixed size, bitrate and frame rate.
@@ -17,37 +18,35 @@ pub struct H264 {
     inner: Inner,
     width: u32,
     height: u32,
-    bps: u32,
-    fps: f32,
 }
 
 enum Inner {
     Software(Box<Encoder>),
-    #[cfg(target_os = "macos")]
+    #[cfg(all(feature = "hwcodec", target_os = "macos"))]
     Hardware(Box<hardware::Encoder>),
 }
 
 impl H264 {
     /// Opens a hardware encoder if `hardware` allows and one starts, else openh264. `width` and `height` are even.
     pub fn open(width: u32, height: u32, bps: u32, fps: f32, hardware: bool) -> anyhow::Result<Self> {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(feature = "hwcodec", target_os = "macos"))]
         if hardware {
             for name in HARDWARE {
                 match hardware::Encoder::open(name, width, height, bps, fps) {
-                    Ok(e) => return Ok(Self { inner: Inner::Hardware(Box::new(e)), width, height, bps, fps }),
+                    Ok(e) => return Ok(Self { inner: Inner::Hardware(Box::new(e)), width, height }),
                     Err(()) => tracing::info!("hardware encoder {name} did not start"),
                 }
             }
         }
         let _ = hardware;
-        Ok(Self { inner: Inner::Software(Box::new(software(bps, fps)?)), width, height, bps, fps })
+        Ok(Self { inner: Inner::Software(Box::new(software(bps, fps)?)), width, height })
     }
 
     /// The encoder in use, for the log: a `hwcodec` encoder name or "openh264".
     pub fn name(&self) -> &'static str {
         match &self.inner {
             Inner::Software(_) => "openh264",
-            #[cfg(target_os = "macos")]
+            #[cfg(all(feature = "hwcodec", target_os = "macos"))]
             Inner::Hardware(e) => e.name,
         }
     }
@@ -63,12 +62,12 @@ impl H264 {
         let yuv = YUVBuffer::from_rgba8_source(RgbaSliceU8::new(rgba, (self.width as usize, self.height as usize)));
         match &mut self.inner {
             Inner::Software(e) => Ok(e.encode(&yuv)?.to_vec()),
-            #[cfg(target_os = "macos")]
+            #[cfg(all(feature = "hwcodec", target_os = "macos"))]
             Inner::Hardware(e) => match e.encode(&yuv) {
                 Ok(data) => Ok(data),
                 Err(code) => {
                     tracing::warn!("hardware encoder {} failed ({code}), switching to openh264", e.name);
-                    self.inner = Inner::Software(Box::new(software(self.bps, self.fps)?));
+                    self.inner = Inner::Software(Box::new(software(e.bps, e.fps)?));
                     self.encode(rgba)
                 }
             },
@@ -87,7 +86,7 @@ fn software(bps: u32, fps: f32) -> anyhow::Result<Encoder> {
     Ok(Encoder::with_api_config(OpenH264API::from_source(), config)?)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "hwcodec", target_os = "macos"))]
 mod hardware {
     use std::time::{Duration, Instant};
 
@@ -100,6 +99,9 @@ mod hardware {
 
     pub struct Encoder {
         pub name: &'static str,
+        /// What it was opened with, for the openh264 that replaces it if it fails.
+        pub bps: u32,
+        pub fps: f32,
         hw: Hw,
         /// The frame in the encoder's I420 layout, reused.
         buf: Vec<u8>,
@@ -127,7 +129,7 @@ mod hardware {
                 thread_count: 1,
             })?;
             let buf = vec![0; hw.length as usize];
-            Ok(Self { name, hw, buf, started: Instant::now(), produced: false })
+            Ok(Self { name, bps, fps, hw, buf, started: Instant::now(), produced: false })
         }
 
         /// `Err` = the encoder is broken (its error code). Empty = no output for this frame yet: VideoToolbox

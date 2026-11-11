@@ -7,7 +7,7 @@ set -eu
 cd "$(git rev-parse --show-toplevel)"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 arch=$(uname -m | sed 's/arm64/aarch64/')
-cargo build --release -p rcli --features gui
+cargo build --release -p rcli --features gui,hwcodec
 bin="$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/rcli"
 out=target/macos
 app="$out/rcli.app"

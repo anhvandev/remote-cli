@@ -12,12 +12,14 @@ Từ ngữ (Device, Action, Observation, Mark, Control Lock, Wake Relay…) theo
 
 ## Cài CLI
 
-> **Build trên macOS**: Live View mã hoá H.264 bằng VideoToolbox qua `hwcodec` của RustDesk, cần FFmpeg tĩnh của
-> RustDesk build bằng vcpkg, một lần cho mỗi máy build (cần `pkg-config`, `nasm` và Python ≥ 3.10 trong `PATH`):
-> `git clone https://github.com/microsoft/vcpkg ~/vcpkg && ~/vcpkg/bootstrap-vcpkg.sh`, lấy thư mục
-> `res/vcpkg` của repo `rustdesk/rustdesk`, rồi `~/vcpkg/vcpkg install ffmpeg --triplet arm64-osx --overlay-ports=<rustdesk>/res/vcpkg`
-> (`x64-osx` trên Mac Intel). Sau đó mọi lệnh `cargo` cần `VCPKG_ROOT=~/vcpkg`. Không có GPU encoder (máy ảo) hoặc
-> encoder không khởi động được thì Agent tự chuyển sang openh264; log Agent ghi tên encoder đang dùng
+> **Build trên macOS**: build dev và `cargo test` không cần gì thêm, Live View mã hoá bằng openh264. Bản release
+> (`packaging/macos/build-dmg.sh`) bật feature `hwcodec`: Live View mã hoá H.264 bằng VideoToolbox qua `hwcodec` của
+> RustDesk, cần FFmpeg tĩnh của RustDesk build bằng vcpkg, một lần cho mỗi máy build (cần `pkg-config`, `nasm` và
+> Python ≥ 3.10 trong `PATH`): `git clone https://github.com/microsoft/vcpkg ~/vcpkg && ~/vcpkg/bootstrap-vcpkg.sh`,
+> lấy thư mục `res/vcpkg` của repo `rustdesk/rustdesk`, rồi
+> `~/vcpkg/vcpkg install ffmpeg --triplet arm64-osx --overlay-ports=<rustdesk>/res/vcpkg` (`x64-osx` trên Mac Intel).
+> Sau đó build bằng `VCPKG_ROOT=~/vcpkg cargo build --release -p rcli --features hwcodec`. Không có GPU encoder (máy
+> ảo) hoặc encoder không khởi động được thì Agent tự chuyển sang openh264; log Agent ghi tên encoder đang dùng
 > (`live stream …: H.264 through h264_videotoolbox` hoặc `… through openh264`).
 
 ```bash
