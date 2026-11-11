@@ -19,7 +19,8 @@ test("wait for the Control Lock, take it, then drive the Device with mouse and k
     const live = page.getByRole("region", { name: "Live view" });
     await live.getByRole("button", { name: "Xem trực tiếp" }).click();
     const video = live.getByLabel("Màn hình charlie");
-    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: 15_000 }).toBe(1280);
+    // Native size: charlie's primary display is 1920x1080.
+    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: 15_000 }).toBe(1920);
     // Without the lock the view is watch-only.
     await expect(live).toContainText("Chỉ xem: cần giữ Control Lock để điều khiển.");
 
@@ -32,7 +33,8 @@ test("wait for the Control Lock, take it, then drive the Device with mouse and k
     await expect(lock).toContainText(`🔒 ${user.name}`, { timeout: 15_000 });
     await expect(live).not.toContainText("Chỉ xem");
 
-    // Click the middle of the view, then type: the video is 1280x720 in Observation image space.
+    // Click the middle of the view, then type: the Action carries Observation image space (1280x720), not the
+    // video's native pixels.
     const box = (await video.boundingBox())!;
     await video.click({ position: { x: box.width / 2, y: box.height / 2 } });
     await page.keyboard.press("h");
