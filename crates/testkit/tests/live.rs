@@ -1,4 +1,4 @@
-use rcli_testkit::{eventually, LiveViewer, StatusCode, TestSystem};
+use rcli_testkit::{eventually, DisplayInfo, FakePlatform, LiveViewer, StatusCode, TestSystem};
 use serde_json::json;
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 
@@ -78,4 +78,29 @@ async fn live_view_errors_are_typed() {
     let err = LiveViewer::open(&sys.api, &dev, false).await.err().expect("refused");
     assert_eq!(err.0, StatusCode::CONFLICT, "{}", err.1);
     assert_eq!(err.1["error"]["code"], "device_not_connected");
+}
+
+#[tokio::test]
+async fn live_view_streams_native_pixels_while_observations_keep_a_1280_long_edge() {
+    let sys = TestSystem::start().await;
+    let retina = FakePlatform::new("retina");
+    retina.set_displays(vec![
+        DisplayInfo { index: 0, x: 0, y: 0, width: 2880, height: 1800, scale: 2.0, primary: true },
+        // Odd sizes are rounded down to even for H.264.
+        DisplayInfo { index: 1, x: 1440, y: 0, width: 1367, height: 769, scale: 1.0, primary: false },
+    ]);
+    let agent = sys.start_agent_on(retina).await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online").await;
+
+    let live = LiveViewer::open(&sys.api, dev, false).await.expect("open live view");
+    assert_eq!(live.frame_size().await, (2880, 1800), "the primary display's physical pixels");
+    live.close(&sys.api).await;
+    let live = LiveViewer::open_display(&sys.api, dev, 1).await.expect("open live view of display 1");
+    assert_eq!(live.frame_size().await, (1366, 768));
+    live.close(&sys.api).await;
+
+    let (status, obs) = sys.api.post_json(&format!("/api/v1/devices/{dev}/actions"), &json!({ "actions": [] })).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
+    assert_eq!((obs["images"][0]["width"].clone(), obs["images"][0]["height"].clone()), (json!(1280), json!(800)));
 }

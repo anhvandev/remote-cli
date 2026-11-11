@@ -13,7 +13,7 @@ use std::{
 use image::{imageops, RgbaImage};
 use openh264::{
     encoder::{Encoder, EncoderConfig, FrameRate},
-    formats::{RgbSliceU8, YUVBuffer},
+    formats::{RgbaSliceU8, YUVBuffer},
     OpenH264API,
 };
 use rcli_protocol::agent::{Error, LiveAnswer, LiveOffer};
@@ -36,7 +36,7 @@ use webrtc::{
     track::track_local::track_local_static_sample::TrackLocalStaticSample,
 };
 
-use crate::{coords, platform::Platform};
+use crate::platform::Platform;
 
 const FRAME_EVERY: Duration = Duration::from_millis(100);
 /// A viewer that has not connected by then is gone (e.g. closed the tab before ICE finished).
@@ -183,7 +183,7 @@ pub(crate) async fn peer_connection(ice_servers: &[rcli_protocol::agent::IceServ
     api.new_peer_connection(RTCConfiguration { ice_servers, ..Default::default() }).await
 }
 
-/// Captures `display` every 100 ms, downscaled like Observations, and sends it as H.264 until `stop`.
+/// Captures `display` every 100 ms at its native size and sends it as H.264 until `stop`.
 fn stream(
     p: &dyn Platform,
     display: u32,
@@ -208,16 +208,17 @@ fn stream(
     while !stop.load(Ordering::SeqCst) {
         let tick = Instant::now();
         let frame = p.capture(display)?;
-        // H.264 4:2:0 needs even dimensions.
-        let (w, h) = coords::observed_size(frame.width, frame.height);
-        let (w, h) = (w.max(2) & !1, h.max(2) & !1);
-        let full = RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
+        // Native pixels, but H.264 4:2:0 needs even dimensions: an odd last row or column is dropped.
+        let (w, h) = (frame.width & !1, frame.height & !1);
+        let mut rgba = RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
             .ok_or_else(|| anyhow::anyhow!("frame size does not match its pixels"))?;
-        let rgb = image::DynamicImage::ImageRgba8(imageops::thumbnail(&full, w, h)).to_rgb8();
+        if (w, h) != rgba.dimensions() {
+            rgba = imageops::crop_imm(&rgba, 0, 0, w, h).to_image();
+        }
         if keyframe.swap(false, Ordering::SeqCst) {
             encoder.force_intra_frame();
         }
-        let data = encoder.encode(&YUVBuffer::from_rgb8_source(RgbSliceU8::new(&rgb, (w as usize, h as usize))))?.to_vec();
+        let data = encoder.encode(&YUVBuffer::from_rgba8_source(RgbaSliceU8::new(&rgba, (w as usize, h as usize))))?.to_vec();
         if !data.is_empty() {
             let sample = Sample { data: data.into(), duration: last.elapsed(), ..Default::default() };
             last = Instant::now();
