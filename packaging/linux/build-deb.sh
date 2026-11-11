@@ -17,7 +17,8 @@ STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
 echo "building rcli $VERSION for $ARCH"
-cargo build --release --manifest-path "$ROOT/Cargo.toml" -p rcli
+# The GUI window answers the root and accept prompts; it loads the display libraries only when it opens.
+cargo build --release --manifest-path "$ROOT/Cargo.toml" -p rcli --features gui
 
 mkdir -p "$STAGE/usr/bin" "$STAGE/DEBIAN"
 install -m 0755 "$TARGET_DIR/release/rcli" "$STAGE/usr/bin/rcli"

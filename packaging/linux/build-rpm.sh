@@ -17,7 +17,8 @@ TOP=$(mktemp -d)
 trap 'rm -rf "$TOP"' EXIT
 
 echo "building rcli $VERSION for $ARCH"
-cargo build --release --manifest-path "$ROOT/Cargo.toml" -p rcli
+# The GUI window answers the root and accept prompts; it loads the display libraries only when it opens.
+cargo build --release --manifest-path "$ROOT/Cargo.toml" -p rcli --features gui
 
 mkdir -p "$TOP/BUILD" "$TOP/RPMS" "$TOP/SOURCES" "$TOP/SPECS" "$TOP/SRPMS"
 spec="$TOP/SPECS/rcli.spec"
