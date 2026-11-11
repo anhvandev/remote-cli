@@ -52,6 +52,11 @@ pub trait Platform: Send + Sync + 'static {
     /// Asks a person at the Device whether to accept a new connection from `requester`, with Accept/Reject, for at
     /// most `timeout`. `true` = Accept; `false` = Reject or no answer in time. Only called while someone is logged in.
     fn ask_accept(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool>;
+    /// Whether Live View may try a hardware H.264 encoder before openh264. Real adapters let it try: one that is
+    /// missing or cannot start falls back by itself. The FakePlatform can say no, like a machine without a GPU.
+    fn hardware_encoder(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,6 +183,8 @@ pub struct FakeState {
     /// Every capture is fresh noise (8x8 blocks of random colour) instead of one colour, like a playing video:
     /// what a bitrate limit bites on.
     pub noise: bool,
+    /// Whether Live View may use a hardware encoder; false forces openh264 (a VM without a GPU).
+    pub hardware_encoder: bool,
     /// Root prompts shown, in order: who asked, and the timeout the Agent allowed.
     pub root_prompts: Vec<(String, Duration)>,
     /// The scripted person's answers: true = Accept, false = Reject. An empty queue = nobody answers, which
@@ -212,6 +219,7 @@ impl FakePlatform {
             screen_text: vec![],
             flicker: false,
             noise: false,
+            hardware_encoder: true,
             root_prompts: vec![],
             root_answers: Default::default(),
             accept_prompts: vec![],
@@ -400,6 +408,10 @@ impl Platform for FakePlatform {
         let mut s = self.state.lock().unwrap();
         s.accept_prompts.push((requester.to_owned(), timeout));
         Ok(s.accept_answers.pop_front().unwrap_or(false))
+    }
+
+    fn hardware_encoder(&self) -> bool {
+        self.state.lock().unwrap().hardware_encoder
     }
 }
 

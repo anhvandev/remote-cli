@@ -4,6 +4,7 @@ pub mod backlog;
 pub mod contract;
 mod clip;
 mod coords;
+mod encoder;
 mod executor;
 pub mod ipc;
 #[cfg(target_os = "linux")]

@@ -1,4 +1,4 @@
-use rcli_testkit::{eventually, DisplayInfo, FakePlatform, LiveViewer, StatusCode, TestSystem};
+use rcli_testkit::{capture_logs, eventually, logged, DisplayInfo, FakePlatform, LiveViewer, StatusCode, TestSystem};
 use serde_json::json;
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 
@@ -111,7 +111,12 @@ async fn each_viewer_switches_live_view_quality_mid_stream_and_balanced_is_the_d
     let busy = FakePlatform::new("busy");
     busy.set_displays(vec![DisplayInfo { index: 0, x: 0, y: 0, width: 640, height: 360, scale: 1.0, primary: true }]);
     // Fresh detail on every frame, like a playing video, so the bitrate of a level shows in the frame sizes.
-    busy.update(|s| s.noise = true);
+    // On openh264 on every machine: a hardware encoder's quality ceiling (VideoToolbox) can make Quality and
+    // Balanced frames the same size on this content, which says nothing about the levels.
+    busy.update(|s| {
+        s.noise = true;
+        s.hardware_encoder = false;
+    });
     let agent = sys.start_agent_on(busy).await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
@@ -142,4 +147,26 @@ async fn each_viewer_switches_live_view_quality_mid_stream_and_balanced_is_the_d
 
     mine.close(&sys.api).await;
     theirs.close(&sys.api).await;
+}
+
+#[tokio::test]
+async fn live_view_falls_back_to_software_encoding_when_no_hardware_encoder_starts() {
+    capture_logs();
+    let sys = TestSystem::start().await;
+    let vm = FakePlatform::new("vm-without-gpu");
+    vm.update(|s| s.hardware_encoder = false);
+    let agent = sys.start_agent_on(vm).await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online").await;
+
+    let live = LiveViewer::open(&sys.api, dev, false).await.expect("open live view");
+    assert_eq!(live.frame_size().await, (1920, 1080), "native pixels, encoded in software");
+    eventually(|| async { logged(&format!("live stream {}: H.264 through openh264", live.session)).then_some(()) }).await;
+
+    // Live View Quality still drives the software encoder.
+    live.set_quality("speed").await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let speed = live.measure(std::time::Duration::from_secs(2)).await;
+    assert!(speed.fps >= 20.0, "Speed is about 25 fps: {speed:?}");
+    live.close(&sys.api).await;
 }
