@@ -81,7 +81,7 @@ struct Signed {
     signature: Option<String>,
 }
 
-/// Body: the raw build. Builds must be signed; the Server stores the signature, Agents verify it.
+/// Body: the raw build. Builds must be signed with the update key; the Server checks the signature, Agents verify it again.
 async fn publish(
     Admin(user): Admin,
     State(state): State<super::State>,
@@ -100,6 +100,22 @@ async fn publish(
         .ok_or_else(|| bad_request("unsigned build: ?signature=<hex Ed25519 signature> is required"))?;
     if build.is_empty() {
         return Err(bad_request("empty build"));
+    }
+    // Checked before anything is stored, so a refused upload can be retried with the same version + target.
+    let key = state.config.update_public_key.as_deref().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "no_update_key",
+            "the Server has no update public key configured (RCLI_UPDATE_PUBLIC_KEY), so no Device could verify this build",
+        )
+    })?;
+    let sha256 = rcli_protocol::update::sha256_hex(&build);
+    if !rcli_protocol::update::verify(key, &version, &target, &sha256, &signature) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_signature",
+            "the signature does not match this version, target and file",
+        ));
     }
     updates::publish(&state, &version, &target, &signature, &build, &user.name).await?;
     Ok((StatusCode::CREATED, Json(json!({ "version": version, "target": target, "size": build.len() }))))

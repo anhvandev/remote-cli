@@ -112,7 +112,9 @@ rcli rollout <version> --all             # hoặc --device <id> ...
 rcli devices                             # cột AGENT / UPDATE cho biết tiến độ
 ```
 
-Server không giữ private key và không tự kiểm chữ ký; chính Agent kiểm bằng public key đã pin lúc đăng ký (`RCLI_UPDATE_PUBLIC_KEY` của Server). "--all" chỉ gồm các Device đã có lúc rollout.
+Server không giữ private key. Lúc upload, Server kiểm chữ ký bằng `RCLI_UPDATE_PUBLIC_KEY` và từ chối ngay nếu chưa cấu hình key hoặc chữ ký sai (không lưu gì, nên upload lại cùng version + target được); Agent kiểm lại bằng public key đã pin lúc đăng ký. "--all" chỉ gồm các Device đã có lúc rollout.
+
+Chữ ký là Ed25519 trên chuỗi `rcli-agent-build\n{version}\n{target}\n{sha256 hex chữ thường của file}`, nên có thể ký ngoài rcli bằng công cụ chuẩn.
 
 Mục Tải xuống của trang Connect guide: `rcli.exe` là bản build đã rollout cho `windows-x86_64`; `.dmg`, `.deb` và
 `.rpm` là package do Admin upload (build bằng `packaging/macos/build-dmg.sh`, `packaging/linux/build-deb.sh`,

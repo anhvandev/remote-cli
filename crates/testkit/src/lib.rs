@@ -163,6 +163,12 @@ impl TestSystem {
         self.server.server_key.clone()
     }
 
+    /// Hex update signature of `build` as `version` for `target`, with the key the Server and Devices trust.
+    pub fn sign_build(&self, version: &str, target: &str, build: &[u8]) -> String {
+        let sha256 = rcli_protocol::update::sha256_hex(build);
+        hex::encode(rcli_protocol::update::sign(&self.update_signing_key, version, target, &sha256).unwrap())
+    }
+
     /// `localhost:port` of the Agent port, as an Agent is given it.
     pub fn agent_addr(&self) -> String {
         format!("localhost:{}", self.server.agent_addr.port())

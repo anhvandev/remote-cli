@@ -110,14 +110,16 @@ async fn main() -> anyhow::Result<()> {
     }
     // A real target from the Dashboard picker that no test Agent runs on.
     let (version, target, build) = ("9.9.9", "windows-aarch64", "fake agent build");
-    let signature = rcli_protocol::update::sign(&sys.update_signing_key, version, target, build.as_bytes())?;
+    let signature = rcli_protocol::update::sign(&sys.update_signing_key, version, target, &rcli_protocol::update::sha256_hex(build.as_bytes()))?;
 
     let info = json!({
         "api": format!("http://{}", sys.server.http_addr),
         "admin_token": sys.admin_token,
         "now": sys.clock.now().timestamp(),
         "update": {"version": version, "target": target, "build": build,
-                   "signature": data_encoding::HEXLOWER.encode(&signature)},
+                   "signature": data_encoding::HEXLOWER.encode(&signature),
+                   // PKCS#8 of the throwaway update key, so specs can sign builds for other versions and targets.
+                   "signing_key": data_encoding::HEXLOWER.encode(&sys.update_signing_key)},
     });
     std::fs::write(out, info.to_string())?;
     println!("rcli-devstack ready: {info}");

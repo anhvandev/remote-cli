@@ -38,7 +38,7 @@ pub async fn run(config: &Machine, path: &Path, socket: Option<PathBuf>) -> anyh
     }
     let build = resp.bytes().await?.to_vec();
     anyhow::ensure!(
-        rcli_protocol::update::verify(&key, &version, &target, &build, &signature),
+        rcli_protocol::update::verify(&key, &version, &target, &rcli_protocol::update::sha256_hex(&build), &signature),
         "bad signature: the build is not signed with this install's pinned update key; the old binary is untouched"
     );
     // Check the service first: on a root install, refusing after the swap would leave a new binary unstarted.

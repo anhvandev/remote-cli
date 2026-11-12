@@ -20,9 +20,8 @@ async fn install_sh_is_a_shell_script_that_installs_the_agent() {
 #[tokio::test]
 async fn download_serves_the_rolled_out_build_and_unknown_targets_error() {
     let sys = TestSystem::start().await;
-    // The Server stores, never checks, signatures; any 64-byte hex value will do here.
-    let signature = "ab".repeat(64);
     for (version, build) in [("0.1.0", "old build"), ("0.2.0", "rolled out build"), ("0.3.0", "published, not rolled out")] {
+        let signature = sys.sign_build(version, "linux-x86_64", build.as_bytes());
         let (status, body) = sys
             .api
             .put_bytes(&format!("/api/v1/agent-builds/{version}/linux-x86_64?signature={signature}"), build.as_bytes().to_vec())
@@ -96,7 +95,7 @@ async fn a_scripted_install_makes_the_machine_a_device_that_can_connect() {
     let args_file = rcli_testkit::temp_dir("scripted-args").join("args");
     let build = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", args_file.display());
     let target_name = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-    let signature = "ab".repeat(64);
+    let signature = sys.sign_build("0.1.0", &target_name, build.as_bytes());
     let path = format!("/api/v1/agent-builds/0.1.0/{target_name}?signature={signature}");
     let (status, body) = sys.api.put_bytes(&path, build.into_bytes()).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");

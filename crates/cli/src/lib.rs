@@ -1021,7 +1021,7 @@ where
         Command::Agent(_) => unreachable!("handled before connecting"),
         Command::Rollout { command: Some(RolloutCommand::Publish { file, version, target, key }), .. } => {
             let build = std::fs::read(&file)?;
-            let signature = rcli_protocol::update::sign(&std::fs::read(&key)?, &version, &target, &build)?;
+            let signature = rcli_protocol::update::sign(&std::fs::read(&key)?, &version, &target, &rcli_protocol::update::sha256_hex(&build))?;
             let url = format!("{}/api/v1/agent-builds/{version}/{target}", api.base.trim_end_matches('/'));
             let req = api.http.put(url).query(&[("signature", hex::encode(signature))]).body(build);
             let published = api.send(req, None).await?;
