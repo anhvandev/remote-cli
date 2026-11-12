@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A list API returns every Agent Build with version, target, size, sha256, uploader, upload time and whether it is the Latest Build for its target
 - [ ] Delete one (version, target) and delete a whole version both work; the stored object is removed once unreferenced
