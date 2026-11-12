@@ -75,9 +75,10 @@ enum Command {
     },
     /// Revoke and forget the saved session.
     Logout,
-    /// Replace this `rcli` binary with the Server's Latest Build for this OS/arch, after checking its sha256.
-    /// As root on an installed Device it also restarts the Agent service.
-    Upgrade {
+    /// Update this `rcli` binary to the Server's Latest Build for this OS/arch, after checking its sha256; never
+    /// downgrades. As root on an installed Device it also restarts the Agent service.
+    #[command(alias = "upgrade")]
+    Update {
         /// Binary to replace; default: the one running now. Hidden: a seam for tests.
         #[arg(long, hide = true)]
         target: Option<PathBuf>,
@@ -651,18 +652,31 @@ where
             false => Ok(write!(out, "{text}")?),
         };
     }
-    if let Command::Upgrade { target } = &cli.command {
+    if let Command::Update { target } = &cli.command {
         let installed = config::installed(&machine)?;
         let path = target.clone().unwrap_or_else(|| std::env::current_exe().unwrap_or_default());
-        let done = upgrade::run(&installed, &path, &dir).await?;
-        let text = format!(
-            "upgraded {} to {} for {}{}\n",
-            done.path.display(),
-            done.version,
-            done.target,
-            if done.restarted { "; restarted the rcli-agent service" } else { "" }
-        );
-        let body = json!({ "version": done.version, "target": done.target, "path": done.path, "restarted": done.restarted });
+        let mut sink = std::io::sink();
+        let progress: &mut dyn Write = if cli.json { &mut sink } else { &mut *out };
+        let (text, body) = match upgrade::run(&installed, &path, &dir, progress).await? {
+            upgrade::Outcome::Latest(latest) => {
+                (format!("already the latest version ({latest})\n"), json!({ "updated": false, "version": latest }))
+            }
+            upgrade::Outcome::Newer(latest) => (
+                format!("running {}, newer than the Server's latest ({latest})\n", upgrade::RUNNING),
+                json!({ "updated": false, "version": upgrade::RUNNING, "latest": latest }),
+            ),
+            upgrade::Outcome::Updated(done) => (
+                format!(
+                    "updated {} → {} at {} for {}{}\n",
+                    done.from,
+                    done.version,
+                    done.path.display(),
+                    done.target,
+                    if done.restarted { "; restarted the rcli-agent service" } else { "" }
+                ),
+                json!({ "updated": true, "from": done.from, "version": done.version, "target": done.target, "path": done.path, "restarted": done.restarted }),
+            ),
+        };
         return match cli.json {
             true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),
             false => Ok(write!(out, "{text}")?),
@@ -685,7 +699,7 @@ where
         | Command::Uninstall(_)
         | Command::Login { .. }
         | Command::Logout
-        | Command::Upgrade { .. }
+        | Command::Update { .. }
         | Command::Connect { .. }
         | Command::Forget { .. } => {
             unreachable!("handled before connecting")

@@ -22,7 +22,7 @@ impl Layout {
     fn at(&self, path: &str) -> PathBuf {
         crate::install::at(&self.root, path)
     }
-    /// The stable path the service runs; `rcli upgrade` replaces this file in place.
+    /// The stable path the service runs; `rcli update` replaces this file in place.
     pub fn exe(&self) -> PathBuf {
         self.at("/usr/local/lib/rcli/rcli")
     }
