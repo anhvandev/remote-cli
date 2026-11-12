@@ -9,6 +9,7 @@ import * as act from "../actions";
 import { Form } from "../form";
 import { card, cardHead, title } from "../../styles";
 import { groupRollouts } from "../data";
+import { UploadForm } from "./upload-form";
 
 // `<os>-<arch>` as the Agent reports it (std::env::consts::OS / ARCH).
 const TARGETS = ["linux-x86_64", "linux-aarch64", "windows-x86_64", "windows-aarch64", "macos-aarch64", "macos-x86_64"];
@@ -23,7 +24,7 @@ export default async function UpdatesPage() {
         <h3 className={title}>Cập nhật Agent</h3>
       </div>
       <div className="grid gap-5 p-5">
-        <Form action={act.uploadBuild} className="grid gap-2">
+        <UploadForm>
           <Input type="file" name="build" aria-label="File build" required className="h-9 py-1.5" />
           <div className="flex flex-wrap gap-2">
             <Input name="version" aria-label="Phiên bản" placeholder="phiên bản" required className="h-8 w-32" />
@@ -52,7 +53,7 @@ export default async function UpdatesPage() {
               Tải lên
             </Button>
           </div>
-        </Form>
+        </UploadForm>
         <div className="border-t border-border pt-4">
           <Form action={act.rollout} label="Rollout" className="grid gap-3">
             <Input name="version" aria-label="Phiên bản" placeholder="phiên bản cần rollout" required className="h-8" />
