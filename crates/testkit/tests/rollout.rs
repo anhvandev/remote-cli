@@ -88,3 +88,76 @@ async fn a_device_stays_responsive_while_a_large_build_downloads() {
     agent.platform.update(|s| s.hold_install = false);
     sys.wait_device(agent.device_id(), |d| d["agent_version"] == "99.0.0").await;
 }
+
+/// The version the build lookup for `target` serves (what `rcli update` and Agents get).
+async fn latest_version(sys: &TestSystem, target: &str) -> String {
+    let resp = reqwest::Client::new()
+        .get(format!("http://{}/api/v1/agent-builds/{target}", sys.server.http_addr))
+        .header("x-rcli-server-key", sys.server_key())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    resp.headers()["x-rcli-version"].to_str().unwrap().to_owned()
+}
+
+async fn stored(sys: &TestSystem, build: &[u8]) -> bool {
+    let sha256 = rcli_protocol::update::sha256_hex(build);
+    sys.server.state.storage.get(rcli_server::storage::AGENT_BUILDS, &sha256, None).await.is_ok()
+}
+
+/// The list marks the Latest Build per target; deleting it makes the next-highest version the Latest Build, and a
+/// stored file goes once no build uses it.
+#[tokio::test]
+async fn builds_are_listed_and_deleted_and_the_latest_build_moves_back() {
+    let sys = TestSystem::start().await;
+    sys.upload_build("1.0.0", "linux-x86_64", b"old").await;
+    sys.upload_build("1.1.0", "linux-x86_64", b"new").await;
+    sys.upload_build("1.1.0", "darwin-aarch64", b"old").await;
+
+    let (status, list) = sys.api.get("/api/v1/agent-builds").await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let rows: Vec<(&str, &str, bool)> =
+        list.as_array().unwrap().iter().map(|b| (b["version"].as_str().unwrap(), b["target"].as_str().unwrap(), b["latest"] == true)).collect();
+    assert_eq!(rows, [("1.1.0", "darwin-aarch64", true), ("1.1.0", "linux-x86_64", true), ("1.0.0", "linux-x86_64", false)]);
+    let first = &list[0];
+    assert_eq!(first["size"], 3, "{first}");
+    assert_eq!(first["sha256"], rcli_protocol::update::sha256_hex(b"old"), "{first}");
+    assert_eq!(first["uploaded_by"], "admin", "{first}");
+    assert!(first["uploaded_at"].is_string(), "{first}");
+    // Any build, not only the Latest, downloads.
+    let (status, bytes) = sys.api.get_bytes("/api/v1/agent-builds/1.0.0/linux-x86_64").await;
+    assert_eq!((status, bytes.as_ref()), (StatusCode::OK, b"old".as_ref()));
+
+    let (status, body) = sys.api.delete("/api/v1/agent-builds/1.1.0/linux-x86_64").await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(latest_version(&sys, "linux-x86_64").await, "1.0.0");
+    assert!(!stored(&sys, b"new").await);
+
+    let (status, body) = sys.api.delete("/api/v1/agent-builds/1.1.0").await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (_, list) = sys.api.get("/api/v1/agent-builds").await;
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list[0]["latest"], true, "{list}");
+    assert!(stored(&sys, b"old").await, "1.0.0 still uses it");
+
+    let (status, _) = sys.api.delete("/api/v1/agent-builds/1.1.0").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// A release script publishes, lists and withdraws builds with the CLI alone.
+#[tokio::test]
+async fn the_cli_uploads_lists_and_deletes_builds() {
+    let sys = TestSystem::start().await;
+    let file = rcli_testkit::temp_dir("cli-build").join("rcli");
+    std::fs::write(&file, b"cli build").unwrap();
+
+    let out = sys.rcli(&["build", "upload", file.to_str().unwrap(), "--version", "2.0.0", "--target", "linux-x86_64"]).await.unwrap();
+    assert!(out.contains("2.0.0"), "{out}");
+    let out = sys.rcli(&["build", "list"]).await.unwrap();
+    assert!(out.contains("2.0.0") && out.contains("linux-x86_64") && out.contains("latest"), "{out}");
+
+    sys.rcli(&["build", "delete", "2.0.0", "linux-x86_64"]).await.unwrap();
+    let (_, list) = sys.api.get("/api/v1/agent-builds").await;
+    assert_eq!(list, serde_json::json!([]));
+}
