@@ -63,3 +63,25 @@ async fn setting_the_server_address_reissues_the_certificate() {
     // The certificate was reissued for the new name: registration through it now works.
     rcli_agent::register(&by_ip, &FakePlatform::new("lab-pc")).await.unwrap();
 }
+
+/// The Minimum Version is any semver (not checked against stored builds); empty means none.
+#[tokio::test]
+async fn the_minimum_version_is_set_and_cleared() {
+    let sys = TestSystem::start().await;
+    assert_eq!(sys.api.get("/api/v1/server-settings").await.1["minimum_version"], "");
+    let api = &sys.api;
+    let set = |v: &'static str| async move {
+        api.put_json("/api/v1/server-settings/minimum-version", &serde_json::json!({ "version": v })).await
+    };
+
+    let (status, body) = set("1.2.0").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(sys.api.get("/api/v1/server-settings").await.1["minimum_version"], "1.2.0");
+
+    let (status, body) = set("latest").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = set("").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(sys.api.get("/api/v1/server-settings").await.1["minimum_version"], "");
+}

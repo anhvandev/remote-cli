@@ -30,3 +30,13 @@ export async function setApiAddress(_: Result, form: FormData) {
     return `Đã đặt API Address: ${r.api_address}`;
   });
 }
+
+export async function setMinimumVersion(_: Result, form: FormData) {
+  return run("/admin/settings", async () => {
+    const r = await api<{ minimum_version: string }>(
+      "/api/v1/server-settings/minimum-version",
+      json("PUT", { version: String(form.get("version") ?? "") }),
+    );
+    return r.minimum_version ? `Đã đặt Minimum Version: ${r.minimum_version}` : "Đã bỏ Minimum Version";
+  });
+}
