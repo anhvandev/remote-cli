@@ -2,7 +2,6 @@ import { notFound } from "next/navigation";
 import { ApiError } from "@/lib/api";
 import { Refresh } from "../../../refresh";
 import { Status } from "../../../status";
-import { AdminActions } from "./admin-actions";
 import { ControlProvider } from "./control";
 import { ControlReminder } from "./control-reminder";
 import { getDevice, getLock, getMe, uptime } from "./device-data";
@@ -54,7 +53,6 @@ export default async function DeviceLayout({
           </div>
         </div>
         <Tabs device={d.id} headless={!!inv && inv.displays.length === 0} />
-        <AdminActions device={d.id} deviceId={d.device_id} />
         <div className="mt-5">{children}</div>
       </ControlProvider>
     </>
