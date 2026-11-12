@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The Minimum Version is editable on the Settings page and through the settings API; empty means none
 - [ ] The Device JSON has `needs_update` and `update_error`; the Devices page badge and `rcli devices` render them
