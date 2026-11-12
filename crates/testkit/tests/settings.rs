@@ -85,3 +85,29 @@ async fn the_minimum_version_is_set_and_cleared() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(sys.api.get("/api/v1/server-settings").await.1["minimum_version"], "");
 }
+
+/// A Controller below the Minimum Version still runs its command and warns once on stderr; at or above it, or with
+/// none set, it stays quiet.
+#[tokio::test]
+async fn a_controller_below_the_minimum_version_warns_once() {
+    let sys = TestSystem::start().await;
+    let set = |v: &'static str| {
+        let api = &sys.api;
+        async move { api.put_json("/api/v1/server-settings/minimum-version", &serde_json::json!({ "version": v })).await }
+    };
+    let devices = || async {
+        let stderr = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let base = format!("http://{}", sys.server.http_addr);
+        let argv = ["rcli", "--server", &base, "--token", &sys.admin_token, "devices"];
+        rcli::run_with_input(argv, None, &mut Vec::new(), stderr.clone()).await.unwrap();
+        let stderr = String::from_utf8(stderr.lock().unwrap().clone()).unwrap();
+        stderr
+    };
+
+    assert_eq!(devices().await, "");
+    set("0.0.1").await;
+    assert_eq!(devices().await, "");
+
+    set("999.0.0").await;
+    assert_eq!(devices().await, "Server recommends rcli ≥ 999.0.0, run: rcli update\n");
+}

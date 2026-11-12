@@ -50,7 +50,17 @@ pub fn router(state: State) -> Router {
         .merge(sessions::routes())
         .merge(live::routes())
         .merge(shell::routes())
+        .layer(axum::middleware::map_response_with_state(state.clone(), minimum_version_header))
         .with_state(state)
+}
+
+/// Every response announces the Minimum Version, when one is set, so Controllers below it can warn.
+async fn minimum_version_header(axum::extract::State(state): axum::extract::State<State>, mut resp: Response) -> Response {
+    let minimum = state.settings.minimum_version().await;
+    if let Some(value) = Some(minimum).filter(|m| !m.is_empty()).and_then(|m| m.parse().ok()) {
+        resp.headers_mut().insert("x-rcli-minimum-version", value);
+    }
+    resp
 }
 
 /// The Server Key: Agents and Controllers need it to connect.
