@@ -1,6 +1,6 @@
 # Simple updates: upload a build, `rcli update`, no roles
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Problem Statement
 
