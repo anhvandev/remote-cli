@@ -116,7 +116,7 @@ test("an upload with a version that is not semver is refused with the reason", a
   await expect(card.getByRole("alert").first()).toContainText("semver");
 });
 
-test("admin uploads an Agent build with version and target prefilled from its file name", async ({ page }) => {
+test("a User uploads an Agent Build prefilled from its file name, sees it Latest, and deletes it", async ({ page }) => {
   const { update } = await devstack();
   await openAdmin(page, "Cập nhật Agent");
   const card = page.getByRole("region", { name: "Cập nhật Agent" });
@@ -126,4 +126,13 @@ test("admin uploads an Agent build with version and target prefilled from its fi
   await expect(card.getByLabel("Hệ điều hành")).toContainText(update.target);
   await card.getByRole("button", { name: "Tải lên" }).click();
   await expect(card.getByRole("status").first()).toContainText(`Đã tải lên ${update.version}`);
+
+  const version = card.getByRole("region", { name: `Phiên bản ${update.version}` });
+  const row = version.getByRole("row").filter({ hasText: update.target });
+  await expect(row).toContainText("Latest");
+  await expect(row.getByRole("link", { name: "Tải về" })).toHaveAttribute("href", `/api/agent-builds/${update.version}/${update.target}`);
+
+  page.once("dialog", (d) => d.accept());
+  await row.getByRole("button", { name: "Xoá" }).click();
+  await expect(version).toHaveCount(0);
 });

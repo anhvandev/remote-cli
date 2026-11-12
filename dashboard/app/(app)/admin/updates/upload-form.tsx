@@ -1,4 +1,5 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,8 +35,16 @@ async function upload(_: Result, form: FormData): Promise<Result> {
 export function UploadForm() {
   const [version, setVersion] = useState("");
   const [target, setTarget] = useState("");
+  const router = useRouter();
   return (
-    <Form action={upload} className="grid gap-2">
+    <Form
+      action={async (prev, form) => {
+        const r = await upload(prev, form);
+        if (r.message) router.refresh(); // lists the new build
+        return r;
+      }}
+      className="grid gap-2"
+    >
       <Input
         type="file"
         name="build"

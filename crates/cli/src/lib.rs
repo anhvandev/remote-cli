@@ -115,6 +115,9 @@ enum Command {
     /// Install packages for the Connect guide's downloads (admin).
     #[command(subcommand)]
     Package(PackageCommand),
+    /// List, upload and delete Agent Builds; the highest version per target is the Latest Build.
+    #[command(subcommand)]
+    Build(BuildCommand),
     /// Control Lock: needed to send input Actions to a Device.
     #[command(subcommand)]
     Lock(LockCommand),
@@ -337,6 +340,7 @@ fn admin_only(command: &Command) -> bool {
             | Command::ServerAddress(_)
             | Command::ApiAddress(_)
             | Command::User(_)
+            | Command::Build(_)
             | Command::Audit { .. }
             | Command::Device(DeviceCommand::Rename { .. } | DeviceCommand::Delete { .. } | DeviceCommand::Revoke { .. } | DeviceCommand::Merge { .. })
             | Command::Lock(LockCommand::ForceRelease { .. })
@@ -455,6 +459,24 @@ enum PackageCommand {
         #[arg(long)]
         arch: String,
     },
+}
+
+#[derive(Subcommand)]
+enum BuildCommand {
+    /// List Agent Builds, newest version first.
+    List,
+    /// Upload an Agent Build; the Server computes its sha256.
+    Upload {
+        file: String,
+        /// Semver, e.g. 0.3.0.
+        #[arg(long)]
+        version: String,
+        /// `<os>-<arch>`, e.g. linux-x86_64.
+        #[arg(long)]
+        target: String,
+    },
+    /// Delete the build of VERSION for TARGET, or every target of VERSION when TARGET is omitted.
+    Delete { version: String, target: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -851,6 +873,29 @@ where
             let set = api.call(reqwest::Method::POST, &format!("/api/v1/users/{name}/credentials"), Some(&body)).await?;
             let text = format!("totp_secret {}\notpauth_url {}\n", str_of(&set["totp_secret"]), str_of(&set["otpauth_url"]));
             (set, text)
+        }
+        Command::Build(BuildCommand::List) => {
+            let builds = api.call(reqwest::Method::GET, "/api/v1/agent-builds", None).await?;
+            let mut text = format!("{:<16}  {:<16}  {:>10}  {:<12}  {}\n", "VERSION", "TARGET", "SIZE", "SHA256", "");
+            for b in builds.as_array().into_iter().flatten() {
+                let latest = if b["latest"] == true { "latest" } else { "" };
+                let sha = str_of(&b["sha256"]).get(..12).unwrap_or_default();
+                text += &format!("{:<16}  {:<16}  {:>10}  {sha:<12}  {latest}\n", str_of(&b["version"]), str_of(&b["target"]), b["size"]);
+            }
+            (builds, text)
+        }
+        Command::Build(BuildCommand::Upload { file, version, target }) => {
+            let url = format!("{}/api/v1/agent-builds/{version}/{target}", api.base.trim_end_matches('/'));
+            let uploaded = api.send(api.http.put(url).body(tokio::fs::File::open(&file).await?), None).await?;
+            (uploaded, format!("uploaded {version} for {target}\n"))
+        }
+        Command::Build(BuildCommand::Delete { version, target }) => {
+            let path = match &target {
+                Some(t) => format!("/api/v1/agent-builds/{version}/{t}"),
+                None => format!("/api/v1/agent-builds/{version}"),
+            };
+            api.call(reqwest::Method::DELETE, &path, None).await?;
+            (Value::Null, format!("deleted {version} {}\n", target.as_deref().unwrap_or("(all targets)")))
         }
         Command::Lock(cmd) => {
             let (method, device, suffix) = match cmd {
