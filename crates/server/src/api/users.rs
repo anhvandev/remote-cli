@@ -23,7 +23,8 @@ impl From<auth::Error> for ApiError {
             auth::Error::BadRequest(m) => bad_request(m),
             auth::Error::NameTaken => ApiError::new(StatusCode::CONFLICT, "name_taken", "a user with this name exists"),
             auth::Error::NotFound => ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such user or token"),
-            auth::Error::LastUser(m) => ApiError::new(StatusCode::BAD_REQUEST, "last_user", m),
+            auth::Error::LastUser => ApiError::new(StatusCode::BAD_REQUEST, "last_user", "the last enabled User cannot be disabled"),
+            auth::Error::DisableSelf => ApiError::new(StatusCode::BAD_REQUEST, "disable_self", "you cannot disable yourself"),
             auth::Error::Internal(e) => e.into(),
         }
     }

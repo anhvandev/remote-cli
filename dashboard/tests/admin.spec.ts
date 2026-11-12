@@ -94,13 +94,11 @@ test("the overview shows three cards with counts from the Server", async ({ page
   // Other specs share the devstack, so re-read the Server and the page together until they agree.
   await expect(async () => {
     const users = await adminApi("/api/v1/users");
-    const devices = await adminApi("/api/v1/devices");
     await page.goto("/admin");
     const user = page.getByRole("region", { name: "User" });
-    const admins = users.filter((u: { role: string }) => u.role === "admin").length;
-    await expect(user).toContainText(`${admins} Admin · ${users.length - admins} Operator`);
-    await expect(user).toContainText(`${users.filter((u: { disabled_at: string | null }) => u.disabled_at).length} User đã vô hiệu`);
-
+    const disabled = users.filter((u: { disabled_at: string | null }) => u.disabled_at).length;
+    await expect(user).toContainText(`${users.length - disabled} User đang hoạt động`);
+    await expect(user).toContainText(`${disabled} User đã vô hiệu`);
   }).toPass({ timeout: 20_000 });
 });
 

@@ -21,7 +21,7 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/devices/{device}/merge", post(merge))
 }
 
-/// An Admin's change to a Device's identity; any field may be given, each one is applied on its own.
+/// A User's change to a Device's identity; any field may be given, each one is applied on its own.
 #[derive(Deserialize)]
 struct Change {
     name: Option<String>,
@@ -74,7 +74,7 @@ async fn change(
     Ok(Json(registry::get(&state, id).await?))
 }
 
-/// One identity field an Admin changed, and how it reaches the two sides.
+/// One identity field a User changed, and how it reaches the two sides.
 enum Identity<'a> {
     Password(&'a str),
     DeviceId(&'a str),

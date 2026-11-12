@@ -66,7 +66,7 @@ enum Command {
     Install(agent::Install),
     /// Undo `rcli install` (root/Administrator); each user's remembered Device Passwords stay.
     Uninstall(agent::Uninstall),
-    /// Sign in with a Dashboard account and save the session (Admin commands need it).
+    /// Sign in with a Dashboard account and save the session (Server administration commands need it).
     Login {
         /// Dashboard user name.
         name: String,
@@ -104,19 +104,19 @@ enum Command {
     /// Resource history of Devices.
     #[command(subcommand)]
     Metrics(MetricsCommand),
-    /// Read or replace the Server Key Agents and Controllers need to connect (admin).
+    /// Read or replace the Server Key Agents and Controllers need to connect (needs a User session).
     #[command(subcommand)]
     ServerKey(ServerKeyCommand),
-    /// Read or set the Server Address Agents use (admin).
+    /// Read or set the Server Address Agents use (needs a User session).
     #[command(subcommand)]
     ServerAddress(ServerAddressCommand),
-    /// Read or correct the API Address installs get, the Dashboard's public https:// URL (admin).
+    /// Read or correct the API Address installs get, the Dashboard's public https:// URL (needs a User session).
     #[command(subcommand)]
     ApiAddress(ApiAddressCommand),
-    /// Manage users (admin).
+    /// Manage users (needs a User session).
     #[command(subcommand)]
     User(UserCommand),
-    /// Install packages for the Connect guide's downloads (admin).
+    /// Install packages for the Connect guide's downloads (needs a User session).
     #[command(subcommand)]
     Package(PackageCommand),
     /// List, upload and delete Agent Builds; the highest version per target is the Latest Build.
@@ -174,7 +174,7 @@ enum Command {
         #[arg(long = "as")]
         account: Option<String>,
     },
-    /// Audit log of Actions, oldest first (admin).
+    /// Audit log of Actions, oldest first (needs a User session).
     Audit {
         /// Device id or name.
         #[arg(long)]
@@ -304,7 +304,7 @@ enum LockCommand {
     Acquire { device: String },
     Release { device: String },
     Status { device: String },
-    /// Admin: end someone else's lock (audited).
+    /// End someone else's lock (needs a User session; audited).
     ForceRelease { device: String },
 }
 
@@ -337,7 +337,7 @@ enum ActCommand {
 }
 
 /// Server administration, which a password connection can never do (ADR 0004): these need a User session.
-fn admin_only(command: &Command) -> bool {
+fn needs_user(command: &Command) -> bool {
     matches!(
         command,
         Command::ServerKey(_)
@@ -505,13 +505,13 @@ enum DeviceCommand {
     Show { device: String },
     /// The Device's process list, fetched from its Agent now.
     Processes { device: String },
-    /// Rename a Device (admin).
+    /// Rename a Device (needs a User session).
     Rename { device: String, name: String },
-    /// Delete a Device and its history (admin).
+    /// Delete a Device and its history (needs a User session).
     Delete { device: String },
-    /// Revoke a Device's credential so its Agent can no longer connect (admin).
+    /// Revoke a Device's credential so its Agent can no longer connect (needs a User session).
     Revoke { device: String },
-    /// Move an old Device's history into a new one (e.g. after a reinstall), then delete the old one (admin).
+    /// Move an old Device's history into a new one (e.g. after a reinstall), then delete the old one (needs a User session).
     Merge {
         old: String,
         #[arg(long)]
@@ -554,7 +554,7 @@ enum ServerAddressCommand {
 
 #[derive(Subcommand)]
 enum ApiAddressCommand {
-    /// Print the API Address (empty until an Admin opens the Dashboard over https://).
+    /// Print the API Address (empty until a User opens the Dashboard over https://).
     Show,
     /// Correct the API Address, e.g. https://rcli.example.com. Agents get it on their next connection.
     Set { address: String },
@@ -725,9 +725,9 @@ where
         };
     }
     let (base, connection) = api_target(&dir, &machine, cli.server, cli.token)?;
-    let api = Api { base, dir, connection, http: reqwest::Client::new(), stderr: err, warned: Default::default() };
-    if admin_only(&cli.command) && api.connection.token.is_none() {
-        anyhow::bail!("this command needs an Admin account: run `rcli login <name>` (or `rcli connect <Device ID>` for Device commands)");
+    let api = Api::with(base, dir, connection, err);
+    if needs_user(&cli.command) && api.connection.token.is_none() {
+        anyhow::bail!("this command needs a signed-in User: run `rcli login <name>` (or `rcli connect <Device ID>` for Device commands)");
     }
     let (body, human) = match cli.command {
         Command::Install(_)
@@ -1250,22 +1250,19 @@ pub struct Api {
 
 impl Api {
     pub fn new(base: String, token: String) -> Self {
-        Self {
-            base,
-            dir: config::dir(),
-            connection: Connection { token: Some(token), ..Default::default() },
-            http: reqwest::Client::new(),
-            stderr: Arc::new(Mutex::new(std::io::stderr())),
-            warned: Default::default(),
-        }
+        let connection = Connection { token: Some(token), ..Default::default() };
+        Self::with(base, config::dir(), connection, Arc::new(Mutex::new(std::io::stderr())))
+    }
+
+    fn with(base: String, dir: std::path::PathBuf, connection: Connection, stderr: Stderr) -> Self {
+        Self { base, dir, connection, http: reqwest::Client::new(), stderr, warned: Default::default() }
     }
 
     /// The Controller from this machine's install (`machine`, the machine-wide configuration), and the user's
     /// `rcli login` session and remembered Device Passwords in `dir` (what `rcli mcp` uses): no env vars and no flags.
     pub fn from_config(dir: &Path, machine: &Path) -> anyhow::Result<Self> {
         let (base, connection) = api_target(dir, machine, None, None)?;
-        let stderr: Stderr = Arc::new(Mutex::new(std::io::stderr()));
-        Ok(Self { base, dir: dir.to_path_buf(), connection, http: reqwest::Client::new(), stderr, warned: Default::default() })
+        Ok(Self::with(base, dir.to_path_buf(), connection, Arc::new(Mutex::new(std::io::stderr()))))
     }
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> anyhow::Result<Value> {
@@ -1297,7 +1294,7 @@ impl Api {
         let device = path_device
             .filter(|d| config::remembered(&self.dir, d).ok().flatten().is_some())
             .or_else(|| config::some_remembered(&self.dir))
-            .ok_or_else(|| anyhow::anyhow!("no User session saved; run `rcli login <name>` for Admin commands, or `rcli connect <Device ID>`"))?;
+            .ok_or_else(|| anyhow::anyhow!("no User session saved; run `rcli login <name>` for Server administration, or `rcli connect <Device ID>`"))?;
         let Some(remembered) = config::remembered(&self.dir, &device)? else {
             anyhow::bail!("no Device Password saved for {device}; run `rcli connect {device}`");
         };

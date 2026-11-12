@@ -26,11 +26,12 @@ async fn an_installed_machine_updates_itself() {
     let out = sys.rcli_in(&dir, &["update", "--target", target.to_str().unwrap()]).await.unwrap();
 
     assert!(out.contains(&format!("updated {RUNNING} → 9.9.9")), "{out}");
+    assert!(out.contains("downloaded 100% (15 of 15 bytes)"), "{out}");
     assert_eq!(std::fs::read(&target).unwrap(), b"new rcli binary");
 }
 
 /// The Latest Build is the highest semver version, whatever the upload order: 1.10.0 beats 1.9.0, and a
-/// pre-release ranks below its release. `rcli update` is a hidden alias of `rcli update`.
+/// pre-release ranks below its release. `rcli upgrade` is a hidden alias of `rcli update`.
 #[tokio::test]
 async fn upgrade_is_a_hidden_alias_that_fetches_the_latest_build() {
     let sys = TestSystem::start().await;
@@ -94,7 +95,7 @@ async fn no_build_for_this_os_and_arch_is_a_clear_error() {
 #[tokio::test]
 async fn the_build_lookup_needs_the_server_key() {
     let sys = TestSystem::start().await;
-    sys.upload_build("1.0.0", &rcli_agent::target(), b"fleet build").await;
+    sys.upload_build("1.0.0", &rcli_agent::target(), b"agent build").await;
     let path = format!("/api/v1/agent-builds/{}", rcli_agent::target());
 
     let (status, _) = sys.api.with_token(None).get_bytes(&path).await;
@@ -107,11 +108,11 @@ async fn the_build_lookup_needs_the_server_key() {
         .map(|r| (r.status(), r))
         .unwrap();
     assert_eq!(status, rcli_testkit::StatusCode::OK);
-    // sha256("fleet build")
-    assert_eq!(bytes.headers()["x-rcli-sha256"], "02c8643101b1e81c151c138aeb814cda1c6cbef317e64fb43d9172f1d9efd1ea");
+    // sha256("agent build")
+    assert_eq!(bytes.headers()["x-rcli-sha256"], "3d359d5c5313a7aa03a7299d0e29dbd4a82b951ad1cabcdc684b060a34ccdcd1");
     assert!(!bytes.headers().contains_key("x-rcli-signature"));
     assert_eq!(bytes.content_length(), Some(11));
-    assert_eq!(bytes.bytes().await.unwrap().as_ref(), b"fleet build");
+    assert_eq!(bytes.bytes().await.unwrap().as_ref(), b"agent build");
     // A resumed download asks for the rest.
     let part = reqwest::Client::new()
         .get(format!("{}{path}", http_addr(&sys)))

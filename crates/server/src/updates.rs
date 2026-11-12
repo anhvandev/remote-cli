@@ -52,16 +52,21 @@ pub async fn agent_hello(state: &AppState, device: Uuid, hello: &AgentHello) -> 
         .bind(&hello.target)
         .execute(&state.db)
         .await?;
-    clear_stale_errors(state).await?;
+    clear_stale_errors(state, Some(device)).await?;
     offer_update(state, device).await
 }
 
 /// Whether `version` is below the Minimum Version `minimum` (empty = none). A version that is not semver never is.
 pub fn below(version: Option<&str>, minimum: &str) -> bool {
-    match (version.map(semver::Version::parse), semver::Version::parse(minimum)) {
-        (Some(Ok(v)), Ok(min)) => v < min,
+    match (version.and_then(parse), parse(minimum)) {
+        (Some(v), Some(min)) => v < min,
         _ => false,
     }
+}
+
+/// `version` as semver, for comparing; `None` when it is not semver.
+fn parse(version: &str) -> Option<semver::Version> {
+    semver::Version::parse(version).ok()
 }
 
 pub async fn agent_failed(state: &AppState, device: Uuid, failed: &UpdateFailed) -> anyhow::Result<()> {
@@ -87,18 +92,21 @@ pub async fn offer_update(state: &AppState, device: Uuid) -> anyhow::Result<()> 
 
 /// A saved Minimum Version clears errors it made stale and reaches every connected Agent.
 pub async fn minimum_version_changed(state: &AppState) -> anyhow::Result<()> {
-    clear_stale_errors(state).await?;
+    clear_stale_errors(state, None).await?;
     for device in state.agents.connected() {
         offer_update(state, device).await?;
     }
     Ok(())
 }
 
-/// Clears the self-update error of every Device no longer below the Minimum Version.
-async fn clear_stale_errors(state: &AppState) -> anyhow::Result<()> {
+/// Clears the self-update error of `device` (every Device when `None`) once it is no longer below the Minimum Version.
+async fn clear_stale_errors(state: &AppState, device: Option<Uuid>) -> anyhow::Result<()> {
     let minimum = state.settings.minimum_version().await;
     let failed: Vec<(Uuid, Option<String>)> =
-        sqlx::query_as("SELECT id, agent_version FROM devices WHERE update_error IS NOT NULL").fetch_all(&state.db).await?;
+        sqlx::query_as("SELECT id, agent_version FROM devices WHERE update_error IS NOT NULL AND ($1::uuid IS NULL OR id = $1)")
+            .bind(device)
+            .fetch_all(&state.db)
+            .await?;
     let stale: Vec<Uuid> = failed.into_iter().filter(|(_, v)| !below(v.as_deref(), &minimum)).map(|(id, _)| id).collect();
     sqlx::query("UPDATE devices SET update_error = NULL WHERE id = ANY($1)").bind(&stale).execute(&state.db).await?;
     Ok(())
@@ -122,7 +130,7 @@ pub struct Listed {
 pub async fn list(state: &AppState) -> anyhow::Result<Vec<Listed>> {
     let mut builds: Vec<Listed> =
         sqlx::query_as("SELECT version, target, size, sha256, uploaded_by, uploaded_at FROM agent_builds").fetch_all(&state.db).await?;
-    let rank = |b: &Listed| semver::Version::parse(&b.version).ok();
+    let rank = |b: &Listed| parse(&b.version);
     builds.sort_by(|a, b| rank(b).cmp(&rank(a)).then_with(|| a.target.cmp(&b.target)));
     let mut seen = std::collections::HashSet::new();
     for b in &mut builds {
@@ -148,5 +156,5 @@ pub async fn latest_build(state: &AppState, target: &str) -> anyhow::Result<Opti
     let builds: Vec<Build> =
         sqlx::query_as("SELECT version, sha256, size FROM agent_builds WHERE target = $1").bind(target).fetch_all(&state.db).await?;
     // Uploads are semver-checked; an older non-semver row is never the Latest Build.
-    Ok(builds.into_iter().filter_map(|b| Some((semver::Version::parse(&b.version).ok()?, b))).max_by(|a, b| a.0.cmp(&b.0)).map(|(_, b)| b))
+    Ok(builds.into_iter().filter_map(|b| Some((parse(&b.version)?, b))).max_by(|a, b| a.0.cmp(&b.0)).map(|(_, b)| b))
 }

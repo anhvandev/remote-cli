@@ -1036,7 +1036,7 @@ async fn download_and_install(job: &UpdateJob) -> anyhow::Result<()> {
     let update = &job.update;
     anyhow::ensure!(update.target == target(), "build is for {}, this Agent is {}", update.target, target());
     let url = job.url.as_deref().ok_or_else(|| anyhow::anyhow!("this Agent knows no API Address to download the build from"))?;
-    let build = download::fetch_build(url, &job.server_key, &job.dir).await?;
+    let build = download::fetch_build(url, &job.server_key, &job.dir, |_, _| {}).await?;
     if (build.sha256.as_str(), build.size) != (update.sha256.as_str(), update.size) {
         let _ = tokio::fs::remove_file(&build.path).await;
         anyhow::bail!("the Server served a build ({} bytes, sha256 {}) other than the one it offered", build.size, build.sha256);
