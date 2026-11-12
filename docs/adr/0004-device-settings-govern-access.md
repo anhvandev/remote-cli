@@ -9,3 +9,4 @@ Like TeamViewer and RustDesk, the person who owns a Device decides what remote u
 - A person at the Device can see who is controlling it and disconnect them without being root.
 
 - Superseded by ADR 0005: rcli no longer stores unlock passwords at all.
+- Superseded in part by ADR 0009: there are no Admin and Operator roles any more.

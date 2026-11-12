@@ -49,11 +49,11 @@ The secret every Agent and Controller must present to be allowed to connect to t
 _Avoid_: enrollment code, install key, token
 
 **Server Address**:
-The host and port Agents use to reach the Server, set by an Admin; together with the Server Key it is all a new install needs.
+The host and port Agents use to reach the Server, set by a User; together with the Server Key it is all a new install needs.
 _Avoid_: hostname, server URL, endpoint
 
 **API Address**:
-The public `https://` URL of the Dashboard, through which Controllers also call the Server. The Server learns it from an Admin's visit and hands it to every install, so nobody types it; an Admin can correct it.
+The public `https://` URL of the Dashboard, through which Controllers also call the Server. The Server learns it from a User's visit and hands it to every install, so nobody types it; a User can correct it.
 _Avoid_: Controller API URL, Controller Address
 
 **Secret Store**:
@@ -88,10 +88,18 @@ _Avoid_: screen share, remote desktop, xem màn hình
 The level one viewer picks for their own Live View: Quality, Balanced (the default) or Speed. Every level keeps the Device screen's native resolution; they differ only in sharpness against smoothness.
 _Avoid_: preset, stream mode, bitrate mode
 
-**Operator**:
-A User who observes and controls Devices but cannot administer the Server.
-_Avoid_: staff, normal user
+**User**:
+A person with a Dashboard account (or its API token). Every User may do everything: control Devices and administer the Server (Users, Server Key, settings, Agent Builds, Devices). There are no roles.
+_Avoid_: Admin, Operator, administrator, quản trị viên
 
-**Admin**:
-A User who, besides everything an Operator can do, manages Users, the Server Key, Agent updates and Devices.
-_Avoid_: administrator, superuser, quản trị viên
+**Agent Build**:
+The `rcli` binary for one version and one target (OS and architecture), uploaded to the Server. Every install, update and download takes one.
+_Avoid_: release, package, artifact
+
+**Latest Build**:
+For a target, the Agent Build with the highest version the Server holds. It is what `rcli update` installs and what a new install downloads; deleting it makes the next-highest one latest.
+_Avoid_: fleet build, rolled-out build, current release
+
+**Minimum Version**:
+The lowest Agent version the Server recommends, set in Server settings. Devices and Controllers below it keep working but are flagged as needing an update, and an Agent below it updates itself to the Latest Build.
+_Avoid_: required version, compatible version, forced update
