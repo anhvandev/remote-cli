@@ -707,7 +707,7 @@ where
     if let Command::Upgrade { target, socket } = &cli.command {
         let installed = config::installed(&machine)?;
         let path = target.clone().unwrap_or_else(|| std::env::current_exe().unwrap_or_default());
-        let done = upgrade::run(&installed, &path, socket.clone()).await?;
+        let done = upgrade::run(&installed, &path, socket.clone(), &dir).await?;
         let text = format!(
             "upgraded {} to {} for {}{}\n",
             done.path.display(),

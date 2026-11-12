@@ -13,7 +13,8 @@ pub struct Upgraded {
     pub restarted: bool,
 }
 
-pub async fn run(config: &Machine, path: &Path, socket: Option<PathBuf>) -> anyhow::Result<Upgraded> {
+/// `data_dir` keeps the download (`updates/<sha256>.part`) until it is installed, so an interrupted run resumes.
+pub async fn run(config: &Machine, path: &Path, socket: Option<PathBuf>, data_dir: &Path) -> anyhow::Result<Upgraded> {
     let key = hex::decode(config.update_key.trim()).unwrap_or_default();
     anyhow::ensure!(!key.is_empty(), "no update key is pinned; run `sudo rcli install` again");
 
@@ -26,49 +27,39 @@ pub async fn run(config: &Machine, path: &Path, socket: Option<PathBuf>) -> anyh
         Some(device) => format!("{url}?device={device}"),
         None => url,
     };
-    let resp = reqwest::Client::new().get(url).header("x-rcli-server-key", &config.server_key).send().await?;
-    let status = resp.status();
-    let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let version = header("x-rcli-version").unwrap_or_default();
-    let signature = header("x-rcli-signature").and_then(|s| hex::decode(s).ok()).unwrap_or_default();
-    if !status.is_success() {
-        let body: serde_json::Value = resp.json().await.unwrap_or_default();
-        let message = body["error"]["message"].as_str().unwrap_or("no build for this OS/arch").to_owned();
-        anyhow::bail!("{message}");
-    }
-    let build = resp.bytes().await?.to_vec();
-    anyhow::ensure!(
-        rcli_protocol::update::verify(&key, &version, &target, &rcli_protocol::update::sha256_hex(&build), &signature),
-        "bad signature: the build is not signed with this install's pinned update key; the old binary is untouched"
-    );
+    let build = rcli_agent::download::build(&url, &config.server_key, data_dir, &key, &target).await?;
+    let installed = install(path, &build.path);
+    let _ = std::fs::remove_file(&build.path);
+    Ok(Upgraded { version: build.version, target, path: path.to_owned(), restarted: installed? })
+}
+
+/// Puts the verified `build` at `path`, restarting the Agent service onto it when this upgrade owns one.
+fn install(path: &Path, build: &Path) -> anyhow::Result<bool> {
     // Check the service first: on a root install, refusing after the swap would leave a new binary unstarted.
     let service = service_to_restart()?;
     if service {
         // Only Windows needs the stop: it cannot replace an image the service is running.
         service::stop()?;
     }
-    if let Err(e) = replace(path, &build) {
+    if let Err(e) = replace(path, build) {
         // A service stopped for the swap must not stay down because the swap failed.
         if service {
             let _ = service::restart();
         }
         return Err(e);
     }
-    let restarted = if service {
+    if service {
         service::restart()?;
-        true
-    } else {
-        false
-    };
-    Ok(Upgraded { version, target, path: path.to_owned(), restarted })
+    }
+    Ok(service)
 }
 
 /// Replaces `path` atomically, so a crash mid-write never leaves a half-written binary behind.
 #[cfg(not(windows))]
-fn replace(path: &Path, build: &[u8]) -> anyhow::Result<()> {
+fn replace(path: &Path, build: &Path) -> anyhow::Result<()> {
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     let temp = dir.join(format!(".{}.new", path.file_name().unwrap_or_default().to_string_lossy()));
-    std::fs::write(&temp, build)?;
+    std::fs::copy(build, &temp)?;
     #[cfg(unix)]
     std::fs::set_permissions(&temp, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
     std::fs::rename(&temp, path)?;
@@ -80,11 +71,11 @@ fn replace(path: &Path, build: &[u8]) -> anyhow::Result<()> {
 /// stopped first, so the aside copy is normally deleted right away; a copy a just-stopped process still maps is left
 /// for the next install to overwrite (and is harmless).
 #[cfg(windows)]
-fn replace(path: &Path, build: &[u8]) -> anyhow::Result<()> {
+fn replace(path: &Path, build: &Path) -> anyhow::Result<()> {
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let temp = dir.join(format!(".{name}.new"));
-    std::fs::write(&temp, build)?;
+    std::fs::copy(build, &temp)?;
     if !path.exists() {
         std::fs::rename(&temp, path)?;
         return Ok(());
@@ -330,7 +321,9 @@ mod tests {
         let dir = temp_dir("replace");
         let path = dir.join("rcli");
         std::fs::write(&path, b"old build").unwrap();
-        replace(&path, b"new build").unwrap();
+        let build = temp_dir("replace-build").join("build");
+        std::fs::write(&build, b"new build").unwrap();
+        replace(&path, &build).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"new build");
         let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(leftovers, vec![std::ffi::OsString::from("rcli")], "a temp file is left behind");

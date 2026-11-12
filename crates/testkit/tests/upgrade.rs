@@ -1,6 +1,8 @@
 //! `rcli upgrade`: fetch the build rolled out for this OS/arch, verify it with the pinned update key, replace the
 //! binary. The replacement path is a temp file here (the seam), never the running test binary.
 
+use std::path::PathBuf;
+
 use rcli_testkit::{temp_dir, TestSystem};
 
 fn temp_file(name: &str, bytes: &[u8]) -> String {
@@ -169,4 +171,46 @@ async fn the_build_lookup_needs_the_server_key() {
     assert_eq!(part.status(), rcli_testkit::StatusCode::PARTIAL_CONTENT);
     assert_eq!(part.headers()["content-range"], "bytes 6-10/11");
     assert_eq!(part.bytes().await.unwrap().as_ref(), b"build");
+}
+
+/// Publishes `build` to the fleet for a Controller set up in a new `name` dir, and leaves `part` as the partial
+/// download `rcli upgrade` finds in its data dir. Returns the dir, the `.part` path and the binary to replace.
+async fn with_partial(sys: &TestSystem, name: &str, build: &[u8], part: &[u8]) -> (PathBuf, PathBuf, PathBuf) {
+    let dir = temp_dir(name);
+    sys.controller_config(&dir, None).await;
+    let key = temp_file("update.key", &sys.update_signing_key);
+    publish_to_fleet(sys, &temp_file(&format!("{name}-build"), build), "3.0.0", &key).await;
+    let updates = dir.join("updates");
+    std::fs::create_dir_all(&updates).unwrap();
+    // The routine names the file after the build's sha256, so a resume never mixes two builds.
+    let part_path = updates.join(format!("{}.part", rcli_protocol::update::sha256_hex(build)));
+    std::fs::write(&part_path, part).unwrap();
+    let target = temp_dir(&format!("{name}-target")).join("rcli");
+    std::fs::write(&target, b"old rcli binary").unwrap();
+    (dir, part_path, target)
+}
+
+/// An interrupted download resumes from the bytes already on disk.
+#[tokio::test]
+async fn upgrade_completes_from_a_partial_download() {
+    let sys = TestSystem::start().await;
+    let (dir, part, target) = with_partial(&sys, "resume", b"new rcli binary", b"new rcli").await;
+
+    let out = sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap();
+
+    assert!(out.contains("3.0.0"), "{out}");
+    assert_eq!(std::fs::read(&target).unwrap(), b"new rcli binary");
+    assert!(!part.exists(), "the download is left behind");
+}
+
+/// A partial download holding the wrong bytes fails the sha256 check, is thrown away and fetched again from zero.
+#[tokio::test]
+async fn a_partial_download_with_wrong_bytes_is_discarded() {
+    let sys = TestSystem::start().await;
+    let (dir, part, target) = with_partial(&sys, "corrupt", b"new rcli binary", b"garbage!").await;
+
+    sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap();
+
+    assert_eq!(std::fs::read(&target).unwrap(), b"new rcli binary");
+    assert!(!part.exists(), "the download is left behind");
 }
