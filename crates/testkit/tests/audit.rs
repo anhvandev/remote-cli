@@ -10,7 +10,7 @@ async fn audit(sys: &TestSystem, query: &str) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn every_action_is_recorded_and_filterable_by_admins_only() {
+async fn every_action_is_recorded_and_filterable_by_any_user() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id().to_owned();
@@ -52,7 +52,7 @@ async fn every_action_is_recorded_and_filterable_by_admins_only() {
     assert_eq!(since.len(), 2);
 
     let (status, body) = alice.get("/api/v1/audit").await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(status, StatusCode::OK, "every User reads the audit log: {body}");
 
     let out = sys.rcli(&["audit", "--device", "lab-pc", "--user", "alice"]).await.unwrap();
     assert!(out.contains("alice") && out.contains("click"), "{out}");

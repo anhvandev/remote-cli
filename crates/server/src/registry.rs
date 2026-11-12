@@ -42,7 +42,7 @@ pub struct Device {
     pub needs_update: bool,
     /// Why the Agent's last self-update toward the Minimum Version failed; null once it no longer needs one.
     pub update_error: Option<String>,
-    /// When an admin revoked the Device's credential; a revoked Device can no longer connect.
+    /// When a User revoked the Device's credential; a revoked Device can no longer connect.
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
@@ -210,7 +210,7 @@ pub async fn delete(state: &AppState, id: Uuid) -> anyhow::Result<()> {
 }
 
 /// Moves `old`'s resource history and audit entries to `new` (where both have a rollup for the same minute, `new`'s wins),
-/// then deletes `old`. Never done automatically: an admin decides two Devices are the same computer.
+/// then deletes `old`. Never done automatically: a User decides two Devices are the same computer.
 pub async fn merge(state: &AppState, old: Uuid, new: Uuid) -> anyhow::Result<()> {
     state.agents.disconnect(old, "device_deleted", "this Device was merged into another");
     // No rollup may run while samples change owner.

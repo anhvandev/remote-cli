@@ -195,8 +195,10 @@ pub enum Error {
     BadRequest(String),
     NameTaken,
     NotFound,
-    /// Disabling oneself or the last enabled User.
-    LastUser(String),
+    /// Disabling the last enabled User.
+    LastUser,
+    /// Disabling oneself.
+    DisableSelf,
     Internal(anyhow::Error),
 }
 
@@ -263,7 +265,7 @@ pub async fn list_users(state: &AppState) -> anyhow::Result<Vec<User>> {
 /// stays enabled, so someone can always sign in.
 pub async fn disable_user(state: &AppState, by: &User, name: &str) -> Result<User, Error> {
     if by.name == name {
-        return Err(Error::LastUser("you cannot disable yourself".into()));
+        return Err(Error::DisableSelf);
     }
     // shortcut: two Users disabling each other at the same instant can both succeed (READ COMMITTED); lock the
     // users table here if that ever matters.
@@ -280,7 +282,7 @@ pub async fn disable_user(state: &AppState, by: &User, name: &str) -> Result<Use
         return Ok(user);
     }
     let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE name = $1)").bind(name).fetch_one(&state.db).await?;
-    Err(if exists { Error::LastUser("the last enabled User cannot be disabled".into()) } else { Error::NotFound })
+    Err(if exists { Error::LastUser } else { Error::NotFound })
 }
 
 /// Revokes the token itself (sign-out from `rcli logout` or the Dashboard).

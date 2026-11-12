@@ -27,7 +27,7 @@ async fn rcli_agent_run_registers_and_connects_a_device() {
         r = &mut agent => panic!("the Agent exited: {r:?}"),
         d = online => d,
     };
-    assert_eq!(device["agent_version"], "0.1.0");
+    assert_eq!(device["agent_version"], env!("CARGO_PKG_VERSION"));
     assert!(dir.join("credentials.json").exists(), "the Agent keeps its Device credentials");
 }
 

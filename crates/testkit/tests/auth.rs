@@ -26,6 +26,7 @@ async fn a_user_cannot_disable_themselves_or_the_last_enabled_user() {
     let sys = TestSystem::start().await;
     let (status, body) = sys.api.post("/api/v1/users/admin/disable").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "disable_self", "{body}");
     assert!(body["error"]["message"].as_str().unwrap().contains("yourself"), "{body}");
 
     // `op` disables `admin`; `op` is then the last enabled User and stays enabled.
@@ -104,7 +105,7 @@ async fn rcli_login_saves_a_session_that_admin_commands_and_logout_use() {
         assert_eq!(mode & 0o777, 0o600, "the session file must not be readable by other local users");
     }
 
-    // Admin commands use the saved session.
+    // Server administration commands use the saved session.
     let out = sys.rcli_in(&dir, &["user", "list"]).await.unwrap();
     assert!(out.contains("bob"), "{out}");
     assert!(sys.rcli_in(&dir, &["server-key", "show"]).await.unwrap().starts_with("rk_"));

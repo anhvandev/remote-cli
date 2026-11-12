@@ -1,4 +1,4 @@
-//! Server Settings: the Server Key, the Server Address, the API Address and the Minimum Version, stored in Postgres and edited by Admins.
+//! Server Settings: the Server Key, the Server Address, the API Address and the Minimum Version, stored in Postgres and edited by Users.
 
 use sqlx::PgPool;
 use tokio::sync::RwLock;
@@ -9,7 +9,7 @@ use crate::{pki::Ca, server_key};
 pub struct Settings {
     key: RwLock<String>,
     address: RwLock<String>,
-    /// Empty until learned from an Admin's Dashboard visit or set by an Admin.
+    /// Empty until learned from a User's Dashboard visit or set by a User.
     api_address: RwLock<String>,
     /// Empty when none is set.
     minimum_version: RwLock<String>,
@@ -55,7 +55,7 @@ impl Settings {
         self.api_address.read().await.clone()
     }
 
-    /// Sets the API Address; a `learned` one only while none is set, so a visit never overrides an Admin's correction.
+    /// Sets the API Address; a `learned` one only while none is set, so a visit never overrides a User's correction.
     pub async fn set_api_address(&self, db: &PgPool, url: &str, learned: bool) -> anyhow::Result<()> {
         if learned && !self.api_address.read().await.is_empty() {
             return Ok(());

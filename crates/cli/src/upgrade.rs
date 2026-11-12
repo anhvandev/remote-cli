@@ -46,7 +46,16 @@ pub async fn run(config: &Machine, path: &Path, data_dir: &Path, progress: &mut 
         std::cmp::Ordering::Less => {}
     }
     writeln!(progress, "downloading {latest} for {target}...")?;
-    let build = rcli_agent::download::fetch_build(&url, &config.server_key, data_dir).await?;
+    let mut shown = None;
+    let build = rcli_agent::download::fetch_build(&url, &config.server_key, data_dir, |done, size| {
+        // One line per 10% step, so a large build shows progress without flooding the terminal.
+        let step = (done * 10).checked_div(size).unwrap_or(10);
+        if shown != Some(step) {
+            shown = Some(step);
+            let _ = writeln!(progress, "downloaded {}% ({done} of {size} bytes)", step * 10);
+        }
+    })
+    .await?;
     writeln!(progress, "sha256 {} verified ({} bytes)", build.sha256, build.size)?;
     let installed = install(path, &build.path);
     let _ = std::fs::remove_file(&build.path);
