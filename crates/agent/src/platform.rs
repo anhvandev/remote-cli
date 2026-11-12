@@ -40,9 +40,9 @@ pub trait Platform: Send + Sync + 'static {
     fn agent_version(&self) -> String {
         env!("CARGO_PKG_VERSION").into()
     }
-    /// Replaces the Agent binary with `build` (signature already verified) and restarts the Agent
+    /// Replaces the Agent binary with the file at `build` (signature already verified) and restarts the Agent
     /// onto it. Real adapters normally do not return on success; if they do, the Agent reconnects.
-    fn install_update(&self, version: &str, build: &[u8]) -> anyhow::Result<()>;
+    fn install_update(&self, version: &str, build: &std::path::Path) -> anyhow::Result<()>;
     /// Shows (true) or hides the visible on-Device indicator that someone is controlling it
     /// (Control Lock held or live stream active). Must work at the lock and login screens too.
     fn set_control_indicator(&self, on: bool) -> anyhow::Result<()>;
@@ -194,6 +194,9 @@ pub struct FakeState {
     pub accept_prompts: Vec<(String, Duration)>,
     /// The scripted person's answers to accept-connection prompts, like `root_answers`.
     pub accept_answers: std::collections::VecDeque<bool>,
+    /// While true, `install_update` waits (a slow update); `installing` is true while it is in there.
+    pub hold_install: bool,
+    pub installing: bool,
 }
 
 impl FakePlatform {
@@ -224,6 +227,8 @@ impl FakePlatform {
             root_answers: Default::default(),
             accept_prompts: vec![],
             accept_answers: Default::default(),
+            hold_install: false,
+            installing: false,
         };
         Self { hostname, state: Arc::new(Mutex::new(state)) }
     }
@@ -383,8 +388,14 @@ impl Platform for FakePlatform {
     }
 
     /// "Restarts" onto `version`: the Agent reports it on its next connection.
-    fn install_update(&self, version: &str, _build: &[u8]) -> anyhow::Result<()> {
+    fn install_update(&self, version: &str, build: &std::path::Path) -> anyhow::Result<()> {
+        anyhow::ensure!(build.is_file(), "no build at {}", build.display());
+        self.state.lock().unwrap().installing = true;
+        while self.state.lock().unwrap().hold_install {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let mut s = self.state.lock().unwrap();
+        s.installing = false;
         s.installed.push(version.into());
         s.version = version.into();
         Ok(())

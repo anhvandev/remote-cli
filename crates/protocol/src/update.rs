@@ -9,8 +9,6 @@ use ring::{
 
 /// Largest Agent build the Server accepts.
 pub const MAX_BUILD_BYTES: usize = 200 << 20;
-/// Frame limit for authenticated Device sessions: a build plus room for the rest of the message.
-pub const MAX_SESSION_FRAME: usize = MAX_BUILD_BYTES + (1 << 20);
 
 fn message(version: &str, target: &str, sha256: &str) -> Vec<u8> {
     format!("rcli-agent-build\n{version}\n{target}\n{sha256}").into_bytes()

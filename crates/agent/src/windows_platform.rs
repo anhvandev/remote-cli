@@ -430,15 +430,17 @@ impl Platform for WindowsPlatform {
     /// A running .exe cannot be overwritten but can be renamed: move it aside, write the new one, start it with the
     /// same arguments and exit.
     // shortcut: restarts as a plain child process; ticket 22's service restarts through the service manager instead.
-    fn install_update(&self, _version: &str, build: &[u8]) -> anyhow::Result<()> {
+    fn install_update(&self, _version: &str, build: &std::path::Path) -> anyhow::Result<()> {
         let exe = std::env::current_exe()?;
         let old = exe.with_extension("old.exe");
         let _ = std::fs::remove_file(&old);
         std::fs::rename(&exe, &old)?;
-        if let Err(e) = std::fs::write(&exe, build) {
+        if let Err(e) = std::fs::copy(build, &exe) {
             let _ = std::fs::rename(&old, &exe);
             return Err(e.into());
         }
+        // This process exits below, so nobody else is left to delete the download.
+        let _ = std::fs::remove_file(build);
         Command::new(&exe).args(std::env::args_os().skip(1)).spawn()?;
         std::process::exit(0);
     }

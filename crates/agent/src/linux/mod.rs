@@ -347,11 +347,13 @@ impl Platform for LinuxPlatform {
     }
 
     /// Swaps the binary atomically, then becomes the new one in place (same PID, same arguments).
-    fn install_update(&self, _version: &str, build: &[u8]) -> anyhow::Result<()> {
+    fn install_update(&self, _version: &str, build: &std::path::Path) -> anyhow::Result<()> {
         use std::os::unix::{fs::PermissionsExt, process::CommandExt};
         let exe = std::env::current_exe()?;
         let temp = exe.with_extension("new");
-        std::fs::write(&temp, build)?;
+        std::fs::copy(build, &temp)?;
+        // This process is replaced below, so nobody else is left to delete the download.
+        let _ = std::fs::remove_file(build);
         std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))?;
         std::fs::rename(&temp, &exe)?;
         Err(Command::new(&exe).args(std::env::args_os().skip(1)).exec().into())

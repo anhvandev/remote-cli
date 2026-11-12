@@ -26,6 +26,10 @@ pub async fn build(url: &str, server_key: &str, dir: &Path, key: &[u8], target: 
         .send()
     };
     let resp = get(0).await?;
+    if resp.status().is_server_error() {
+        // A `reqwest::Error`, like a network failure: the Agent retries both (`transient`).
+        return Err(resp.error_for_status().unwrap_err().into());
+    }
     if !resp.status().is_success() {
         let body: serde_json::Value = resp.json().await.unwrap_or_default();
         anyhow::bail!("{}", body["error"]["message"].as_str().unwrap_or("no build for this OS/arch"));
@@ -75,6 +79,11 @@ pub async fn build(url: &str, server_key: &str, dir: &Path, key: &[u8], target: 
 }
 
 /// Streams `resp` into `path`: appended after the first `from` bytes, or replacing the file when `from` is 0.
+/// Whether `e` is worth retrying later: a network failure or a 5xx from the Server.
+pub fn transient(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<reqwest::Error>().is_some_and(|r| r.status().is_none_or(|s| s.is_server_error())))
+}
+
 async fn save(mut resp: reqwest::Response, path: &Path, from: u64) -> anyhow::Result<()> {
     let mut file = tokio::fs::OpenOptions::new().create(true).write(true).append(from > 0).truncate(from == 0).open(path).await?;
     while let Some(chunk) = resp.chunk().await? {

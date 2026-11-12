@@ -1,4 +1,4 @@
-use rcli_testkit::{FakePlatform, StatusCode, TestAgent, TestSystem};
+use rcli_testkit::{eventually, FakePlatform, StatusCode, TestAgent, TestSystem};
 use serde_json::json;
 
 #[tokio::test]
@@ -27,6 +27,7 @@ fn temp_file(name: &str, bytes: &[u8]) -> String {
 #[tokio::test]
 async fn signed_build_rolls_out_to_selected_devices_then_to_all() {
     let sys = TestSystem::start().await;
+    serve_builds_to_agents(&sys).await;
     let a = sys.start_agent("pc-a").await;
     let b = sys.start_agent("pc-b").await;
     for agent in [&a, &b] {
@@ -55,6 +56,7 @@ async fn signed_build_rolls_out_to_selected_devices_then_to_all() {
 #[tokio::test]
 async fn a_build_not_signed_with_the_agents_pinned_key_is_rejected_and_reported() {
     let sys = TestSystem::start().await;
+    serve_builds_to_agents(&sys).await;
     let platform = FakePlatform::new("pc-1");
     let mut creds = sys.register(&platform).await.unwrap();
     creds.update_key = rcli_protocol::update::generate_key().unwrap().1;
@@ -69,6 +71,39 @@ async fn a_build_not_signed_with_the_agents_pinned_key_is_rejected_and_reported(
     assert!(d["update"]["error"].as_str().unwrap().contains("bad signature"), "{d}");
     assert_eq!(d["agent_version"], "0.1.0");
     assert!(agent.platform.installed_updates().is_empty());
+}
+
+/// Agents download rolled-out builds from the API Address, which a test Server has not learned.
+async fn serve_builds_to_agents(sys: &TestSystem) {
+    sys.rcli(&["api-address", "set", &format!("http://{}", sys.server.http_addr)]).await.unwrap();
+}
+
+/// The Agent downloads and installs off its session loop: while an update is under way (held at the install step,
+/// after a build larger than a session frame was downloaded), a command still round-trips and the Device stays Online.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_stays_responsive_while_a_large_build_downloads() {
+    let sys = TestSystem::start().await;
+    serve_builds_to_agents(&sys).await;
+    let agent = sys.start_agent("pc-1").await;
+    sys.wait_device(agent.device_id(), |d| d["agent_version"] == "0.1.0").await;
+    let key = temp_file("update.key", &sys.update_signing_key);
+    publish(&sys, &temp_file("rcli", &vec![7u8; 16 << 20]), "0.2.0", &key).await.unwrap();
+    agent.platform.update(|s| s.hold_install = true);
+
+    sys.rcli(&["rollout", "0.2.0", "--all"]).await.unwrap();
+    eventually(|| async {
+        let mut installing = false;
+        agent.platform.update(|s| installing = s.installing);
+        installing.then_some(())
+    })
+    .await;
+    let exec = ["exec", agent.device_id(), "--", "echo", "hi"];
+    let out = tokio::time::timeout(std::time::Duration::from_secs(5), sys.rcli(&exec)).await.expect("the command answers during the update");
+    assert!(out.unwrap().contains("hi"));
+    sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
+
+    agent.platform.update(|s| s.hold_install = false);
+    sys.wait_device(agent.device_id(), |d| d["agent_version"] == "0.2.0" && d["update"]["status"] == "updated").await;
 }
 
 /// `rcli rollout publish` of `build` as `version` for this machine's target, signed with `key`.

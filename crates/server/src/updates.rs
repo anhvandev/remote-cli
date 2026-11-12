@@ -2,11 +2,9 @@
 //! The Server never checks signatures (it has no key); Agents do, and report failures back.
 
 use rcli_protocol::agent::{AgentHello, AgentUpdate, UpdateFailed};
-use axum::body::Bytes;
-use futures::TryStreamExt;
 use uuid::Uuid;
 
-use crate::{storage, AppState};
+use crate::AppState;
 
 /// A stored build: version, signature, sha256 (hex) and size, as served by the download endpoints.
 pub type Build = (String, Vec<u8>, String, i64);
@@ -152,9 +150,9 @@ pub async fn upgrade_build(state: &AppState, device: Option<&str>, target: &str)
 /// The build this Device should install now, if any. A missing build for the Device's
 /// target is recorded as a failure instead.
 pub async fn pending(state: &AppState, device: Uuid) -> anyhow::Result<Option<AgentUpdate>> {
-    type Row = (String, String, Option<Vec<u8>>, Option<String>);
+    type Row = (String, String, Option<Vec<u8>>, Option<String>, Option<i64>);
     let row: Option<Row> = sqlx::query_as(
-        "SELECT d.update_version, d.agent_target, b.signature, b.sha256
+        "SELECT d.update_version, d.agent_target, b.signature, b.sha256, b.size
          FROM devices d LEFT JOIN agent_builds b ON b.version = d.update_version AND b.target = d.agent_target
          WHERE d.id = $1 AND d.update_error IS NULL AND d.agent_target IS NOT NULL
            AND d.update_version IS DISTINCT FROM d.agent_version AND d.update_version IS NOT NULL",
@@ -164,12 +162,10 @@ pub async fn pending(state: &AppState, device: Uuid) -> anyhow::Result<Option<Ag
     .await?;
     Ok(match row {
         None => None,
-        Some((version, target, Some(signature), Some(sha256))) => {
-            // shortcut: the whole build is read into memory for the Update message, until Agents pull it (ticket 05).
-            let build: Vec<Bytes> = state.storage.get(storage::AGENT_BUILDS, &sha256, None).await?.try_collect().await?;
-            Some(AgentUpdate { version, target, build: build.concat(), signature })
+        Some((version, target, Some(signature), Some(sha256), Some(size))) => {
+            Some(AgentUpdate { version, target, signature, size: size as u64, sha256 })
         }
-        Some((version, target, _, _)) => {
+        Some((version, target, ..)) => {
             let reason = format!("no build of {version} for {target}");
             agent_failed(state, device, &UpdateFailed { version, reason }).await?;
             None

@@ -148,7 +148,7 @@ async fn handle(tcp: TcpStream, acceptor: TlsAcceptor, state: Arc<AppState>) -> 
     match fingerprint {
         None => register(&mut Conn::new(tls), &state).await,
         Some(fp) => {
-            let mut conn = Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME);
+            let mut conn = Conn::new(tls);
             // shortcut: a revoke landing between this lookup and registering the sender below misses this
             // connection until it reconnects; re-check after registering if that window ever matters.
             let Some(id) = registry::find_by_cert_fingerprint(&state, &fp).await? else {

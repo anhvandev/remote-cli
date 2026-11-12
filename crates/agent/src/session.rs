@@ -206,7 +206,7 @@ impl Platform for SessionPlatform {
     fn send_wake(&self, mac: [u8; 6]) -> anyhow::Result<()> {
         self.inner.send_wake(mac)
     }
-    fn install_update(&self, version: &str, build: &[u8]) -> anyhow::Result<()> {
+    fn install_update(&self, version: &str, build: &std::path::Path) -> anyhow::Result<()> {
         self.inner.install_update(version, build)
     }
     fn set_control_indicator(&self, on: bool) -> anyhow::Result<()> {

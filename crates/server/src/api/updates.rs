@@ -46,6 +46,7 @@ async fn current(
 }
 
 /// Streams a stored build (or the requested `Range` of it) with its version, signature and sha256 headers.
+// shortcut: no cap on concurrent build downloads (a fleet-wide rollout starts them all at once); add one when fleets grow.
 pub(super) async fn build_file(state: &super::State, build: updates::Build, headers: &HeaderMap) -> Result<Response, ApiError> {
     let (version, signature, sha256, size) = build;
     let mut response = super::install::stored_file(state, storage::AGENT_BUILDS, &sha256, size as u64, headers).await?;
