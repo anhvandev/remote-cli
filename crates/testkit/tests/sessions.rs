@@ -4,7 +4,7 @@ use serde_json::json;
 #[tokio::test]
 async fn user_signs_in_with_password_and_totp_and_gets_a_session() {
     let sys = TestSystem::start().await;
-    sys.create_user("vanna", "operator").await;
+    sys.create_user("vanna").await;
     let (status, enrolled) =
         sys.api.post_json("/api/v1/users/vanna/credentials", &json!({"password": "correct horse"})).await;
     assert_eq!(status, StatusCode::OK, "{enrolled}");
@@ -20,7 +20,6 @@ async fn user_signs_in_with_password_and_totp_and_gets_a_session() {
     let (status, user) = me.get("/api/v1/me").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(user["name"], "vanna");
-    assert_eq!(user["role"], "operator");
 
     // Signing out ends the session.
     assert_eq!(me.delete("/api/v1/session").await.0, StatusCode::NO_CONTENT);
@@ -30,7 +29,7 @@ async fn user_signs_in_with_password_and_totp_and_gets_a_session() {
 #[tokio::test]
 async fn sign_in_is_refused_without_the_right_password_and_a_fresh_totp() {
     let sys = TestSystem::start().await;
-    sys.create_user("vanna", "operator").await;
+    sys.create_user("vanna").await;
     let (_, enrolled) = sys.api.post_json("/api/v1/users/vanna/credentials", &json!({"password": "pw-1234567"})).await;
     let code = sys.totp(enrolled["totp_secret"].as_str().unwrap());
     let wrong_code = format!("{:06}", (code.parse::<u32>().unwrap() + 1) % 1_000_000);
@@ -58,7 +57,7 @@ async fn sign_in_is_refused_without_the_right_password_and_a_fresh_totp() {
 #[tokio::test]
 async fn sessions_expire_and_disabled_users_cannot_sign_in() {
     let sys = TestSystem::start().await;
-    sys.create_user("vanna", "operator").await;
+    sys.create_user("vanna").await;
     let (_, enrolled) = sys.api.post_json("/api/v1/users/vanna/credentials", &json!({"password": "pw-1234567"})).await;
     let secret = enrolled["totp_secret"].as_str().unwrap();
     let anon = sys.api.with_token(None);
@@ -81,11 +80,9 @@ async fn sessions_expire_and_disabled_users_cannot_sign_in() {
 }
 
 #[tokio::test]
-async fn only_admins_set_credentials_and_passwords_must_be_8_chars() {
+async fn passwords_must_be_8_chars() {
     let sys = TestSystem::start().await;
-    let op = sys.api.with_token(Some(&sys.create_user("op", "operator").await));
-    let (status, _) = op.post_json("/api/v1/users/op/credentials", &json!({"password": "longenough"})).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    sys.create_user("op").await;
     let (status, body) = sys.api.post_json("/api/v1/users/op/credentials", &json!({"password": "short"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let (status, _) = sys.api.post_json("/api/v1/users/ghost/credentials", &json!({"password": "longenough"})).await;
@@ -95,7 +92,7 @@ async fn only_admins_set_credentials_and_passwords_must_be_8_chars() {
 #[tokio::test]
 async fn admin_sets_credentials_with_rcli() {
     let sys = TestSystem::start().await;
-    sys.create_user("vanna", "admin").await;
+    sys.create_user("vanna").await;
     let out = sys.rcli(&["user", "set-password", "vanna", "--password", "pw-1234567"]).await.unwrap();
     assert!(out.contains("otpauth://totp/"), "{out}");
     let secret = out.lines().find_map(|l| l.strip_prefix("totp_secret ")).unwrap();
@@ -110,7 +107,7 @@ async fn admin_sets_credentials_with_rcli() {
 #[tokio::test]
 async fn five_failed_sign_ins_lock_the_user_out_for_15_minutes() {
     let sys = TestSystem::start().await;
-    sys.create_user("vanna", "operator").await;
+    sys.create_user("vanna").await;
     let (_, enrolled) = sys.api.post_json("/api/v1/users/vanna/credentials", &json!({"password": "pw-1234567"})).await;
     let secret = enrolled["totp_secret"].as_str().unwrap();
     let anon = &sys.api.with_token(None);

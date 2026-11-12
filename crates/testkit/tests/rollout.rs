@@ -171,8 +171,4 @@ async fn unsigned_builds_and_unknown_versions_are_refused() {
 
     let (status, body) = sys.api.post_json("/api/v1/agent-builds/1.0.0/rollout", &json!({"all": true})).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
-
-    let op = sys.api.with_token(Some(&sys.create_user("op", "operator").await));
-    let (status, _) = op.post_json("/api/v1/agent-builds/1.0.0/rollout", &json!({"all": true})).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
 }

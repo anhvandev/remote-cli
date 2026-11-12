@@ -49,12 +49,12 @@ export default async function DeviceLayout({
             <p className="mt-1 truncate text-sm text-muted-foreground">{meta.join(" · ")}</p>
           </div>
           <div className="flex flex-col items-end gap-2">
-            <PowerButtons device={d.id} name={d.name} status={d.status} me={me.name} admin={me.role === "admin"} />
+            <PowerButtons device={d.id} name={d.name} status={d.status} me={me.name} />
             <ControlReminder />
           </div>
         </div>
         <Tabs device={d.id} headless={!!inv && inv.displays.length === 0} />
-        {me.role === "admin" && <AdminActions device={d.id} deviceId={d.device_id} />}
+        <AdminActions device={d.id} deviceId={d.device_id} />
         <div className="mt-5">{children}</div>
       </ControlProvider>
     </>

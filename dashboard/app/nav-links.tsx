@@ -7,12 +7,11 @@ const tone = (active: boolean) => `${item} ${active ? "bg-accent text-foreground
 
 const adminPages = [
   { href: "/admin/users", name: "User" },
-  { href: "/admin/devices", name: "Device" },
   { href: "/admin/updates", name: "Cập nhật Agent" },
   { href: "/admin/settings", name: "Server Settings" },
 ];
 
-export function NavLinks({ admin }: { admin: boolean }) {
+export function NavLinks() {
   const path = usePathname();
   const onFleet = path === "/" || path.startsWith("/devices");
   const onAdmin = path === "/admin";
@@ -28,25 +27,21 @@ export function NavLinks({ admin }: { admin: boolean }) {
       >
         Hướng dẫn kết nối
       </Link>
-      {admin && (
-        <>
-          <Link href="/admin" aria-current={onAdmin ? "page" : undefined} className={tone(onAdmin)}>
-            Quản trị
+      <Link href="/admin" aria-current={onAdmin ? "page" : undefined} className={tone(onAdmin)}>
+        Quản lý
+      </Link>
+      <div role="group" aria-label="Quản lý" className="flex flex-wrap gap-1 md:ml-4 md:flex-col md:gap-0.5 md:border-l md:border-border md:pl-2">
+        {adminPages.map((p) => (
+          <Link
+            key={p.href}
+            href={p.href}
+            aria-current={path.startsWith(p.href) ? "page" : undefined}
+            className={tone(path.startsWith(p.href))}
+          >
+            {p.name}
           </Link>
-          <div role="group" aria-label="Quản trị" className="flex flex-wrap gap-1 md:ml-4 md:flex-col md:gap-0.5 md:border-l md:border-border md:pl-2">
-            {adminPages.map((p) => (
-              <Link
-                key={p.href}
-                href={p.href}
-                aria-current={path.startsWith(p.href) ? "page" : undefined}
-                className={tone(path.startsWith(p.href))}
-              >
-                {p.name}
-              </Link>
-            ))}
-          </div>
-        </>
-      )}
+        ))}
+      </div>
     </div>
   );
 }

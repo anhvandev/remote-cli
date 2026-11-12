@@ -59,10 +59,10 @@ export function totp(secretBase32: string, unixSecs: number): string {
 let users = 0;
 
 /** Creates a fresh user with a password and TOTP (each code works once), returning what they type to sign in. */
-export async function newUser(role: "admin" | "operator" = "operator") {
+export async function newUser() {
   const name = `user-${process.pid}-${++users}`;
   const password = "correct horse battery";
-  await adminApi("/api/v1/users", { name, role });
+  await adminApi("/api/v1/users", { name });
   const { totp_secret } = await adminApi(`/api/v1/users/${name}/credentials`, { password });
   return { name, password, code: totp(totp_secret, (await devstack()).now) };
 }

@@ -1,30 +1,45 @@
 use rcli_testkit::{StatusCode, temp_dir, TestSystem};
 use serde_json::json;
 
+/// No roles (ADR 0009): a User created like a former Operator manages Users, the Server Key and Server settings.
 #[tokio::test]
-async fn operator_can_list_devices_but_is_refused_admin_operations() {
+async fn any_user_can_do_what_only_admins_could() {
     let sys = TestSystem::start().await;
-    let token = sys.create_user("op", "operator").await;
-    let op = sys.api.with_token(Some(&token));
-
-    let (status, _) = op.get("/api/v1/devices").await;
-    assert_eq!(status, StatusCode::OK);
+    let op = sys.api.with_token(Some(&sys.create_user("op").await));
 
     for (status, body) in [
         op.get("/api/v1/server-key").await,
-        op.post_json("/api/v1/users", &json!({"name": "x", "role": "admin"})).await,
         op.get("/api/v1/users").await,
         op.post_json("/api/v1/users/op/credentials", &json!({"password": "longenough"})).await,
+        op.post("/api/v1/server-settings/server-key/rotate").await,
+        op.get("/api/v1/audit").await,
     ] {
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert_eq!(body["error"]["code"], "admin_required");
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
+    let (status, body) = op.post_json("/api/v1/users", &json!({"name": "x"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(body.get("role").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn a_user_cannot_disable_themselves_or_the_last_enabled_user() {
+    let sys = TestSystem::start().await;
+    let (status, body) = sys.api.post("/api/v1/users/admin/disable").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("yourself"), "{body}");
+
+    // `op` disables `admin`; `op` is then the last enabled User and stays enabled.
+    let op = sys.api.with_token(Some(&sys.create_user("op").await));
+    assert_eq!(op.post("/api/v1/users/admin/disable").await.0, StatusCode::OK);
+    let (status, body) = op.post("/api/v1/users/op/disable").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(op.get("/api/v1/users").await.0, StatusCode::OK);
 }
 
 #[tokio::test]
 async fn signing_out_and_disabling_a_user_end_their_session() {
     let sys = TestSystem::start().await;
-    let token = sys.create_user("ai-1", "operator").await;
+    let token = sys.create_user("ai-1").await;
     let me = sys.api.with_token(Some(&token));
     assert_eq!(me.get("/api/v1/devices").await.0, StatusCode::OK);
 
@@ -34,7 +49,7 @@ async fn signing_out_and_disabling_a_user_end_their_session() {
     assert_eq!(body["error"]["code"], "unauthorized");
 
     // A new session works until the user is disabled.
-    let session = sys.create_user("ai-2", "operator").await;
+    let session = sys.create_user("ai-2").await;
     let me = sys.api.with_token(Some(&session));
     assert_eq!(me.get("/api/v1/devices").await.0, StatusCode::OK);
     let (status, user) = sys.api.post("/api/v1/users/ai-2/disable").await;
@@ -44,37 +59,31 @@ async fn signing_out_and_disabling_a_user_end_their_session() {
 }
 
 #[tokio::test]
-async fn bootstrap_token_works_only_until_an_admin_has_a_session() {
+async fn bootstrap_token_works_only_until_a_user_has_a_session() {
     let sys = TestSystem::start().await;
     let bootstrap = sys.api.with_token(Some(rcli_testkit::BOOTSTRAP_TOKEN));
     // The harness already signed its admin in through the bootstrap token.
     let (status, body) = bootstrap.get("/api/v1/devices").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
 
-    let (status, users) = sys.api.get("/api/v1/users").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(users[0]["role"], "admin");
 }
 
 #[tokio::test]
-async fn admin_signs_in_with_rcli_and_operators_are_refused_admin_commands() {
+async fn users_are_managed_with_rcli_and_have_no_role() {
     let sys = TestSystem::start().await;
     let dir = temp_dir("admin");
-    sys.rcli(&["user", "create", "alice", "--role", "operator"]).await.unwrap();
+    sys.rcli(&["user", "create", "alice"]).await.unwrap();
     let list = sys.rcli(&["user", "list"]).await.unwrap();
     let row = list.lines().find(|l| l.contains("alice")).expect(&list);
-    assert!(row.contains("operator") && row.contains("enabled"), "{list}");
+    assert!(row.contains("enabled") && !list.contains("ROLE"), "{list}");
     let enrolled = sys.rcli(&["user", "set-password", "alice", "--password", TestSystem::PASSWORD]).await.unwrap();
     let secret = enrolled.lines().find_map(|l| l.strip_prefix("totp_secret ")).expect(&enrolled);
     sys.controller_config(&dir, None).await;
 
-    // The Operator's session works for Device commands but every Admin command is refused.
     let out = sys.rcli_in(&dir, &["login", "alice", "--password", TestSystem::PASSWORD, "--totp", &sys.totp(secret)]).await.unwrap();
-    assert!(out.contains("alice") && out.contains("operator"), "{out}");
-    let err = sys.rcli_in(&dir, &["user", "list"]).await.unwrap_err();
-    assert!(err.to_string().contains("admin_required"), "{err}");
-    let err = sys.rcli_in(&dir, &["rollout", "0.2.0", "--all"]).await.unwrap_err();
-    assert!(err.to_string().contains("admin_required"), "{err}");
+    assert_eq!(out, "signed in as alice\n");
+    let out = sys.rcli_in(&dir, &["user", "list"]).await.unwrap();
+    assert!(out.contains("alice"), "{out}");
 }
 
 #[tokio::test]
@@ -82,9 +91,9 @@ async fn rcli_login_saves_a_session_that_admin_commands_and_logout_use() {
     let sys = TestSystem::start().await;
     let dir = temp_dir("login");
     sys.controller_config(&dir, None).await;
-    let secret = sys.create_dashboard_user("bob", "admin").await;
+    let secret = sys.create_dashboard_user("bob").await;
     let out = sys.rcli_in(&dir, &["login", "bob", "--password", TestSystem::PASSWORD, "--totp", &sys.totp(&secret)]).await.unwrap();
-    assert!(out.contains("bob") && out.contains("admin"), "{out}");
+    assert!(out.contains("bob"), "{out}");
 
     let config: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("config.json")).unwrap()).unwrap();
     let token = config["session"].as_str().filter(|t| t.starts_with("rcli_")).unwrap_or_else(|| panic!("{config}")).to_owned();

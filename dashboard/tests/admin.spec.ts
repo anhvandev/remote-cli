@@ -3,11 +3,11 @@ import { adminApi, devstack, newUser, signBuild, signIn } from "./devstack";
 
 // Devices `delta`, `echo`, `foxtrot` exist only for these tests (rcli-devstack); alpha/bravo/charlie stay untouched.
 
-/** Signs in an Admin and reaches a sub-page through the Quản trị root. */
+/** Signs in a User and reaches a sub-page through the Quản lý root. */
 async function openAdmin(page: Page, sub: string) {
-  await signIn(page, await newUser("admin"));
-  await page.getByRole("link", { name: "Quản trị" }).click();
-  await expect(page.getByRole("heading", { name: "Quản trị" })).toBeVisible();
+  await signIn(page, await newUser());
+  await page.getByRole("link", { name: "Quản lý" }).click();
+  await expect(page.getByRole("heading", { name: "Quản lý" })).toBeVisible();
   await page.getByRole("main").getByRole("link", { name: sub, exact: true }).click();
 }
 
@@ -15,46 +15,28 @@ async function openAdmin(page: Page, sub: string) {
 const rowIn = (page: Page, section: string, text: string | RegExp) =>
   page.getByRole("region", { name: section }).getByRole("row").filter({ has: page.locator("td:first-child", { hasText: text }) });
 
-test("operators don't see the admin screens", async ({ page }) => {
-  await signIn(page, await newUser("operator"));
-  const nav = page.getByRole("navigation");
-  await expect(nav).toContainText("Operator");
-  await expect(page.getByRole("link", { name: "Quản trị" })).toHaveCount(0);
-  for (const name of ["User", "Cập nhật Agent"]) {
-    await expect(nav.getByRole("link", { name, exact: true })).toHaveCount(0);
-  }
-  await expect(nav.getByRole("link", { name: "Device", exact: true })).toHaveCount(1);
-
-  for (const url of ["/admin", "/admin/users", "/admin/devices", "/admin/updates"]) {
-    await page.goto(url);
-    await expect(page.getByText("Chỉ admin")).toBeVisible();
-    await expect(page.getByRole("region")).toHaveCount(0);
-    await expect(page.getByRole("table")).toHaveCount(0);
-  }
-});
-
-test("the sidebar shows the three Quản trị sub-entries and marks the current one", async ({ page }) => {
-  await signIn(page, await newUser("admin"));
+test("the sidebar shows the Quản lý sub-entries and marks the current one", async ({ page }) => {
+  await signIn(page, await newUser());
   const nav = page.getByRole("navigation");
   const subs: [string, string][] = [
     ["User", "/admin/users"],
-    ["Device", "/admin/devices"],
     ["Cập nhật Agent", "/admin/updates"],
+    ["Server Settings", "/admin/settings"],
   ];
-  const group = nav.getByRole("group", { name: "Quản trị" });
+  const group = nav.getByRole("group", { name: "Quản lý" });
   for (const [label, path] of subs) {
     await group.getByRole("link", { name: label, exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`${path}$`));
     await expect(group.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
-    await expect(nav.getByRole("link", { name: "Quản trị" })).not.toHaveAttribute("aria-current", "page");
+    await expect(nav.getByRole("link", { name: "Quản lý" })).not.toHaveAttribute("aria-current", "page");
   }
   // The top-level Device entry stays inactive on admin pages.
   await expect(nav.getByRole("link", { name: "Device", exact: true }).first()).not.toHaveAttribute("aria-current", "page");
 });
 
-test("the Quản trị root links to each sub-page", async ({ page }) => {
-  await signIn(page, await newUser("admin"));
-  await page.getByRole("link", { name: "Quản trị" }).click();
+test("the Quản lý root links to each sub-page", async ({ page }) => {
+  await signIn(page, await newUser());
+  await page.getByRole("link", { name: "Quản lý" }).click();
   const main = page.getByRole("main");
   const pages: [string, string][] = [
     ["User", "/admin/users"],
@@ -65,7 +47,7 @@ test("the Quản trị root links to each sub-page", async ({ page }) => {
     await main.getByRole("link", { name, exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`${path}$`));
     await page.goBack();
-    await expect(page.getByRole("heading", { name: "Quản trị" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Quản lý" })).toBeVisible();
   }
 });
 
@@ -74,10 +56,10 @@ test("admin creates a user, sets their password, and disables them", async ({ pa
   const users = page.getByRole("region", { name: "User", exact: true });
   const name = `bot-${Date.now()}`;
   await users.getByLabel("Tên user mới").fill(name);
-  await users.getByLabel("Vai trò").selectOption("operator");
+  await expect(users.getByLabel("Vai trò")).toHaveCount(0); // no roles (ADR 0009)
   await users.getByRole("button", { name: "+ User" }).click();
   const row = rowIn(page, "User", name);
-  await expect(row).toContainText("Operator");
+  await expect(row).toBeVisible();
 
   await row.getByLabel(`Mật khẩu Dashboard cho ${name}`).fill("a long password");
   await row.getByRole("button", { name: "Đặt mật khẩu" }).click();
@@ -91,7 +73,7 @@ test("admin creates a user, sets their password, and disables them", async ({ pa
 test("the fleet shows each Device's 9-digit Device ID", async ({ page }) => {
   const devices = await adminApi("/api/v1/devices");
   const alpha = devices.find((d: { name: string }) => d.name === "alpha");
-  await signIn(page, await newUser("admin"));
+  await signIn(page, await newUser());
   const row = page.getByRole("row").filter({ hasText: "alpha" });
   await expect(row).toContainText(alpha.device_id);
   expect(alpha.device_id).toMatch(/^\d{9}$/);
@@ -122,8 +104,8 @@ test("admin renames, revokes, deletes and merges Devices", async ({ page }) => {
 });
 
 test("the overview shows three cards with counts from the Server", async ({ page }) => {
-  await signIn(page, await newUser("admin"));
-  await page.getByRole("link", { name: "Quản trị" }).click();
+  await signIn(page, await newUser());
+  await page.getByRole("link", { name: "Quản lý" }).click();
   const main = page.getByRole("main");
   const cards: [string, string][] = [
     ["User", "/admin/users"],
@@ -180,8 +162,8 @@ test("the overview lists a failed Agent update with the Device name, error and a
     .toBe("failed");
   const error = (await adminApi("/api/v1/devices")).find((d: { id: string }) => d.id === golf.id).update.error;
 
-  await signIn(page, await newUser("admin"));
-  await page.getByRole("link", { name: "Quản trị" }).click();
+  await signIn(page, await newUser());
+  await page.getByRole("link", { name: "Quản lý" }).click();
   const updates = page.getByRole("region", { name: "Cập nhật Agent" });
   await expect(updates).toContainText(version);
   await expect(updates).toContainText("0/1");

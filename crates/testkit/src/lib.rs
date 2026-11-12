@@ -13,7 +13,7 @@ pub use live::{local_candidate_type, LiveViewer, StreamRate, TestTurn};
 pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState, UiElement};
 use rcli_agent::{Credentials, ServerAccess};
 pub use rcli_server::clock::{Clock, ManualClock};
-pub use reqwest::StatusCode;
+pub use reqwest::{Method, StatusCode};
 pub use rmcp;
 use serde_json::Value;
 use testcontainers_modules::{
@@ -127,7 +127,7 @@ impl TestSystem {
             _postgres: postgres,
             _storage: storage,
         };
-        sys.admin_totp_secret = sys.create_dashboard_user("admin", "admin").await;
+        sys.admin_totp_secret = sys.create_dashboard_user("admin").await;
         sys.admin_token = sys.sign_in("admin", &sys.admin_totp_secret.clone()).await;
         sys.api = sys.api.with_token(Some(&sys.admin_token));
         sys
@@ -180,10 +180,10 @@ impl TestSystem {
         body["token"].as_str().unwrap().to_owned()
     }
 
-    /// Creates `name` with `role`, sets its Dashboard password to `TestSystem::PASSWORD`, and returns its TOTP
+    /// Creates `name`, sets its Dashboard password to `TestSystem::PASSWORD`, and returns its TOTP
     /// secret (what `rcli login` needs); it does not sign in.
-    pub async fn create_dashboard_user(&self, name: &str, role: &str) -> String {
-        let (status, body) = self.api.post_json("/api/v1/users", &serde_json::json!({ "name": name, "role": role })).await;
+    pub async fn create_dashboard_user(&self, name: &str) -> String {
+        let (status, body) = self.api.post_json("/api/v1/users", &serde_json::json!({ "name": name })).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         let (status, enrolled) =
             self.api.post_json(&format!("/api/v1/users/{name}/credentials"), &serde_json::json!({ "password": Self::PASSWORD })).await;
@@ -326,9 +326,9 @@ impl TestSystem {
         }
     }
 
-    /// Creates a user with `role` ("admin" | "operator"), signs them in, and returns their session token.
-    pub async fn create_user(&self, name: &str, role: &str) -> String {
-        let secret = self.create_dashboard_user(name, role).await;
+    /// Creates a user, signs them in, and returns their session token.
+    pub async fn create_user(&self, name: &str) -> String {
+        let secret = self.create_dashboard_user(name).await;
         self.sign_in(name, &secret).await
     }
 
@@ -662,6 +662,10 @@ impl DeviceClient {
 
     pub async fn post_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
         self.send(self.api.http.post(self.url(path)).json(body)).await
+    }
+
+    pub async fn request(&self, method: reqwest::Method, path: &str, body: &Value) -> (StatusCode, Value) {
+        self.send(self.api.http.request(method, self.url(path)).json(body)).await
     }
 
     /// Opens a streaming GET (e.g. the Control Lock `watch`) and waits for its first chunk.

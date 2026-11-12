@@ -19,9 +19,9 @@ async fn a_password_connection_reaches_its_own_device_only() {
     let (status, body) = dev.get(&format!("/api/v1/devices/{}", other.device_id())).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "another Device: {body}");
 
-    // No admin endpoint.
+    // No Server administration.
     let (status, body) = dev.get("/api/v1/server-key").await;
-    assert_eq!((status, body["error"]["code"].clone()), (StatusCode::FORBIDDEN, json!("admin_required")));
+    assert_eq!((status, body["error"]["code"].clone()), (StatusCode::FORBIDDEN, json!("user_session_required")));
     let (status, _) = dev.get("/api/v1/users").await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 

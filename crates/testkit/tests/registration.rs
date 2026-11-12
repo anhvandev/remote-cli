@@ -64,18 +64,12 @@ async fn controller_api_requires_admin_token() {
 }
 
 #[tokio::test]
-async fn admins_read_the_server_key_and_operators_are_refused() {
+async fn a_user_reads_the_server_key() {
     let sys = TestSystem::start().await;
     let out = sys.rcli(&["server-key", "show"]).await.unwrap();
     let key = out.trim();
     assert!(key.starts_with("rk_"), "{out}");
     assert_eq!(key, sys.server_key(), "{out}");
-
-    let op = sys.api.with_token(Some(&sys.create_user("op", "operator").await));
-    let (status, body) = op.get("/api/v1/server-key").await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    let err = sys.rcli_as(&sys.create_user("op2", "operator").await, &["server-key", "show"]).await.unwrap_err();
-    assert!(err.to_string().contains("admin_required"), "{err}");
 }
 
 #[tokio::test]

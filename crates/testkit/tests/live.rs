@@ -8,8 +8,8 @@ async fn anyone_can_watch_live_peer_to_peer_and_the_indicator_shows_while_stream
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
-    let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
-    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let alice = sys.api.with_token(Some(&sys.create_user("alice").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob").await));
     assert!(!agent.platform.control_indicator());
 
     let live = LiveViewer::open(&bob, dev, false).await.expect("open live view");

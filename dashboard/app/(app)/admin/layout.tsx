@@ -1,12 +1,8 @@
-import { api, type User } from "@/lib/api";
-
-/** Admin-only guard for every page under Quản trị. */
-export default async function AdminLayout({ children }: { children: React.ReactNode }) {
-  const me = await api<User>("/api/v1/me");
-  if (me.role !== "admin") return <p className="text-sm text-muted-foreground">Chỉ Admin mới xem được trang Quản trị.</p>;
+/** Every page under Quản lý; every User may open them (ADR 0009). */
+export default function AdminLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <h2 className="mb-5 text-xl font-semibold tracking-tight">Quản trị</h2>
+      <h2 className="mb-5 text-xl font-semibold tracking-tight">Quản lý</h2>
       {children}
     </>
   );
