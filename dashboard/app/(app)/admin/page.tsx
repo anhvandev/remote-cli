@@ -11,7 +11,6 @@ export default async function AdminPage() {
   ]);
   const rollouts = groupRollouts(devices);
   const failed = devices.filter((d) => d.update?.status === "failed");
-  const count = (role: User["role"]) => users.filter((u) => u.role === role).length;
   const status = (s: DeviceStatus) => devices.filter((d) => d.status === s).length;
 
   return (
@@ -26,7 +25,7 @@ export default async function AdminPage() {
         </div>
         <div className="grid gap-1.5 px-5 text-sm">
           <p>
-            {count("admin")} Admin · {count("operator")} Operator
+            {users.length - users.filter((u) => u.disabled_at).length} User đang hoạt động
           </p>
           <p>{users.filter((u) => u.disabled_at).length} User đã vô hiệu</p>
         </div>

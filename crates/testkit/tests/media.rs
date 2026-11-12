@@ -26,7 +26,7 @@ async fn large_observations_travel_peer_to_peer_and_match_the_server_relay() {
     media.fill(&mut obs).await.unwrap();
 
     // Another Controller (so nothing is "unchanged") gets the same screen through the Server.
-    let bob = sys.create_user("bob", "operator").await;
+    let bob = sys.create_user("bob").await;
     let (_, relayed) = sys.api.with_token(Some(&bob)).post_json(&actions, &json!({ "actions": [] })).await;
     assert!(relayed["images"][0]["data"].is_string(), "{relayed}");
     assert_eq!(obs, relayed);
@@ -83,7 +83,7 @@ async fn rcli_prints_the_same_observation_as_the_server_relay() {
     sys.wait_device(dev, |d| d["status"] == "Online").await;
 
     let printed: serde_json::Value = serde_json::from_str(&sys.rcli(&["shot", dev, "--json"]).await.unwrap()).unwrap();
-    let bob = sys.create_user("bob", "operator").await;
+    let bob = sys.create_user("bob").await;
     let (_, relayed) = sys.api.with_token(Some(&bob)).post_json(&format!("/api/v1/devices/{dev}/actions"), &json!({ "actions": [] })).await;
     assert!(relayed["images"][0]["data"].is_string(), "{relayed}");
     assert_eq!(printed, relayed);

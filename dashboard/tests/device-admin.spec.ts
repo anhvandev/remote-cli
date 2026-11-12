@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { adminApi, devstack, newUser, signIn } from "./devstack";
+import { adminApi, newUser, signIn } from "./devstack";
 
 // Uses kilo: an Online Device no other spec asserts on (renaming it or changing its Device ID would break them).
 
@@ -11,7 +11,7 @@ async function freeId(): Promise<string> {
 }
 
 test("an admin changes a Device's name, password and Device ID", async ({ page }) => {
-  await signIn(page, await newUser("admin"));
+  await signIn(page, await newUser());
   await expect(page.getByRole("link", { name: "alpha" })).toBeVisible(); // the session cookie is set
   // Signing in lands on the fleet; the first test renames kilo, so look the Device up by its current name.
   const kilo = (await adminApi("/api/v1/devices")).find((d: { name: string }) => d.name.startsWith("kilo"));
@@ -54,22 +54,4 @@ test("an admin changes a Device's name, password and Device ID", async ({ page }
   await expect
     .poll(async () => (await adminApi("/api/v1/devices")).find((d: { name: string }) => d.name === "kilo-2")?.device_id)
     .toBe(id);
-});
-
-test("operators don't see the admin Device actions and the API refuses them", async ({ page, request }) => {
-  await signIn(page, await newUser("operator"));
-  await expect(page.getByRole("link", { name: "alpha" })).toBeVisible(); // the session cookie is set
-  const kilo = (await adminApi("/api/v1/devices")).find((d: { name: string }) => d.name.startsWith("kilo"));
-  await page.goto(`/devices/${kilo.id}`);
-  await expect(page.getByRole("heading", { name: /kilo/ })).toContainText("Online");
-  await expect(page.getByRole("region", { name: "Quản trị Device" })).toHaveCount(0);
-
-  // The Server refuses a direct call holding the operator's session, not just the hidden UI.
-  const token = (await page.context().cookies()).find((c) => c.name === "rcli_session")!.value;
-  const { api } = await devstack();
-  const res = await request.patch(`${api}/api/v1/devices/${kilo.id}`, {
-    headers: { authorization: `Bearer ${token}` },
-    data: { name: "nope" },
-  });
-  expect(res.status()).toBe(403);
 });

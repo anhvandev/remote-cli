@@ -1,8 +1,8 @@
 //! Admin Device actions: change the Device ID, rename, and set a new Device Password from the Dashboard
-//! (`PATCH /api/v1/devices/{device}`). A new password is pushed to the Device's Secret Store live; Admins never
-//! read a password back. Operators cannot reach these actions.
+//! (`PATCH /api/v1/devices/{device}`). A new password is pushed to the Device's Secret Store live; Users never
+//! read a password back. Every User may; a password connection may not (ADR 0009).
 
-use rcli_testkit::{StatusCode, temp_dir, TestSystem};
+use rcli_testkit::{Method, StatusCode, temp_dir, TestSystem};
 use serde_json::json;
 
 /// An Online Device whose Agent has an IPC socket trusted as root (the harness is never root), so the test can read
@@ -99,16 +99,38 @@ async fn an_admin_renames_a_device() {
 }
 
 #[tokio::test]
-async fn operators_cannot_change_a_device_identity() {
+async fn any_user_changes_a_device_but_a_password_connection_cannot_reach_former_admin_routes() {
     let sys = TestSystem::start().await;
-    let (agent, _socket) = device(&sys, "operator").await;
+    let (agent, _socket) = device(&sys, "roles").await;
     let id = agent.device_id().to_owned();
-    let operator = sys.api.with_token(Some(&sys.create_user("op-11", "operator").await));
+    let user = sys.api.with_token(Some(&sys.create_user("op-11").await));
+    let (status, body) = user.patch_json(&format!("/api/v1/devices/{id}"), &json!({ "name": "by-op" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
-    for body in [json!({ "device_password": "longenough" }), json!({ "device_id": "987654321" }), json!({ "name": "x" })] {
-        let (status, body) = operator.patch_json(&format!("/api/v1/devices/{id}"), &body).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert_eq!(body["error"]["code"], "admin_required", "{body}");
+    // Dropping roles never widens Device-Password access: every route that used to be admin-only refuses it.
+    let dev = sys.device_client(&id, &agent.device_password().unwrap());
+    let path = format!("/api/v1/devices/{id}");
+    for (route, (status, body)) in [
+        ("server-key", dev.get("/api/v1/server-key").await),
+        ("users", dev.get("/api/v1/users").await),
+        ("create user", dev.post_json("/api/v1/users", &json!({ "name": "x" })).await),
+        ("disable user", dev.post("/api/v1/users/admin/disable").await),
+        ("credentials", dev.post_json("/api/v1/users/admin/credentials", &json!({ "password": "longenough" })).await),
+        ("audit", dev.get("/api/v1/audit").await),
+        ("server settings", dev.get("/api/v1/server-settings").await),
+        ("rotate", dev.post("/api/v1/server-settings/server-key/rotate").await),
+        ("server address", dev.request(Method::PUT, "/api/v1/server-settings/server-address", &json!({ "address": "x" })).await),
+        ("api address", dev.request(Method::PUT, "/api/v1/server-settings/api-address", &json!({ "address": "https://x" })).await),
+        ("agent build", dev.request(Method::PUT, "/api/v1/agent-builds/9.9.9/linux-x86_64", &json!({})).await),
+        ("package", dev.request(Method::PUT, "/api/v1/packages/deb/x86_64", &json!({})).await),
+        ("rename", dev.request(Method::PATCH, &path, &json!({ "name": "x" })).await),
+        ("delete", dev.request(Method::DELETE, &path, &json!({})).await),
+        ("revoke", dev.post(&format!("{path}/revoke")).await),
+        ("merge", dev.post_json(&format!("{path}/merge"), &json!({ "from": "x" })).await),
+        ("force-release", dev.post(&format!("{path}/lock/force-release")).await),
+    ] {
+        assert_eq!(status, StatusCode::FORBIDDEN, "{route}: {body}");
+        assert_eq!(body["error"]["code"], "user_session_required", "{route}: {body}");
     }
 }
 

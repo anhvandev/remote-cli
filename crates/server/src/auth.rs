@@ -1,5 +1,5 @@
-//! Auth: users with a role (admin, operator) and their sessions.
-//! The bootstrap token from config acts as an admin only until an enabled admin has a live session (first run).
+//! Auth: users and their sessions. Every User may do everything (ADR 0009).
+//! The bootstrap token from config acts as a User only until an enabled User has a live session (first run).
 //! A session is an API token with an expiry, from Dashboard sign-in or `rcli login`.
 
 use chrono::{DateTime, Utc};
@@ -9,14 +9,10 @@ use uuid::Uuid;
 
 use crate::AppState;
 
-pub const ROLES: [&str; 2] = ["admin", "operator"];
-
 #[derive(Serialize, Debug, Clone, sqlx::FromRow)]
 pub struct User {
     pub id: Uuid,
     pub name: String,
-    /// "admin", "operator", or "controller" for a password connection.
-    pub role: String,
     pub disabled_at: Option<DateTime<Utc>>,
     /// Set for a password connection: the only Device it may reach.
     #[sqlx(default)]
@@ -25,11 +21,6 @@ pub struct User {
 }
 
 impl User {
-    /// Server administration only: a password connection is never an admin.
-    pub fn is_admin(&self) -> bool {
-        self.role == "admin" && self.device_scope.is_none()
-    }
-
     /// How the person at the Device sees this Controller: `<host> (<IP>)` for a password connection, `<name>
     /// (Dashboard)` for a Dashboard User. `rcli agent info` lists and `disconnect` matches this name.
     pub fn controller_display(&self) -> String {
@@ -72,11 +63,11 @@ fn controller_user(controller: &str, ip: &str) -> User {
     let name = format!("{} ({ip})", controller.replace(['(', ')'], "").trim());
     let digest = Sha256::digest(name.as_bytes());
     let id_bytes = <[u8; 16]>::try_from(&digest[..16]).expect("16 bytes");
-    User { id: Uuid::from_bytes(id_bytes), name, role: "controller".into(), disabled_at: None, device_scope: None }
+    User { id: Uuid::from_bytes(id_bytes), name, disabled_at: None, device_scope: None }
 }
 
 /// A password connection: Server Key secret + Device ID + Device Password. It reaches only its own Device and has
-/// no admin rights. Its display name is `<controller hostname> (<IP>)` in audit entries and as Control Lock holder.
+/// no Server administration rights. Its display name is `<controller hostname> (<IP>)` in audit entries and as Control Lock holder.
 /// Wrong Device Passwords are counted per (Device ID, IP): the fifth locks the pair out for a minute, each later
 /// lockout doubles, and a correct password after that resets the count.
 // shortcut: a wrong Server Key is not counted (it reveals nothing about a password); a leaked key still has to pass
@@ -204,6 +195,8 @@ pub enum Error {
     BadRequest(String),
     NameTaken,
     NotFound,
+    /// Disabling oneself or the last enabled User.
+    LastUser(String),
     Internal(anyhow::Error),
 }
 
@@ -217,7 +210,7 @@ fn hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
-const USER_COLS: &str = "id, name, role, disabled_at";
+const USER_COLS: &str = "id, name, disabled_at";
 
 /// The user a bearer token belongs to, if the token is live and the user enabled. Only Dashboard sessions expire;
 /// a token without an expiry is from the removed `rcli token` and is refused.
@@ -235,32 +228,27 @@ pub async fn authenticate(state: &AppState, token: &str) -> anyhow::Result<Optio
     if user.is_some() || token != state.config.bootstrap_admin_token {
         return Ok(user);
     }
-    let admin_exists: bool = sqlx::query_scalar(
+    let user_signed_in: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM api_tokens t JOIN users u ON u.id = t.user_id
-         WHERE u.role = 'admin' AND u.disabled_at IS NULL AND t.revoked_at IS NULL
-           AND t.expires_at > $1)",
+         WHERE u.disabled_at IS NULL AND t.revoked_at IS NULL AND t.expires_at > $1)",
     )
     .bind(state.clock.now())
     .fetch_one(&state.db)
     .await?;
-    Ok((!admin_exists).then(|| User { id: Uuid::nil(), name: "bootstrap".into(), role: "admin".into(), disabled_at: None, device_scope: None }))
+    Ok((!user_signed_in).then(|| User { id: Uuid::nil(), name: "bootstrap".into(), disabled_at: None, device_scope: None }))
 }
 
-pub async fn create_user(state: &AppState, name: &str, role: &str) -> Result<User, Error> {
+pub async fn create_user(state: &AppState, name: &str) -> Result<User, Error> {
     // Names go into URL paths (`/users/{name}/...`), so keep them URL-safe.
     if name.is_empty() || name.len() > 64 || !name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
         return Err(Error::BadRequest("name must be 1-64 characters of A-Z a-z 0-9 . _ -".into()));
     }
-    if !ROLES.contains(&role) {
-        return Err(Error::BadRequest(format!("role must be one of {ROLES:?}")));
-    }
     sqlx::query_as::<_, User>(&format!(
-        "INSERT INTO users (id, name, role, created_at) VALUES ($1, $2, $3, $4)
+        "INSERT INTO users (id, name, created_at) VALUES ($1, $2, $3)
          ON CONFLICT (name) DO NOTHING RETURNING {USER_COLS}"
     ))
     .bind(Uuid::new_v4())
     .bind(name)
-    .bind(role)
     .bind(state.clock.now())
     .fetch_optional(&state.db)
     .await?
@@ -271,16 +259,28 @@ pub async fn list_users(state: &AppState) -> anyhow::Result<Vec<User>> {
     Ok(sqlx::query_as(&format!("SELECT {USER_COLS} FROM users ORDER BY name")).fetch_all(&state.db).await?)
 }
 
-/// Disables a user; all of their tokens stop working.
-pub async fn disable_user(state: &AppState, name: &str) -> Result<User, Error> {
-    sqlx::query_as::<_, User>(&format!(
-        "UPDATE users SET disabled_at = COALESCE(disabled_at, $2) WHERE name = $1 RETURNING {USER_COLS}"
+/// Disables a user; all of their tokens stop working. `by` may not disable themselves, and the last enabled User
+/// stays enabled, so someone can always sign in.
+pub async fn disable_user(state: &AppState, by: &User, name: &str) -> Result<User, Error> {
+    if by.name == name {
+        return Err(Error::LastUser("you cannot disable yourself".into()));
+    }
+    // shortcut: two Users disabling each other at the same instant can both succeed (READ COMMITTED); lock the
+    // users table here if that ever matters.
+    let disabled = sqlx::query_as::<_, User>(&format!(
+        "UPDATE users SET disabled_at = COALESCE(disabled_at, $2) WHERE name = $1
+           AND (disabled_at IS NOT NULL OR EXISTS (SELECT 1 FROM users o WHERE o.name <> $1 AND o.disabled_at IS NULL))
+         RETURNING {USER_COLS}"
     ))
     .bind(name)
     .bind(state.clock.now())
     .fetch_optional(&state.db)
-    .await?
-    .ok_or(Error::NotFound)
+    .await?;
+    if let Some(user) = disabled {
+        return Ok(user);
+    }
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE name = $1)").bind(name).fetch_one(&state.db).await?;
+    Err(if exists { Error::LastUser("the last enabled User cannot be disabled".into()) } else { Error::NotFound })
 }
 
 /// Revokes the token itself (sign-out from `rcli logout` or the Dashboard).

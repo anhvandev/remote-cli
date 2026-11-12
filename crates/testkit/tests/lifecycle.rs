@@ -9,10 +9,6 @@ async fn revoked_device_is_disconnected_and_cannot_reconnect() {
     let id = agent.device_id().to_owned();
     sys.wait_device(&id, |d| d["status"] == "Online" && d["last_seen_at"].is_null()).await;
 
-    let operator = sys.api.with_token(Some(&sys.create_user("op", "operator").await));
-    let (status, _) = operator.post(&format!("/api/v1/devices/{id}/revoke")).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-
     let (status, body) = sys.api.post("/api/v1/devices/lab-pc/revoke").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["revoked_at"].is_string(), "{body}");
@@ -26,7 +22,7 @@ async fn revoked_device_is_disconnected_and_cannot_reconnect() {
 }
 
 #[tokio::test]
-async fn admin_renames_and_deletes_devices_with_rcli() {
+async fn a_user_renames_and_deletes_devices_with_rcli() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     let id = agent.device_id().to_owned();
@@ -37,9 +33,6 @@ async fn admin_renames_and_deletes_devices_with_rcli() {
     sys.wait_device(&id, |d| d["name"] == "reception").await;
     let (status, body) = sys.api.patch_json(&format!("/api/v1/devices/{id}"), &serde_json::json!({"name": " "})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    let operator = sys.api.with_token(Some(&sys.create_user("op", "operator").await));
-    let (status, _) = operator.delete(&format!("/api/v1/devices/{id}")).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
 
     sys.rcli(&["device", "delete", "reception"]).await.unwrap();
     let (_, devices) = sys.api.get("/api/v1/devices").await;

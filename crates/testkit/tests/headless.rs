@@ -82,7 +82,7 @@ async fn metrics_exec_shell_power_and_wake_still_work() {
     assert_eq!(out["stdout"], "hi\n");
 
     // shell: the stream stays open until the shell exits, so assert acceptance and drop it.
-    let token = sys.create_user("alice", "operator").await;
+    let token = sys.create_user("alice").await;
     let base = format!("http://{}", sys.server.http_addr);
     let resp = reqwest::Client::new()
         .post(format!("{base}/api/v1/devices/{dev}/shell"))

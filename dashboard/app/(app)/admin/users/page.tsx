@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import * as act from "../actions";
 import { Form } from "../form";
-import { card, cardHead, nativeSelect, title } from "../../styles";
+import { card, cardHead, title } from "../../styles";
 
 export default async function UsersPage() {
   const users = await api<User[]>("/api/v1/users");
@@ -15,10 +15,6 @@ export default async function UsersPage() {
         <h3 className={title}>User</h3>
         <Form action={act.createUser}>
           <Input name="name" aria-label="Tên user mới" placeholder="tên user" required className="h-8 w-40" />
-          <select name="role" aria-label="Vai trò" defaultValue="operator" className={nativeSelect}>
-            <option value="operator">Operator</option>
-            <option value="admin">Admin</option>
-          </select>
           <Button size="sm" variant="secondary">
             + User
           </Button>
@@ -28,7 +24,6 @@ export default async function UsersPage() {
         <TableHeader>
           <TableRow className="hover:bg-transparent">
             <TableHead>User</TableHead>
-            <TableHead>Vai trò</TableHead>
             <TableHead />
           </TableRow>
         </TableHeader>
@@ -42,9 +37,6 @@ export default async function UsersPage() {
                     đã vô hiệu
                   </Badge>
                 )}
-              </TableCell>
-              <TableCell>
-                <Badge variant="secondary">{u.role === "admin" ? "Admin" : "Operator"}</Badge>
               </TableCell>
               <TableCell className="whitespace-normal">
                 {!u.disabled_at && (

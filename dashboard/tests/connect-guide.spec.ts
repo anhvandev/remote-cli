@@ -3,9 +3,9 @@ import { newUser, signIn } from "./devstack";
 
 test.use({ permissions: ["clipboard-read", "clipboard-write"] });
 
-/** The guide is for every signed-in User (ticket 18), so a plain Operator opens it. */
+/** The guide is for every signed-in User (ticket 18), so any User opens it. */
 async function openGuide(page: Page) {
-  await signIn(page, await newUser("operator"));
+  await signIn(page, await newUser());
   await page.getByRole("link", { name: "Hướng dẫn kết nối" }).click();
   await expect(page).toHaveURL(/\/connect-guide$/);
   await expect(page.getByRole("heading", { name: "Hướng dẫn kết nối" })).toBeVisible();

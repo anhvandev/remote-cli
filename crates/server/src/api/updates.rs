@@ -9,7 +9,7 @@ use rcli_protocol::update::MAX_BUILD_BYTES;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{bad_request, devices::resolve, Admin, ApiError};
+use super::{bad_request, devices::resolve, ApiError, SignedIn};
 use crate::{
     storage,
     updates::{self, UpdateError},
@@ -87,7 +87,7 @@ struct Signed {
 /// Body: the raw build, streamed into storage. Builds must be signed with the update key; the Server checks the
 /// signature against the streamed bytes' sha256, Agents verify it again. A refused upload leaves no row and no object.
 async fn publish(
-    Admin(user): Admin,
+    SignedIn(user): SignedIn,
     State(state): State<super::State>,
     Path((version, target)): Path<(String, String)>,
     Query(q): Query<Signed>,
@@ -140,7 +140,7 @@ struct Rollout {
 
 /// Body: `{"all": true}` or `{"devices": [device, ...]}`.
 async fn rollout(
-    _: Admin,
+    _: SignedIn,
     State(state): State<super::State>,
     Path(version): Path<String>,
     body: Result<Json<Rollout>, JsonRejection>,

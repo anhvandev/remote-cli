@@ -69,7 +69,7 @@ export default async function SettingsPage() {
             </div>
           </Form>
           <p className="text-muted-foreground">
-            Địa chỉ https:// công khai của Dashboard, nơi Controller gọi tới Server. Server tự ghi lại lần đầu Admin mở
+            Địa chỉ https:// công khai của Dashboard, nơi Controller gọi tới Server. Server tự ghi lại lần đầu một User mở
             Dashboard qua https:// (không tính http://, localhost hay IP nội bộ). Sửa ở đây nếu nó sai hoặc Dashboard
             đổi địa chỉ: mọi Agent nhận địa chỉ mới ở lần kết nối sau.
           </p>

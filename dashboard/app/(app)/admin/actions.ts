@@ -1,6 +1,6 @@
 "use server";
 // Admin server actions. Each returns a Result for <Form/>: the one-time TOTP secret is shown once in
-// `message` and never stored by the Dashboard. The Server enforces admin-only on every call.
+// `message` and never stored by the Dashboard.
 import { api, json } from "@/lib/api";
 import { run } from "./run";
 
@@ -12,7 +12,7 @@ const seg = encodeURIComponent;
 
 export async function createUser(_: Result, form: FormData) {
   return run("/admin", async () => {
-    await api("/api/v1/users", json("POST", { name: str(form, "name"), role: str(form, "role") }));
+    await api("/api/v1/users", json("POST", { name: str(form, "name") }));
   });
 }
 

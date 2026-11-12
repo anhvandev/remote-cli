@@ -1,5 +1,5 @@
 "use client";
-// Admin-only actions on a Device's page: change the Device ID, rename it, and set a new Device Password.
+// Actions on a Device's page: change the Device ID, rename it, and set a new Device Password.
 // The Server pushes the ID and password to the Device (which must be Online); the current password is never shown.
 import { useRouter } from "next/navigation";
 import { useState } from "react";

@@ -1,6 +1,6 @@
 "use client";
 // Wake and power buttons: the same Controller API operations as `rcli wake` / `rcli power`. The Server enforces the
-// rules; the buttons only mirror them (Restart/Shut down/Sleep need the Control Lock free, held by me, or admin).
+// rules; the buttons only mirror them (Restart/Shut down/Sleep need the Control Lock free or held by me).
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { power, wake, type Sent } from "../../../actions";
@@ -15,12 +15,12 @@ const ACTIONS = [
   { action: "shutdown", label: "Shut down", confirm: true },
 ] as const;
 
-export function PowerButtons(props: { device: string; name: string; status: DeviceStatus; me: string; admin: boolean }) {
+export function PowerButtons(props: { device: string; name: string; status: DeviceStatus; me: string }) {
   const lock = useLock();
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ label: string } & Sent>();
-  const blocked = !!lock.holder && lock.holder !== props.me && !props.admin;
+  const blocked = !!lock.holder && lock.holder !== props.me;
   const online = props.status === "Online";
 
   async function send(label: string, run: () => Promise<Sent>) {

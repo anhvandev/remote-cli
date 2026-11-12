@@ -9,7 +9,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 
-use super::{devices::{resolve, resolve_for}, Admin, ApiError, Caller};
+use super::{devices::{resolve, resolve_for}, ApiError, Caller, SignedIn};
 use crate::{
     audit,
     control_lock::{self, Lock},
@@ -64,10 +64,10 @@ async fn release(Caller(user): Caller, State(state): State<super::State>, Path(i
     Ok(body(None))
 }
 
-async fn force_release(Admin(admin): Admin, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn force_release(SignedIn(user): SignedIn, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
     let device = resolve(&state, &id).await?;
     if let Some(lock) = control_lock::force_release(&state, device).await? {
-        audit::record(&state, &admin, device, "lock.force_release", json!({ "holder": lock.holder }), json!({ "error": null })).await?;
+        audit::record(&state, &user, device, "lock.force_release", json!({ "holder": lock.holder }), json!({ "error": null })).await?;
     }
     Ok(body(None))
 }

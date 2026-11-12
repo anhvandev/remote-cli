@@ -9,7 +9,7 @@ test("sign in with password + TOTP and open a Device", async ({ page }) => {
   const row = (name: string) => page.getByRole("row").filter({ hasText: name });
   await expect(row("alpha")).toContainText("Online");
   await expect(row("bravo")).toContainText("Offline");
-  await expect(page.getByRole("navigation")).toContainText(`${user.name} · Operator`);
+  await expect(page.getByRole("navigation")).toContainText(user.name);
 
   await page.getByRole("link", { name: "alpha" }).click();
   await expect(page.getByRole("heading", { name: /alpha/ })).toContainText("Online");
