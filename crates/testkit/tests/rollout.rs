@@ -1,4 +1,4 @@
-use rcli_protocol::agent::AgentUpdate;
+use rcli_protocol::agent::{server_message, AgentUpdate, ApiAddress};
 use rcli_testkit::{eventually, StatusCode, TestSystem};
 
 #[tokio::test]
@@ -87,4 +87,82 @@ async fn a_device_stays_responsive_while_a_large_build_downloads() {
 
     agent.platform.update(|s| s.hold_install = false);
     sys.wait_device(agent.device_id(), |d| d["agent_version"] == "99.0.0").await;
+}
+
+async fn set_minimum_version(sys: &TestSystem, version: &str) {
+    let (status, body) = sys.api.put_json("/api/v1/server-settings/minimum-version", &serde_json::json!({ "version": version })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// Raising the Minimum Version reaches an Agent already connected: it installs the Latest Build and reconnects with it.
+#[tokio::test]
+async fn an_agent_below_the_minimum_version_updates_itself_to_the_latest_build() {
+    let sys = TestSystem::start().await;
+    serve_builds_to_agents(&sys).await;
+    let agent = sys.start_agent("pc-1").await;
+    let d = sys.wait_device(agent.device_id(), |d| d["agent_version"] == env!("CARGO_PKG_VERSION")).await;
+    assert_eq!(d["needs_update"], false, "{d}");
+    assert!(d["update_error"].is_null(), "{d}");
+    sys.upload_build("99.0.0", &rcli_agent::target(), b"new agent binary").await;
+
+    set_minimum_version(&sys, "1.0.0").await;
+
+    let d = sys.wait_device(agent.device_id(), |d| d["agent_version"] == "99.0.0").await;
+    assert_eq!(d["needs_update"], false, "{d}");
+    assert_eq!(agent.platform.installed_updates(), ["99.0.0"]);
+}
+
+/// Below the Minimum Version but the Latest Build is not newer, or at the Minimum Version: no update is sent, even
+/// an hour later. The Device still shows it needs one, in the API and in `rcli devices`.
+#[tokio::test]
+async fn no_agent_update_without_a_newer_build_or_at_the_minimum_version() {
+    let sys = TestSystem::start().await;
+    serve_builds_to_agents(&sys).await;
+    sys.upload_build("0.0.1", &rcli_agent::target(), b"old agent binary").await;
+    set_minimum_version(&sys, "1.0.0").await;
+    let agent = sys.start_agent("pc-1").await;
+    sys.wait_device(agent.device_id(), |d| d["agent_version"] == env!("CARGO_PKG_VERSION") && d["needs_update"] == true).await;
+    let out = sys.rcli(&["devices"]).await.unwrap();
+    assert!(out.contains("update needed"), "{out}");
+
+    set_minimum_version(&sys, env!("CARGO_PKG_VERSION")).await;
+    sys.upload_build("99.0.0", &rcli_agent::target(), b"new agent binary").await;
+    sys.advance(3600);
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    assert!(agent.platform.installed_updates().is_empty());
+    let d = sys.wait_device(agent.device_id(), |_| true).await;
+    assert_eq!(d["needs_update"], false, "{d}");
+}
+
+/// An Agent below the Minimum Version on connecting gets the Latest Build; a failure (here: no API Address to download
+/// from) shows its reason until the Minimum Version is lowered to the Device's version, comes back when raised again,
+/// and is retried after an hour.
+#[tokio::test]
+async fn a_failed_self_update_shows_its_reason_and_is_retried_after_an_hour() {
+    let sys = TestSystem::start().await;
+    sys.upload_build("99.0.0", &rcli_agent::target(), b"new agent binary").await;
+    set_minimum_version(&sys, "1.0.0").await;
+
+    let agent = sys.start_agent("pc-1").await;
+    let d = sys.wait_device(agent.device_id(), |d| !d["update_error"].is_null()).await;
+    assert!(d["update_error"].as_str().unwrap().contains("API Address"), "{d}");
+    assert_eq!(d["needs_update"], true, "{d}");
+    let out = sys.rcli(&["devices"]).await.unwrap();
+    assert!(out.contains("API Address"), "{out}");
+
+    set_minimum_version(&sys, env!("CARGO_PKG_VERSION")).await;
+    let d = sys.wait_device(agent.device_id(), |_| true).await;
+    assert!(d["update_error"].is_null(), "{d}");
+    set_minimum_version(&sys, "1.0.0").await;
+    let d = sys.wait_device(agent.device_id(), |d| !d["update_error"].is_null()).await;
+
+    // Agents learn the API Address on connecting; hand it to this one without reconnecting, which would retry at once.
+    serve_builds_to_agents(&sys).await;
+    let url = format!("http://{}", sys.server.http_addr);
+    sys.server.state.agents.send(d["id"].as_str().unwrap().parse().unwrap(), server_message::Msg::ApiAddress(ApiAddress { url }));
+    sys.advance(3600);
+    let d = sys.wait_device(agent.device_id(), |d| d["agent_version"] == "99.0.0").await;
+    assert!(d["update_error"].is_null(), "{d}");
+    assert_eq!(agent.platform.installed_updates(), ["99.0.0"]);
 }

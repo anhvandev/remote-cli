@@ -706,7 +706,11 @@ where
                         None => str_of(&d["status"]).to_owned(),
                     },
                     d["last_seen_at"].as_str().unwrap_or("-"),
-                    d["agent_version"].as_str().unwrap_or("-"),
+                    match (d["needs_update"].as_bool(), d["update_error"].as_str()) {
+                        (Some(true), Some(e)) => format!("{} (update needed: {e})", str_of(&d["agent_version"])),
+                        (Some(true), None) => format!("{} (update needed)", str_of(&d["agent_version"])),
+                        _ => d["agent_version"].as_str().unwrap_or("-").to_owned(),
+                    },
                 );
             }
             (devices, text)

@@ -107,6 +107,11 @@ impl Agents {
         }
     }
 
+    /// The Devices whose Agent is connected now.
+    pub fn connected(&self) -> Vec<uuid::Uuid> {
+        self.senders.lock().unwrap().keys().copied().collect()
+    }
+
     fn reply(&self, device: uuid::Uuid, request_id: u64, msg: agent_message::Msg) {
         if let Some(tx) = self.pending.lock().unwrap().remove(&(device, request_id)) {
             let _ = tx.send(msg);
@@ -116,6 +121,8 @@ impl Agents {
 
 /// No frame (heartbeats arrive every 10 s) for this long means the connection is dead.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often a session re-offers the Latest Build to an Agent below the Minimum Version (a failed update retries).
+const UPDATE_RETRY: chrono::Duration = chrono::Duration::hours(1);
 
 pub fn acceptor(ca: &crate::pki::Ca, hostnames: Vec<String>) -> anyhow::Result<TlsAcceptor> {
     let mut roots = RootCertStore::empty();
@@ -213,6 +220,9 @@ async fn session<T>(
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    // Checked every second against the Server clock, so tests can move time.
+    let mut every_second = tokio::time::interval(Duration::from_secs(1));
+    let mut next_offer = state.clock.now() + UPDATE_RETRY;
     loop {
         tokio::select! {
             msg = tokio::time::timeout(READ_TIMEOUT, conn.recv::<AgentMessage>()) => {
@@ -233,6 +243,7 @@ where
                         state.agents.reply(device, p.request_id, agent_message::Msg::Processes(p));
                     }
                     Some(agent_message::Msg::Hello(h)) => updates::agent_hello(state, device, &h).await?,
+                    Some(agent_message::Msg::UpdateFailed(f)) => updates::agent_failed(state, device, &f).await?,
                     Some(agent_message::Msg::IdentityUpdate(u)) => {
                         let reply = identity_update(state, device, u).await;
                         conn.send(&ServerMessage { msg: Some(server_message::Msg::IdentityUpdated(reply)) }).await?;
@@ -268,6 +279,12 @@ where
                 // An Error is only sent by `Agents::disconnect`.
                 if matches!(msg.msg, Some(server_message::Msg::Error(_))) {
                     return Ok(());
+                }
+            }
+            _ = every_second.tick() => {
+                if state.clock.now() >= next_offer {
+                    next_offer = state.clock.now() + UPDATE_RETRY;
+                    updates::offer_update(state, device).await?;
                 }
             }
         }

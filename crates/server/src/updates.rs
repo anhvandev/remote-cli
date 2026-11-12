@@ -1,6 +1,6 @@
 //! Update Distribution: stores Agent Builds (unsigned, ADR 0008) and finds the Latest Build for a target.
 
-use rcli_protocol::agent::AgentHello;
+use rcli_protocol::agent::{server_message, AgentHello, AgentUpdate, UpdateFailed};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -52,6 +52,55 @@ pub async fn agent_hello(state: &AppState, device: Uuid, hello: &AgentHello) -> 
         .bind(&hello.target)
         .execute(&state.db)
         .await?;
+    clear_stale_errors(state).await?;
+    offer_update(state, device).await
+}
+
+/// Whether `version` is below the Minimum Version `minimum` (empty = none). A version that is not semver never is.
+pub fn below(version: Option<&str>, minimum: &str) -> bool {
+    match (version.map(semver::Version::parse), semver::Version::parse(minimum)) {
+        (Some(Ok(v)), Ok(min)) => v < min,
+        _ => false,
+    }
+}
+
+pub async fn agent_failed(state: &AppState, device: Uuid, failed: &UpdateFailed) -> anyhow::Result<()> {
+    sqlx::query("UPDATE devices SET update_error = $2 WHERE id = $1").bind(device).bind(&failed.reason).execute(&state.db).await?;
+    Ok(())
+}
+
+/// Sends the Agent the Latest Build when it is below the Minimum Version and the Latest Build is above it.
+pub async fn offer_update(state: &AppState, device: Uuid) -> anyhow::Result<()> {
+    let row: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT agent_version, agent_target FROM devices WHERE id = $1").bind(device).fetch_optional(&state.db).await?;
+    let Some((Some(version), Some(target))) = row else { return Ok(()) };
+    if !below(Some(&version), &state.settings.minimum_version().await) {
+        return Ok(());
+    }
+    let Some(build) = latest_build(state, &target).await? else { return Ok(()) };
+    if below(Some(&version), &build.version) {
+        let update = AgentUpdate { version: build.version, target, size: build.size as u64, sha256: build.sha256 };
+        state.agents.send(device, server_message::Msg::Update(update));
+    }
+    Ok(())
+}
+
+/// A saved Minimum Version clears errors it made stale and reaches every connected Agent.
+pub async fn minimum_version_changed(state: &AppState) -> anyhow::Result<()> {
+    clear_stale_errors(state).await?;
+    for device in state.agents.connected() {
+        offer_update(state, device).await?;
+    }
+    Ok(())
+}
+
+/// Clears the self-update error of every Device no longer below the Minimum Version.
+async fn clear_stale_errors(state: &AppState) -> anyhow::Result<()> {
+    let minimum = state.settings.minimum_version().await;
+    let failed: Vec<(Uuid, Option<String>)> =
+        sqlx::query_as("SELECT id, agent_version FROM devices WHERE update_error IS NOT NULL").fetch_all(&state.db).await?;
+    let stale: Vec<Uuid> = failed.into_iter().filter(|(_, v)| !below(v.as_deref(), &minimum)).map(|(id, _)| id).collect();
+    sqlx::query("UPDATE devices SET update_error = NULL WHERE id = ANY($1)").bind(&stale).execute(&state.db).await?;
     Ok(())
 }
 

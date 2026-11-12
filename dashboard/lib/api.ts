@@ -78,7 +78,7 @@ async function parse<T>(res: Response): Promise<T> {
 // Shapes of Controller API responses (see crates/server/src/api).
 export type User = { id: string; name: string; disabled_at: string | null };
 /** GET /api/v1/server-settings: the Server Key, Server Address and API Address ("" until learned) Users edit. */
-export type ServerSettings = { server_key: string; ca_fingerprint: string; server_address: string; api_address: string };
+export type ServerSettings = { server_key: string; ca_fingerprint: string; server_address: string; api_address: string; minimum_version: string };
 export type DeviceStatus = "Online" | "Offline" | "Waking";
 export type Device = {
   id: string;
@@ -91,6 +91,10 @@ export type Device = {
   revoked_at: string | null;
   /** "Wake failed" when the last Wake timed out and the Device is still Offline. */
   wake_error: string | null;
+  /** A Minimum Version is set and `agent_version` is below it. */
+  needs_update: boolean;
+  /** Why the last self-update toward the Minimum Version failed. */
+  update_error: string | null;
 };
 export type Inventory = {
   os: string;

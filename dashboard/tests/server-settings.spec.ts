@@ -77,3 +77,21 @@ test("an admin reads the API Address and corrects it", async ({ page }) => {
   await expect(page.getByRole("region", { name: "API Address" }).getByRole("alert")).toContainText("https://");
   expect((await adminApi("/api/v1/server-settings")).api_address).toBe("https://rcli.example.com");
 });
+
+test("a Minimum Version above a Device's Agent shows the update needed badge on the Devices page", async ({ page }) => {
+  await openSettings(page);
+  const card = page.getByRole("region", { name: "Minimum Version" });
+  await card.getByRole("textbox", { name: "Minimum Version" }).fill("99.0.0");
+  await card.getByRole("button", { name: "Lưu Minimum Version" }).click();
+  await expect(card.getByRole("status")).toContainText("Đã đặt Minimum Version: 99.0.0");
+
+  await page.goto("/");
+  const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: "alpha", exact: true }) });
+  await expect(row).toContainText(/update needed · \S+ < 99\.0\.0/);
+
+  // Back to none, so the other specs see no badge.
+  await page.goto("/admin/settings");
+  await card.getByRole("textbox", { name: "Minimum Version" }).fill("");
+  await card.getByRole("button", { name: "Lưu Minimum Version" }).click();
+  await expect(card.getByRole("status")).toContainText("Đã bỏ Minimum Version");
+});
