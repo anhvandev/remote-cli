@@ -1,17 +1,19 @@
 use axum::{
-    body::Bytes,
-    extract::{rejection::JsonRejection, DefaultBodyLimit, Path, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, Path, Query, Request, State},
+    http::{HeaderMap, StatusCode},
+    response::Response,
     routing::{get, post, put},
-    Json, Router,
+    Json, RequestExt, Router,
 };
 use rcli_protocol::update::MAX_BUILD_BYTES;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{bad_request, devices::resolve, Admin, ApiError};
-use crate::updates::{self, UpdateError};
+use crate::{
+    storage,
+    updates::{self, UpdateError},
+};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -33,24 +35,25 @@ async fn current(
     State(state): State<super::State>,
     Path(target): Path<String>,
     Query(q): Query<Current>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let presented = headers.get("x-rcli-server-key").and_then(|v| v.to_str().ok()).unwrap_or_default();
     if !crate::server_key::admits(&state, presented).await {
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or wrong Server Key"));
     }
-    let (version, signature, build) = updates::upgrade_build(&state, q.device.as_deref(), &target)
-        .await?
-        .ok_or_else(|| no_build(&target))?;
-    Ok((
-        [
-            ("x-rcli-version", version),
-            ("x-rcli-signature", hex::encode(signature)),
-            ("content-type", "application/octet-stream".to_owned()),
-        ],
-        build,
-    )
-        .into_response())
+    let build = updates::upgrade_build(&state, q.device.as_deref(), &target).await?.ok_or_else(|| no_build(&target))?;
+    build_file(&state, build, &headers).await
+}
+
+/// Streams a stored build (or the requested `Range` of it) with its version, signature and sha256 headers.
+pub(super) async fn build_file(state: &super::State, build: updates::Build, headers: &HeaderMap) -> Result<Response, ApiError> {
+    let (version, signature, sha256, size) = build;
+    let mut response = super::install::stored_file(state, storage::AGENT_BUILDS, &sha256, size as u64, headers).await?;
+    let h = response.headers_mut();
+    h.insert("x-rcli-version", version.parse().map_err(anyhow::Error::from)?);
+    h.insert("x-rcli-signature", hex::encode(signature).parse().expect("hex"));
+    h.insert("x-rcli-sha256", sha256.parse().expect("hex"));
+    Ok(response)
 }
 
 /// 404 `no_build`: nothing for `target` has been rolled out (a newer publish alone does not count).
@@ -81,13 +84,14 @@ struct Signed {
     signature: Option<String>,
 }
 
-/// Body: the raw build. Builds must be signed with the update key; the Server checks the signature, Agents verify it again.
+/// Body: the raw build, streamed into storage. Builds must be signed with the update key; the Server checks the
+/// signature against the streamed bytes' sha256, Agents verify it again. A refused upload leaves no row and no object.
 async fn publish(
     Admin(user): Admin,
     State(state): State<super::State>,
     Path((version, target)): Path<(String, String)>,
     Query(q): Query<Signed>,
-    build: Bytes,
+    request: Request,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let valid = |s: &str| (1..=64).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c));
     if !valid(&version) || !valid(&target) {
@@ -98,27 +102,39 @@ async fn publish(
         .and_then(|s| hex::decode(s).ok())
         .filter(|s| s.len() == 64)
         .ok_or_else(|| bad_request("unsigned build: ?signature=<hex Ed25519 signature> is required"))?;
-    if build.is_empty() {
-        return Err(bad_request("empty build"));
-    }
-    // Checked before anything is stored, so a refused upload can be retried with the same version + target.
-    let key = state.config.update_public_key.as_deref().ok_or_else(|| {
+    // Checked before the body is read: without a key no Device could verify the build.
+    let key = state.config.update_public_key.clone().ok_or_else(|| {
         ApiError::new(
             StatusCode::CONFLICT,
             "no_update_key",
             "the Server has no update public key configured (RCLI_UPDATE_PUBLIC_KEY), so no Device could verify this build",
         )
     })?;
-    let sha256 = rcli_protocol::update::sha256_hex(&build);
-    if !rcli_protocol::update::verify(key, &version, &target, &sha256, &signature) {
-        return Err(ApiError::new(
+    let stored = state.storage.put(storage::AGENT_BUILDS, request.into_limited_body().into_data_stream()).await?;
+    let accepted = if stored.size == 0 {
+        Err(bad_request("empty build"))
+    } else if !rcli_protocol::update::verify(&key, &version, &target, &stored.sha256, &signature) {
+        Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "bad_signature",
             "the signature does not match this version, target and file",
-        ));
+        ))
+    } else {
+        updates::publish(&state, &version, &target, &signature, &stored, &user.name).await.map_err(ApiError::from)
+    };
+    if let Err(e) = accepted {
+        // Refused, so the same version + target can be retried; the bytes stay only if another build row has them.
+        let used: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM agent_builds WHERE sha256 = $1)")
+            .bind(&stored.sha256)
+            .fetch_one(&state.db)
+            .await
+            .map_err(anyhow::Error::from)?;
+        if !used {
+            state.storage.delete(storage::AGENT_BUILDS, &stored.sha256).await?;
+        }
+        return Err(e);
     }
-    updates::publish(&state, &version, &target, &signature, &build, &user.name).await?;
-    Ok((StatusCode::CREATED, Json(json!({ "version": version, "target": target, "size": build.len() }))))
+    Ok((StatusCode::CREATED, Json(json!({ "version": version, "target": target, "size": stored.size }))))
 }
 
 #[derive(Deserialize)]

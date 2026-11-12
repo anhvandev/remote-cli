@@ -1,4 +1,4 @@
-//! File storage: install packages (and, later, Agent builds) in an S3-compatible store (SeaweedFS in compose).
+//! File storage: install packages and Agent builds in an S3-compatible store (SeaweedFS in compose).
 //! Objects are content addressed, `<prefix>/<sha256 hex>`, and streamed in and out; nothing holds a whole file.
 
 use std::{ops::Range, time::Duration};
@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 
 /// Key prefix of install packages.
 pub const PACKAGES: &str = "packages";
+/// Key prefix of Agent builds.
+pub const AGENT_BUILDS: &str = "agent-builds";
 
 /// Where the store is (`RCLI_S3_*`).
 #[derive(Clone, Debug)]

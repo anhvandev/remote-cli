@@ -198,3 +198,48 @@ async fn a_corrupted_package_is_refused() {
     };
     assert!(!served, "the corrupted bytes were served as a complete download");
 }
+
+/// Publishes `build` as 1.0.0 for linux-x86_64 and rolls it out to the fleet, so `/download/linux/x86_64` serves it.
+async fn roll_out_linux_build(sys: &TestSystem, build: &[u8]) {
+    let signature = sys.sign_build("1.0.0", "linux-x86_64", build);
+    let (status, body) = sys.api.put_bytes(&format!("/api/v1/agent-builds/1.0.0/linux-x86_64?signature={signature}"), build.to_vec()).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = sys.api.post_json("/api/v1/agent-builds/1.0.0/rollout", &serde_json::json!({ "all": true })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// A build download names its sha256 and resumes: `Range` answers 206 with the slice.
+#[tokio::test]
+async fn a_build_download_names_its_sha256_and_answers_range_requests() {
+    let sys = TestSystem::start().await;
+    roll_out_linux_build(&sys, b"0123456789").await;
+    let url = format!("http://{}/download/linux/x86_64", sys.server.http_addr);
+    let http = reqwest::Client::new();
+
+    let full = http.get(&url).send().await.unwrap();
+    assert_eq!((full.status(), full.content_length()), (StatusCode::OK, Some(10)));
+    // sha256("0123456789")
+    assert_eq!(full.headers()["x-rcli-sha256"], "84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882");
+    assert_eq!(full.headers()["x-rcli-version"], "1.0.0");
+    assert!(full.headers().contains_key("x-rcli-signature"));
+    assert_eq!(full.bytes().await.unwrap().as_ref(), b"0123456789");
+    let part = http.get(&url).header("range", "bytes=6-").send().await.unwrap();
+    assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(part.headers()["content-range"], "bytes 6-9/10");
+    assert_eq!(part.headers()["x-rcli-version"], "1.0.0");
+    assert_eq!(part.bytes().await.unwrap().as_ref(), b"6789");
+}
+
+/// A build whose stored bytes no longer match what was uploaded fails to download instead of being served.
+#[tokio::test]
+async fn a_corrupted_build_is_refused() {
+    let sys = TestSystem::start().await;
+    roll_out_linux_build(&sys, b"original build").await;
+    sys.corrupt_stored_file(b"original build", b"tampered build").await;
+
+    let served = match reqwest::get(format!("http://{}/download/linux/x86_64", sys.server.http_addr)).await {
+        Ok(resp) => resp.bytes().await.is_ok(),
+        Err(_) => false,
+    };
+    assert!(!served, "the corrupted bytes were served as a complete download");
+}

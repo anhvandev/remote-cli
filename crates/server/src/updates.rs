@@ -2,9 +2,14 @@
 //! The Server never checks signatures (it has no key); Agents do, and report failures back.
 
 use rcli_protocol::agent::{AgentHello, AgentUpdate, UpdateFailed};
+use axum::body::Bytes;
+use futures::TryStreamExt;
 use uuid::Uuid;
 
-use crate::AppState;
+use crate::{storage, AppState};
+
+/// A stored build: version, signature, sha256 (hex) and size, as served by the download endpoints.
+pub type Build = (String, Vec<u8>, String, i64);
 
 #[derive(Debug)]
 pub enum UpdateError {
@@ -25,17 +30,18 @@ pub async fn publish(
     version: &str,
     target: &str,
     signature: &[u8],
-    build: &[u8],
+    stored: &crate::storage::Stored,
     by: &str,
 ) -> Result<(), UpdateError> {
     let inserted = sqlx::query(
-        "INSERT INTO agent_builds (version, target, signature, build, uploaded_at, uploaded_by)
-         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+        "INSERT INTO agent_builds (version, target, signature, sha256, size, uploaded_at, uploaded_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
     )
     .bind(version)
     .bind(target)
     .bind(signature)
-    .bind(build)
+    .bind(&stored.sha256)
+    .bind(stored.size as i64)
     .bind(state.clock.now())
     .bind(by)
     .execute(&state.db)
@@ -108,9 +114,9 @@ pub async fn agent_failed(state: &AppState, device: Uuid, failed: &UpdateFailed)
 
 /// The fleet's build for a target: the one last rolled out to every Device. New installs (`/download`) and
 /// Controller-only machines (`rcli upgrade`) get it; a newer publish or a canary rollout does not reach them.
-pub async fn fleet_build(state: &AppState, target: &str) -> anyhow::Result<Option<(String, Vec<u8>, Vec<u8>)>> {
-    let row: Option<(String, Vec<u8>, Vec<u8>)> = sqlx::query_as(
-        "SELECT version, signature, build FROM agent_builds WHERE target = $1 AND rolled_out_at IS NOT NULL
+pub async fn fleet_build(state: &AppState, target: &str) -> anyhow::Result<Option<Build>> {
+    let row: Option<Build> = sqlx::query_as(
+        "SELECT version, signature, sha256, size FROM agent_builds WHERE target = $1 AND rolled_out_at IS NOT NULL
          ORDER BY rolled_out_at DESC, uploaded_at DESC LIMIT 1",
     )
     .bind(target)
@@ -122,12 +128,12 @@ pub async fn fleet_build(state: &AppState, target: &str) -> anyhow::Result<Optio
 /// The build `rcli upgrade` fetches when it names its Device: the one rolled out to it (`update_version`), so an
 /// unpublished or not-yet-rolled-out build never reaches a Device. No Device row (a Controller-only install) or no
 /// rollout to it yet falls back to the fleet's build.
-pub async fn upgrade_build(state: &AppState, device: Option<&str>, target: &str) -> anyhow::Result<Option<(String, Vec<u8>, Vec<u8>)>> {
+pub async fn upgrade_build(state: &AppState, device: Option<&str>, target: &str) -> anyhow::Result<Option<Build>> {
     let mut rolled_out = None;
     if let Some(key) = device {
         if let Ok(Some(id)) = crate::registry::resolve(state, key).await? {
-            rolled_out = sqlx::query_as::<_, (String, Vec<u8>, Vec<u8>)>(
-                "SELECT b.version, b.signature, b.build
+            rolled_out = sqlx::query_as::<_, Build>(
+                "SELECT b.version, b.signature, b.sha256, b.size
                  FROM devices d JOIN agent_builds b ON b.version = d.update_version AND b.target = $2
                  WHERE d.id = $1",
             )
@@ -146,9 +152,9 @@ pub async fn upgrade_build(state: &AppState, device: Option<&str>, target: &str)
 /// The build this Device should install now, if any. A missing build for the Device's
 /// target is recorded as a failure instead.
 pub async fn pending(state: &AppState, device: Uuid) -> anyhow::Result<Option<AgentUpdate>> {
-    type Row = (String, String, Option<Vec<u8>>, Option<Vec<u8>>);
+    type Row = (String, String, Option<Vec<u8>>, Option<String>);
     let row: Option<Row> = sqlx::query_as(
-        "SELECT d.update_version, d.agent_target, b.signature, b.build
+        "SELECT d.update_version, d.agent_target, b.signature, b.sha256
          FROM devices d LEFT JOIN agent_builds b ON b.version = d.update_version AND b.target = d.agent_target
          WHERE d.id = $1 AND d.update_error IS NULL AND d.agent_target IS NOT NULL
            AND d.update_version IS DISTINCT FROM d.agent_version AND d.update_version IS NOT NULL",
@@ -158,7 +164,11 @@ pub async fn pending(state: &AppState, device: Uuid) -> anyhow::Result<Option<Ag
     .await?;
     Ok(match row {
         None => None,
-        Some((version, target, Some(signature), Some(build))) => Some(AgentUpdate { version, target, build, signature }),
+        Some((version, target, Some(signature), Some(sha256))) => {
+            // shortcut: the whole build is read into memory for the Update message, until Agents pull it (ticket 05).
+            let build: Vec<Bytes> = state.storage.get(storage::AGENT_BUILDS, &sha256, None).await?.try_collect().await?;
+            Some(AgentUpdate { version, target, build: build.concat(), signature })
+        }
         Some((version, target, _, _)) => {
             let reason = format!("no build of {version} for {target}");
             agent_failed(state, device, &UpdateFailed { version, reason }).await?;

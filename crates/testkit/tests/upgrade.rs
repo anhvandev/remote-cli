@@ -154,5 +154,19 @@ async fn the_build_lookup_needs_the_server_key() {
         .map(|r| (r.status(), r))
         .unwrap();
     assert_eq!(status, rcli_testkit::StatusCode::OK);
+    // sha256("fleet build")
+    assert_eq!(bytes.headers()["x-rcli-sha256"], "02c8643101b1e81c151c138aeb814cda1c6cbef317e64fb43d9172f1d9efd1ea");
+    assert_eq!(bytes.content_length(), Some(11));
     assert_eq!(bytes.bytes().await.unwrap().as_ref(), b"fleet build");
+    // A resumed download asks for the rest.
+    let part = reqwest::Client::new()
+        .get(format!("{}{path}", http_addr(&sys)))
+        .header("x-rcli-server-key", sys.server_key())
+        .header("range", "bytes=6-")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(part.status(), rcli_testkit::StatusCode::PARTIAL_CONTENT);
+    assert_eq!(part.headers()["content-range"], "bytes 6-10/11");
+    assert_eq!(part.bytes().await.unwrap().as_ref(), b"build");
 }

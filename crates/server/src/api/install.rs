@@ -177,20 +177,14 @@ async fn install_ps1(State(state): State<super::State>, headers: HeaderMap) -> R
 
 /// The build bytes of the fleet's build for `os-arch` (the one last rolled out to every Device), signed by the
 /// update key.
-async fn download(State(state): State<super::State>, Path((os, arch)): Path<(String, String)>) -> Result<Response, ApiError> {
+async fn download(
+    State(state): State<super::State>,
+    Path((os, arch)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let target = format!("{os}-{arch}");
-    let (version, signature, build) = updates::fleet_build(&state, &target)
-        .await?
-        .ok_or_else(|| super::updates::no_build(&target))?;
-    Ok((
-        [
-            ("x-rcli-version", version),
-            ("x-rcli-signature", hex::encode(signature)),
-            ("content-type", "application/octet-stream".to_owned()),
-        ],
-        build,
-    )
-        .into_response())
+    let build = updates::fleet_build(&state, &target).await?.ok_or_else(|| super::updates::no_build(&target))?;
+    super::updates::build_file(&state, build, &headers).await
 }
 
 // The last step installs the service: macOS (ticket 24) and Windows (ticket 22, install.ps1 below) do it today;
