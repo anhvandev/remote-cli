@@ -1,5 +1,5 @@
 //! Downloads an Agent build from the Server's build lookup endpoint to disk, resuming a partial download with
-//! `Range`, then checks its size and sha256. `rcli upgrade` and the Agent's update task share it.
+//! `Range`, then checks its size and sha256. `rcli update` and the Agent's update task share it.
 
 use std::path::{Path, PathBuf};
 

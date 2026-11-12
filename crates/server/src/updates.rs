@@ -56,7 +56,7 @@ pub async fn agent_hello(state: &AppState, device: Uuid, hello: &AgentHello) -> 
 }
 
 /// The Latest Build for a target: the highest semver version (a pre-release ranks below its release). New installs
-/// (`/download`), `rcli upgrade` and Agents get it.
+/// (`/download`), `rcli update` and Agents get it.
 pub async fn latest_build(state: &AppState, target: &str) -> anyhow::Result<Option<Build>> {
     let builds: Vec<Build> =
         sqlx::query_as("SELECT version, sha256, size FROM agent_builds WHERE target = $1").bind(target).fetch_all(&state.db).await?;

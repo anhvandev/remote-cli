@@ -21,6 +21,7 @@ hex.workspace = true
 rcli-agent.workspace = true
 rcli-protocol.workspace = true
 reqwest.workspace = true
+semver.workspace = true
 rmcp = { workspace = true, features = ["server"] }
 rpassword.workspace = true
 serde.workspace = true
