@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Refresh } from "../refresh";
 import { Status } from "../status";
+import { DeviceMenu } from "./device-menu";
 import { FleetFilter } from "./fleet-filter";
 
 /** "2 phút trước" — easier to scan than an absolute clock. */
@@ -45,6 +46,7 @@ export default async function FleetPage({
               <TableHead>Trạng thái</TableHead>
               <TableHead>Agent</TableHead>
               <TableHead>Lần cuối thấy</TableHead>
+              <TableHead />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -68,6 +70,9 @@ export default async function FleetPage({
                   {d.agent_version ?? "—"}
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-muted-foreground">{ago(d.last_seen_at)}</TableCell>
+                <TableCell className="w-0 text-right">
+                  <DeviceMenu device={d} others={devices.filter((o) => o.id !== d.id)} />
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
