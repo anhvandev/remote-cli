@@ -1,7 +1,7 @@
 "use server";
 // Admin server actions. Each returns a Result for <Form/>: the one-time TOTP secret is shown once in
 // `message` and never stored by the Dashboard. The Server enforces admin-only on every call.
-import { api, ApiError, json } from "@/lib/api";
+import { api, json } from "@/lib/api";
 import { run } from "./run";
 
 export type Result = { message?: string; error?: string };
@@ -46,20 +46,6 @@ export async function deleteDevice(_: Result, form: FormData) {
 
 export async function mergeDevice(_: Result, form: FormData) {
   return run("/admin", () => api(`${device(form)}/merge`, json("POST", { from: str(form, "from") })));
-}
-
-export async function uploadBuild(_: Result, form: FormData) {
-  return run("/admin", async () => {
-    const version = str(form, "version");
-    const file = form.get("build");
-    if (!(file instanceof File) || file.size === 0) throw new ApiError(400, "bad_request", "chọn file build");
-    await api(`/api/v1/agent-builds/${seg(version)}/${seg(str(form, "target"))}?signature=${seg(str(form, "signature"))}`, {
-      method: "PUT",
-      headers: { "content-type": "application/octet-stream" },
-      body: await file.arrayBuffer(),
-    });
-    return `Đã tải lên ${version}`;
-  });
 }
 
 export async function rollout(_: Result, form: FormData) {

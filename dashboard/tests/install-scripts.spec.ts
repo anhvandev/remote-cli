@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { devstack } from "./devstack";
+import { devstack, signBuild } from "./devstack";
 
 // The one-line install scripts fetched through the Dashboard origin (ticket 17).
 test("install scripts come through the Dashboard origin", async ({ request }) => {
@@ -31,8 +31,8 @@ test("install scripts come through the Dashboard origin", async ({ request }) =>
 // The download endpoint serves the rolled-out build bytes for an OS/arch, unauthenticated (ticket 17).
 test("the download endpoint serves the rolled-out build for an OS/arch", async ({ request }) => {
   const { api, admin_token, update } = await devstack();
-  // The Server stores, never checks, signatures; any 64-byte hex value will do here.
-  const res = await fetch(`${api}/api/v1/agent-builds/1.0.0/linux-x86_64?signature=${"00".repeat(64)}`, {
+  const signature = await signBuild("1.0.0", "linux-x86_64", update.build);
+  const res = await fetch(`${api}/api/v1/agent-builds/1.0.0/linux-x86_64?signature=${signature}`, {
     method: "PUT",
     headers: { authorization: `Bearer ${admin_token}`, "content-type": "application/octet-stream" },
     body: update.build,

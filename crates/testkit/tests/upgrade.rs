@@ -78,10 +78,13 @@ async fn a_bad_signature_is_rejected_and_the_old_binary_is_kept() {
     let sys = TestSystem::start().await;
     let dir = temp_dir("bad-signature");
     sys.controller_config(&dir, None).await;
-    let rogue = temp_dir("rogue").join("rogue.key");
-    sys.rcli(&["rollout", "keygen", rogue.to_str().unwrap()]).await.unwrap();
-    let build = temp_file("rcli", b"malicious rcli binary");
-    publish_to_fleet(&sys, &build, "6.6.6", rogue.to_str().unwrap()).await;
+    // This machine pinned another update key than the one the build is signed with.
+    let path = rcli::config::machine_path(Some(&dir));
+    let mut machine = rcli::config::load_machine(&path).unwrap().unwrap();
+    machine.update_key = hex::encode(rcli_protocol::update::generate_key().unwrap().1);
+    rcli::config::save_machine(&path, &machine).unwrap();
+    let key = temp_file("update.key", &sys.update_signing_key);
+    publish_to_fleet(&sys, &temp_file("rcli", b"new rcli binary"), "6.6.6", &key).await;
 
     let target = temp_dir("bad-signature-target").join("rcli");
     std::fs::write(&target, b"old rcli binary").unwrap();

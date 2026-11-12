@@ -105,7 +105,7 @@ message AgentHello {
   string target = 2;
 }
 
-// An Agent build to install. `signature` is Ed25519 over version, target and build
+// An Agent build to install. `signature` is Ed25519 over version, target and the build's sha256
 // (see `rcli_protocol::update`); the Agent checks it with its configured update key.
 message AgentUpdate {
   string version = 1;

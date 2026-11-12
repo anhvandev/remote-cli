@@ -992,7 +992,7 @@ fn install(creds: &Credentials, platform: &dyn Platform, update: &AgentUpdate) -
     let key = &creds.update_key;
     anyhow::ensure!(update.target == target(), "build is for {}, this Agent is {}", update.target, target());
     anyhow::ensure!(
-        rcli_protocol::update::verify(key, &update.version, &update.target, &update.build, &update.signature),
+        rcli_protocol::update::verify(key, &update.version, &update.target, &rcli_protocol::update::sha256_hex(&update.build), &update.signature),
         "bad signature: build is not signed with this Agent's update key"
     );
     platform.install_update(&update.version, &update.build)
