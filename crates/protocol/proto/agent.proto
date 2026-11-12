@@ -80,8 +80,8 @@ message RegisterResponse {
   // 9-digit Device ID.
   string device_id = 1;
   string cert_pem = 2;
-  // Raw Ed25519 public key the Device pins for Agent updates; empty = no updates.
-  bytes update_key = 3;
+  // 3 was the update key Devices pinned (ADR 0008).
+  reserved 3;
   // The Server's CA (PEM) whose fingerprint the Server Key pinned; the Device checks it and keeps it to trust later sessions.
   string ca_pem = 4;
   // The Device Password generated at registration; the Device keeps it in its Secret Store, the Server only its hash.
@@ -105,13 +105,12 @@ message AgentHello {
   string target = 2;
 }
 
-// An Agent build to install. The Agent downloads it from the build lookup endpoint; `signature` is Ed25519 over
-// version, target and `sha256` (see `rcli_protocol::update`), checked with the Agent's pinned update key.
+// An Agent build to install. The Agent downloads it from the build lookup endpoint and checks it against `sha256`.
 message AgentUpdate {
   string version = 1;
   string target = 2;
-  reserved 3;
-  bytes signature = 4;
+  // 4 was the Ed25519 signature; old Servers still send it and Agents skip it (ADR 0008).
+  reserved 3, 4;
   uint64 size = 5;
   // Lowercase hex.
   string sha256 = 6;

@@ -213,8 +213,6 @@ async fn session<T>(
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let mut rollouts = state.rollouts.subscribe();
-    let mut offered = None;
     loop {
         tokio::select! {
             msg = tokio::time::timeout(READ_TIMEOUT, conn.recv::<AgentMessage>()) => {
@@ -234,11 +232,7 @@ where
                     Some(agent_message::Msg::Processes(p)) => {
                         state.agents.reply(device, p.request_id, agent_message::Msg::Processes(p));
                     }
-                    Some(agent_message::Msg::Hello(h)) => {
-                        updates::agent_hello(state, device, &h).await?;
-                        offer_update(conn, state, device, &mut offered).await?;
-                    }
-                    Some(agent_message::Msg::UpdateFailed(f)) => updates::agent_failed(state, device, &f).await?,
+                    Some(agent_message::Msg::Hello(h)) => updates::agent_hello(state, device, &h).await?,
                     Some(agent_message::Msg::IdentityUpdate(u)) => {
                         let reply = identity_update(state, device, u).await;
                         conn.send(&ServerMessage { msg: Some(server_message::Msg::IdentityUpdated(reply)) }).await?;
@@ -275,10 +269,6 @@ where
                 if matches!(msg.msg, Some(server_message::Msg::Error(_))) {
                     return Ok(());
                 }
-            }
-            changed = rollouts.changed() => {
-                changed?;
-                offer_update(conn, state, device, &mut offered).await?;
             }
         }
     }
@@ -348,18 +338,4 @@ async fn identity_update(state: &AppState, device: uuid::Uuid, u: rcli_protocol:
     }
     let number = if u.device_id.is_empty() { number } else { u.device_id };
     reply(None, number)
-}
-
-/// Sends the Device its pending Agent update, once per version per session.
-async fn offer_update<T>(conn: &mut Conn<T>, state: &AppState, device: uuid::Uuid, offered: &mut Option<String>) -> anyhow::Result<()>
-where
-    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
-    if let Some(update) = updates::pending(state, device).await? {
-        if offered.as_ref() != Some(&update.version) {
-            *offered = Some(update.version.clone());
-            conn.send(&ServerMessage { msg: Some(server_message::Msg::Update(update)) }).await?;
-        }
-    }
-    Ok(())
 }

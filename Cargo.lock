@@ -5337,6 +5337,7 @@ dependencies = [
  "reqwest",
  "ring",
  "rustls",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

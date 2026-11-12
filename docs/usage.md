@@ -40,7 +40,7 @@ rcli connect 123456789                                                        # 
 
 `rcli install` (root/Administrator) cài Agent, đăng ký Device, in Device ID và Device Password, rồi ghi cấu hình
 Controller dùng chung cho cả máy (`/etc/rcli/controller.json`, trên Windows `%ProgramData%\rcli\controller.json`):
-Server Address, Server Key, update key đã pin và API Address. Mọi user trên máy đọc được file này nhưng không sửa được,
+Server Address, Server Key và API Address. Mọi user trên máy đọc được file này nhưng không sửa được,
 nên ai cũng chạy được `rcli connect` và `rcli mcp` mà không cài lại. Server Address là `host:port` của cổng Agent
 (8443). Không cần nhập URL nào khác: Server gửi API Address (URL của Dashboard) lúc đăng ký và mỗi lần Agent kết nối.
 Server tự ghi lại API Address lần đầu một User mở Dashboard qua `https://`. Trước đó cài vẫn thành công, nhưng các
@@ -57,7 +57,7 @@ nhớ mật khẩu (OS keychain: Keychain trên macOS, Credential Manager trên 
 `0600` khi không có keychain hoặc khi dùng `--config-dir`), nên các lệnh sau chỉ cần Device ID.
 `rcli forget <Device ID>` xoá mật khẩu đã nhớ. `RCLI_SERVER`/`RCLI_TOKEN` không còn dùng.
 
-Lệnh quản trị Server (`user`, `rollout`, `audit`, `server-key`, `server-address`, `api-address`, đổi tên/xoá Device, `lock force-release`)
+Lệnh quản trị Server (`user`, `audit`, `server-key`, `server-address`, `api-address`, đổi tên/xoá Device, `lock force-release`)
 cần một phiên User: `rcli login <tên>` (mật khẩu Dashboard + mã TOTP), `rcli logout` để xoá.
 Mọi User đều chạy được các lệnh này (không có vai trò). Kết nối bằng Device Password thì không: chúng trả
 `user_session_required`. Các lệnh trên Device vẫn dùng `rcli connect`.
@@ -244,7 +244,7 @@ Mở `http://<server>:3080`, đăng nhập bằng tên + mật khẩu + mã TOTP
 - **Trang Device**: inventory, tài nguyên hiện tại, màn khoá/màn đăng nhập, người giữ Control Lock và giờ hết hạn, biểu đồ lịch sử (1h / 24h / 7d / 90d), nút Wake / Lock screen / Sleep / Restart / Shut down.
 - **Live view**: xem màn hình trực tiếp qua WebRTC, chọn màn hình nếu Device có nhiều. Video ở độ phân giải gốc của màn hình; chọn Live View Quality trên thanh công cụ (Quality: nét nhất, Balanced: mặc định, Speed: mượt nhất), đổi giữa chừng không phải kết nối lại. Khi bạn giữ Control Lock thì click và gõ trực tiếp lên video. Người khác giữ lock thì vẫn xem được và thấy ai giữ đến lúc nào.
 - **Web terminal**: ngay dưới live view; admin có thêm ô "as root".
-- **Quản trị** (chỉ admin): users, rollout Agent, đổi tên/gộp/thu hồi/xoá Device.
+- **Quản trị** (chỉ admin): users, upload Agent Build, đổi tên/gộp/thu hồi/xoá Device.
 
 ## Dùng với Claude Code (MCP)
 

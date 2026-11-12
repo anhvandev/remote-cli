@@ -98,29 +98,23 @@ Trên chính Device đó: `rcli agent info` xem Device ID + trạng thái kết 
 Device Password (chỉ root). Device Password được sinh lúc đăng ký và lưu mã hoá trên Device.
 
 - Agent từ chối kết nối nếu CA của Server không khớp fingerprint trong Server Key (chống giả Server).
-- Agent tự đăng ký, nhận chứng chỉ mTLS, **Device ID 9 chữ số** và public key cập nhật (pin lại). Không cần tạo mã enroll.
+- Agent tự đăng ký, nhận chứng chỉ mTLS và **Device ID 9 chữ số**. Không cần tạo mã enroll.
 - Cài lại Agent luôn tạo Device mới. Muốn giữ lịch sử: `rcli device merge <cũ> --into <mới>` (dùng Device ID nếu hai Device trùng tên).
-- Muốn Agent nhận bản cập nhật tự động (mục 7): đặt `RCLI_UPDATE_PUBLIC_KEY=<public key hex>` cho Server
 - `rcli uninstall` gỡ Device khỏi Server, gỡ Agent và cấu hình dùng chung của máy.
 
 ## 6. Wake qua Wake Relay
 
 Wake chỉ hoạt động khi trong cùng LAN (cùng subnet) với máy cần bật có **một Agent khác đang Online** làm Wake Relay. Nếu không có, `rcli wake` báo `no_wake_relay` kèm subnet. Cách thường làm: để một máy nhỏ luôn bật trong mỗi LAN.
 
-## 7. Cập nhật Agent (bản build có chữ ký)
+## 7. Cập nhật Agent
 
-```bash
-rcli rollout keygen                      # một lần: in private key (giữ bí mật, KHÔNG để trên Server) và public key
-rcli rollout publish --help              # ký và upload một bản build cho một target OS/arch
-rcli rollout <version> --all             # hoặc --device <id> ...
-rcli devices                             # cột AGENT / UPDATE cho biết tiến độ
-```
+Trên trang Updates, upload Agent Build: chọn file, phiên bản semver (`X.Y.Z`, có thể thêm `-pre`) và target
+(`<os>-<arch>`); file tên kiểu `rcli-0.3.0-linux-x86_64` tự điền hai ô này. Không có khoá, chữ ký hay rollout: Server
+tự tính sha256. Latest Build của mỗi target là bản có phiên bản semver cao nhất; bản cài mới và `sudo rcli upgrade`
+tải bản đó và kiểm sha256. Upload trùng phiên bản + target bị từ chối (xoá bản cũ trước). Bảo vệ đường truyền dựa vào
+API Address là `https://` (ADR 0008).
 
-Server không giữ private key. Lúc upload, Server kiểm chữ ký bằng `RCLI_UPDATE_PUBLIC_KEY` và từ chối ngay nếu chưa cấu hình key hoặc chữ ký sai (không lưu gì, nên upload lại cùng version + target được); Agent kiểm lại bằng public key đã pin lúc đăng ký. "--all" chỉ gồm các Device đã có lúc rollout.
-
-Chữ ký là Ed25519 trên chuỗi `rcli-agent-build\n{version}\n{target}\n{sha256 hex chữ thường của file}`, nên có thể ký ngoài rcli bằng công cụ chuẩn.
-
-Mục Tải xuống của trang Connect guide: `rcli.exe` là bản build đã rollout cho `windows-x86_64`; `.dmg`, `.deb` và
+Mục Tải xuống của trang Connect guide: `rcli.exe` là Latest Build cho `windows-x86_64`; `.dmg`, `.deb` và
 `.rpm` là package do Admin upload (build bằng `packaging/macos/build-dmg.sh`, `packaging/linux/build-deb.sh`,
 `build-rpm.sh`). Mỗi loại và mỗi kiến trúc giữ một bản, upload lại là thay:
 
@@ -287,7 +281,7 @@ sudo apt purge rcli         # Debian: xoá luôn /etc/rcli/agent.conf
 
 - Có package mới: `sudo apt install ./rcli_<version>_<arch>.deb` → `postinst` chép binary mới vào
   `/usr/local/lib/rcli/rcli` và `systemctl restart rcli-agent.service` (service chạy binary mới, Device ID giữ nguyên).
-- Không dùng package: `sudo rcli upgrade` thay binary đang chạy và service (build do Server rollout, có chữ ký).
+- Không dùng package: `sudo rcli upgrade` thay binary đang chạy và service (Latest Build của Server, kiểm sha256).
 - Sau khi nâng cấp: `systemctl is-active rcli-agent.service` = active, `rcli agent info` = connected.
 
 ### 10.6. Headless server
