@@ -4,7 +4,7 @@
 
 **Blocked by:** 04
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] With a Minimum Version above the Controller's version, a command succeeds and stderr carries the warning once
 - [ ] With no Minimum Version, or one at or below the Controller's version, there is no warning
