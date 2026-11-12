@@ -68,12 +68,6 @@ export default async function FleetPage({
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {d.agent_version ?? "—"}
-                  {d.update && d.update.status !== "updated" && (
-                    <span className={d.update.status === "failed" ? "text-destructive" : ""}>
-                      {" → "}
-                      {d.update.version} · {d.update.status}
-                    </span>
-                  )}
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-muted-foreground">{ago(d.last_seen_at)}</TableCell>
                 <TableCell className="w-0 text-right">

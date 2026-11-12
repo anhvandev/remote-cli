@@ -1,8 +1,7 @@
-//! `rcli upgrade`: fetch the build the Server is rolling out for this OS/arch, verify it with the update key pinned
-//! at `rcli install`, and replace the running binary. As root/Administrator on an installed Device the Agent service is
-//! restarted onto it too.
+//! `rcli upgrade`: fetch the Latest Build for this OS/arch, check it against the Server's sha256, and replace the
+//! running binary. As root/Administrator on an installed Device the Agent service is restarted onto it too.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::config::Machine;
 
@@ -14,20 +13,10 @@ pub struct Upgraded {
 }
 
 /// `data_dir` keeps the download (`updates/<sha256>.part`) until it is installed, so an interrupted run resumes.
-pub async fn run(config: &Machine, path: &Path, socket: Option<PathBuf>, data_dir: &Path) -> anyhow::Result<Upgraded> {
-    let key = hex::decode(config.update_key.trim()).unwrap_or_default();
-    anyhow::ensure!(!key.is_empty(), "no update key is pinned; run `sudo rcli install` again");
-
+pub async fn run(config: &Machine, path: &Path, data_dir: &Path) -> anyhow::Result<Upgraded> {
     let target = rcli_agent::target();
-    // A running Agent names this Device, so the Server serves the build rolled out to it; a Controller-only install
-    // has no Device row and gets the newest published build.
-    let device = local_device(&socket.unwrap_or_else(rcli_agent::ipc::default_socket)).await;
     let url = format!("{}/api/v1/agent-builds/{target}", crate::config::api_address(config)?.trim_end_matches('/'));
-    let url = match &device {
-        Some(device) => format!("{url}?device={device}"),
-        None => url,
-    };
-    let build = rcli_agent::download::fetch_build(&url, &config.server_key, data_dir, &key, &target).await?;
+    let build = rcli_agent::download::fetch_build(&url, &config.server_key, data_dir).await?;
     let installed = install(path, &build.path);
     let _ = std::fs::remove_file(&build.path);
     Ok(Upgraded { version: build.version, target, path: path.to_owned(), restarted: installed? })
@@ -124,12 +113,6 @@ pub(crate) fn is_root() -> bool {
     }
     #[cfg(not(windows))]
     std::process::Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-}
-
-/// The Device ID of the local Agent, when one is running: `rcli upgrade` then fetches the build rolled out to it.
-async fn local_device(socket: &Path) -> Option<String> {
-    let info = rcli_agent::ipc::send(socket, &rcli_agent::ipc::Request::Info).await.ok()?;
-    Some(info["device_id"].as_str()?.to_owned())
 }
 
 /// Whether this upgrade replaces an installed Agent's binary, so its service must be restarted onto it. Root (an
@@ -309,7 +292,7 @@ mod service {
 mod tests {
     use super::*;
 
-    fn temp_dir(name: &str) -> PathBuf {
+    fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("rcli-upgrade-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

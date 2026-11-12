@@ -53,12 +53,3 @@ export async function deleteDevice(_: Result, form: FormData) {
 export async function mergeDevice(_: Result, form: FormData) {
   return run("/", () => api(`${device(form)}/merge`, json("POST", { from: str(form, "from") })));
 }
-
-export async function rollout(_: Result, form: FormData) {
-  return run("/admin", async () => {
-    const devices = form.getAll("devices").map(String);
-    const body = form.get("scope") === "all" ? { all: true } : { devices };
-    const r = await api<{ devices: number }>(`/api/v1/agent-builds/${seg(str(form, "version"))}/rollout`, json("POST", body));
-    return `Đã rollout tới ${r.devices} Device`;
-  });
-}

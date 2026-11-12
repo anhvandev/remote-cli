@@ -88,7 +88,6 @@ export type Device = {
   status: DeviceStatus;
   last_seen_at: string | null;
   agent_version: string | null;
-  update: { version: string; status: "pending" | "updated" | "failed"; error: string | null } | null;
   revoked_at: string | null;
   /** "Wake failed" when the last Wake timed out and the Device is still Offline. */
   wake_error: string | null;

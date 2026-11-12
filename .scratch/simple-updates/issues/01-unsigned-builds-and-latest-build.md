@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Uploading a build with no signature succeeds and the Server stores its sha256 and size
 - [ ] A non-semver version is refused; an existing (version, target) is refused with "delete the old one first"

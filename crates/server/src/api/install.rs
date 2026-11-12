@@ -128,15 +128,14 @@ async fn install_ps1(State(state): State<super::State>, headers: HeaderMap) -> R
     ([("content-type", "text/plain; charset=utf-8"), ("cache-control", "no-store")], script).into_response()
 }
 
-/// The build bytes of the fleet's build for `os-arch` (the one last rolled out to every Device), signed by the
-/// update key.
+/// The build bytes of the Latest Build for `os-arch`.
 async fn download(
     State(state): State<super::State>,
     Path((os, arch)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let target = format!("{os}-{arch}");
-    let build = updates::fleet_build(&state, &target).await?.ok_or_else(|| super::updates::no_build(&target))?;
+    let build = updates::latest_build(&state, &target).await?.ok_or_else(|| super::updates::no_build(&target))?;
     super::updates::build_file(&state, build, &headers).await
 }
 

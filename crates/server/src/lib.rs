@@ -45,8 +45,6 @@ pub struct Config {
     pub ice_urls: Vec<String>,
     /// coturn `static-auth-secret`: the Server mints short-lived TURN credentials from it.
     pub turn_secret: Option<String>,
-    /// Raw Ed25519 public key handed to Agents at registration so they pin Agent updates; None = no updates.
-    pub update_public_key: Option<Vec<u8>>,
     /// Reverse proxies in front of the Controller API (`RCLI_TRUSTED_PROXIES`): from these peers the Controller's
     /// IP is read from `X-Forwarded-For`, so the Device Password limiter and audit see the real client.
     pub trusted_proxies: Vec<std::net::IpAddr>,
@@ -77,7 +75,6 @@ impl Config {
             master_key: std::env::var("RCLI_MASTER_KEY").ok().filter(|k| !k.is_empty()).map(|k| k.parse()).transpose()?,
             ice_urls: var("RCLI_ICE_URLS", Some(""))?.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
             turn_secret: std::env::var("RCLI_TURN_SECRET").ok().filter(|s| !s.is_empty()),
-            update_public_key: std::env::var("RCLI_UPDATE_PUBLIC_KEY").ok().filter(|s| !s.is_empty()).map(hex::decode).transpose()?,
             trusted_proxies: var("RCLI_TRUSTED_PROXIES", Some(""))?
                 .split(',')
                 .map(str::trim)
@@ -103,8 +100,6 @@ pub struct AppState {
     pub resources: metrics::CurrentResources,
     pub agents: agent_link::Agents,
     pub maintenance: history::Maintenance,
-    /// Signalled on every rollout so live Device sessions offer the update.
-    pub rollouts: tokio::sync::watch::Sender<()>,
     pub shells: shell::Shells,
     pub lock_watchers: control_lock::Watchers,
 }
@@ -117,6 +112,8 @@ pub struct Server {
     pub ca_pem: String,
     /// `rk_<CA fingerprint>_<secret>`.
     pub server_key: String,
+    /// The running Server's state; the testkit reaches connected Agents through it.
+    pub state: Arc<AppState>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -157,7 +154,6 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
         resources: Default::default(),
         agents: Default::default(),
         maintenance: Default::default(),
-        rollouts: tokio::sync::watch::Sender::new(()),
         shells: Default::default(),
         lock_watchers: Default::default(),
     });
@@ -182,15 +178,18 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
                 }
             }
         }),
-        tokio::spawn(async move {
-            let mut every_minute = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                every_minute.tick().await;
-                if let Err(e) = history::maintain(&state).await {
-                    tracing::error!("history rollup/retention failed: {e:#}");
+        tokio::spawn({
+            let state = state.clone();
+            async move {
+                let mut every_minute = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    every_minute.tick().await;
+                    if let Err(e) = history::maintain(&state).await {
+                        tracing::error!("history rollup/retention failed: {e:#}");
+                    }
                 }
             }
         }),
     ];
-    Ok(Server { http_addr, agent_addr, ca_pem, server_key, tasks })
+    Ok(Server { http_addr, agent_addr, ca_pem, server_key, state, tasks })
 }
