@@ -8,7 +8,7 @@ The platform install step takes a path to the verified file instead of the bytes
 
 **Blocked by:** 04
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The `Update` message has version, target, size, sha256 and signature, and no build bytes.
 - [ ] The frame limit for authenticated Device sessions returns to the normal session limit.

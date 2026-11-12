@@ -9,7 +9,7 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The download routine:
   - streams to `<sha256>.part` and resumes with `Range` from an existing `.part`

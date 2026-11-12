@@ -8,7 +8,7 @@ Until ticket 05, the rollout still sends the whole build over the mTLS session, 
 
 **Blocked by:** 01, 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A migration drops `agent_builds.build` and adds `sha256` and `size`.
 - [ ] Publish:

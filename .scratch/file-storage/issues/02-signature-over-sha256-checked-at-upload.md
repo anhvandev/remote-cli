@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Protocol `sign`/`verify` take the sha256 instead of the build bytes. The existing signature-binding unit test covers the new format (key, version, target and digest each bind).
 - [ ] `rcli rollout publish` hashes the file and signs the digest. Its usage and output are unchanged.

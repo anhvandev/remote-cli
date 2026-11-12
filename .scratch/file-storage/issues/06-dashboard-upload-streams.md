@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The upload form posts to a route handler. The server-action upload is removed.
 - [ ] The handler:
