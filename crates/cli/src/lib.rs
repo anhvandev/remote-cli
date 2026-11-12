@@ -594,7 +594,8 @@ where
     // `rcli` with no arguments on a desktop opens the Agent GUI (ticket 14).
     #[cfg(feature = "gui")]
     if argv.len() == 1 {
-        return crate::gui::run(std::env::var_os("RCLI_AGENT_SOCKET").map(PathBuf::from));
+        // Leaves `main`'s runtime first: the GUI drives its own runtime with `block_on`, which panics inside another.
+        return tokio::task::block_in_place(|| crate::gui::run(std::env::var_os("RCLI_AGENT_SOCKET").map(PathBuf::from)));
     }
     let cli = match Cli::try_parse_from(argv) {
         Ok(cli) => cli,
