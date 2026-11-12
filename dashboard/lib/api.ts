@@ -76,6 +76,16 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 // Shapes of Controller API responses (see crates/server/src/api).
+/** GET /api/v1/agent-builds: newest version first; `latest` marks the Latest Build of its target. */
+export type AgentBuild = {
+  version: string;
+  target: string;
+  size: number;
+  sha256: string;
+  uploaded_by: string;
+  uploaded_at: string;
+  latest: boolean;
+};
 export type User = { id: string; name: string; disabled_at: string | null };
 /** GET /api/v1/server-settings: the Server Key, Server Address and API Address ("" until learned) Users edit. */
 export type ServerSettings = { server_key: string; ca_fingerprint: string; server_address: string; api_address: string; minimum_version: string };

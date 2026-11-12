@@ -75,9 +75,10 @@ enum Command {
     },
     /// Revoke and forget the saved session.
     Logout,
-    /// Replace this `rcli` binary with the Server's Latest Build for this OS/arch, after checking its sha256.
-    /// As root on an installed Device it also restarts the Agent service.
-    Upgrade {
+    /// Update this `rcli` binary to the Server's Latest Build for this OS/arch, after checking its sha256; never
+    /// downgrades. As root on an installed Device it also restarts the Agent service.
+    #[command(alias = "upgrade")]
+    Update {
         /// Binary to replace; default: the one running now. Hidden: a seam for tests.
         #[arg(long, hide = true)]
         target: Option<PathBuf>,
@@ -114,6 +115,9 @@ enum Command {
     /// Install packages for the Connect guide's downloads (admin).
     #[command(subcommand)]
     Package(PackageCommand),
+    /// List, upload and delete Agent Builds; the highest version per target is the Latest Build.
+    #[command(subcommand)]
+    Build(BuildCommand),
     /// Control Lock: needed to send input Actions to a Device.
     #[command(subcommand)]
     Lock(LockCommand),
@@ -336,6 +340,7 @@ fn admin_only(command: &Command) -> bool {
             | Command::ServerAddress(_)
             | Command::ApiAddress(_)
             | Command::User(_)
+            | Command::Build(_)
             | Command::Audit { .. }
             | Command::Device(DeviceCommand::Rename { .. } | DeviceCommand::Delete { .. } | DeviceCommand::Revoke { .. } | DeviceCommand::Merge { .. })
             | Command::Lock(LockCommand::ForceRelease { .. })
@@ -454,6 +459,24 @@ enum PackageCommand {
         #[arg(long)]
         arch: String,
     },
+}
+
+#[derive(Subcommand)]
+enum BuildCommand {
+    /// List Agent Builds, newest version first.
+    List,
+    /// Upload an Agent Build; the Server computes its sha256.
+    Upload {
+        file: String,
+        /// Semver, e.g. 0.3.0.
+        #[arg(long)]
+        version: String,
+        /// `<os>-<arch>`, e.g. linux-x86_64.
+        #[arg(long)]
+        target: String,
+    },
+    /// Delete the build of VERSION for TARGET, or every target of VERSION when TARGET is omitted.
+    Delete { version: String, target: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -651,18 +674,31 @@ where
             false => Ok(write!(out, "{text}")?),
         };
     }
-    if let Command::Upgrade { target } = &cli.command {
+    if let Command::Update { target } = &cli.command {
         let installed = config::installed(&machine)?;
         let path = target.clone().unwrap_or_else(|| std::env::current_exe().unwrap_or_default());
-        let done = upgrade::run(&installed, &path, &dir).await?;
-        let text = format!(
-            "upgraded {} to {} for {}{}\n",
-            done.path.display(),
-            done.version,
-            done.target,
-            if done.restarted { "; restarted the rcli-agent service" } else { "" }
-        );
-        let body = json!({ "version": done.version, "target": done.target, "path": done.path, "restarted": done.restarted });
+        let mut sink = std::io::sink();
+        let progress: &mut dyn Write = if cli.json { &mut sink } else { &mut *out };
+        let (text, body) = match upgrade::run(&installed, &path, &dir, progress).await? {
+            upgrade::Outcome::Latest(latest) => {
+                (format!("already the latest version ({latest})\n"), json!({ "updated": false, "version": latest }))
+            }
+            upgrade::Outcome::Newer(latest) => (
+                format!("running {}, newer than the Server's latest ({latest})\n", upgrade::RUNNING),
+                json!({ "updated": false, "version": upgrade::RUNNING, "latest": latest }),
+            ),
+            upgrade::Outcome::Updated(done) => (
+                format!(
+                    "updated {} → {} at {} for {}{}\n",
+                    done.from,
+                    done.version,
+                    done.path.display(),
+                    done.target,
+                    if done.restarted { "; restarted the rcli-agent service" } else { "" }
+                ),
+                json!({ "updated": true, "from": done.from, "version": done.version, "target": done.target, "path": done.path, "restarted": done.restarted }),
+            ),
+        };
         return match cli.json {
             true => Ok(writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?),
             false => Ok(write!(out, "{text}")?),
@@ -685,7 +721,7 @@ where
         | Command::Uninstall(_)
         | Command::Login { .. }
         | Command::Logout
-        | Command::Upgrade { .. }
+        | Command::Update { .. }
         | Command::Connect { .. }
         | Command::Forget { .. } => {
             unreachable!("handled before connecting")
@@ -841,6 +877,29 @@ where
             let set = api.call(reqwest::Method::POST, &format!("/api/v1/users/{name}/credentials"), Some(&body)).await?;
             let text = format!("totp_secret {}\notpauth_url {}\n", str_of(&set["totp_secret"]), str_of(&set["otpauth_url"]));
             (set, text)
+        }
+        Command::Build(BuildCommand::List) => {
+            let builds = api.call(reqwest::Method::GET, "/api/v1/agent-builds", None).await?;
+            let mut text = format!("{:<16}  {:<16}  {:>10}  {:<12}  {}\n", "VERSION", "TARGET", "SIZE", "SHA256", "");
+            for b in builds.as_array().into_iter().flatten() {
+                let latest = if b["latest"] == true { "latest" } else { "" };
+                let sha = str_of(&b["sha256"]).get(..12).unwrap_or_default();
+                text += &format!("{:<16}  {:<16}  {:>10}  {sha:<12}  {latest}\n", str_of(&b["version"]), str_of(&b["target"]), b["size"]);
+            }
+            (builds, text)
+        }
+        Command::Build(BuildCommand::Upload { file, version, target }) => {
+            let url = format!("{}/api/v1/agent-builds/{version}/{target}", api.base.trim_end_matches('/'));
+            let uploaded = api.send(api.http.put(url).body(tokio::fs::File::open(&file).await?), None).await?;
+            (uploaded, format!("uploaded {version} for {target}\n"))
+        }
+        Command::Build(BuildCommand::Delete { version, target }) => {
+            let path = match &target {
+                Some(t) => format!("/api/v1/agent-builds/{version}/{t}"),
+                None => format!("/api/v1/agent-builds/{version}"),
+            };
+            api.call(reqwest::Method::DELETE, &path, None).await?;
+            (Value::Null, format!("deleted {version} {}\n", target.as_deref().unwrap_or("(all targets)")))
         }
         Command::Lock(cmd) => {
             let (method, device, suffix) = match cmd {

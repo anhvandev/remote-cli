@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Running below the Latest Build: downloads, verifies the sha256, swaps the binary, restarts the Agent service, and reports "updated X → Y"
 - [ ] At the Latest Build: prints "already the latest version (X)" and exits 0 with no change

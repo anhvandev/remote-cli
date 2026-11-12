@@ -2,7 +2,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, Request, State},
     http::{HeaderMap, StatusCode},
     response::Response,
-    routing::{get, put},
+    routing::get,
     Json, Router,
 };
 use rcli_protocol::update::MAX_BUILD_BYTES;
@@ -16,11 +16,16 @@ use crate::{
 
 pub fn routes() -> Router<super::State> {
     Router::new()
-        .route("/api/v1/agent-builds/{version}/{target}", put(publish).layer(DefaultBodyLimit::max(MAX_BUILD_BYTES)))
-        .route("/api/v1/agent-builds/{target}", get(current))
+        .route("/api/v1/agent-builds", get(list))
+        .route(
+            "/api/v1/agent-builds/{version}/{target}",
+            get(download).delete(delete_one).put(publish).layer(DefaultBodyLimit::max(MAX_BUILD_BYTES)),
+        )
+        // `{target}` on GET (the build lookup), a version on DELETE: one path, so one parameter name.
+        .route("/api/v1/agent-builds/{target}", get(current).delete(delete_version))
 }
 
-/// `rcli upgrade` and Agents fetch the Latest Build for their target and check it against `x-rcli-sha256`. The
+/// `rcli update` and Agents fetch the Latest Build for their target and check it against `x-rcli-sha256`. The
 /// Server Key (header `X-Rcli-Server-Key`) is the only credential.
 async fn current(State(state): State<super::State>, Path(target): Path<String>, headers: HeaderMap) -> Result<Response, ApiError> {
     let presented = headers.get("x-rcli-server-key").and_then(|v| v.to_str().ok()).unwrap_or_default();
@@ -29,6 +34,45 @@ async fn current(State(state): State<super::State>, Path(target): Path<String>, 
     }
     let build = updates::latest_build(&state, &target).await?.ok_or_else(|| no_build(&target))?;
     build_file(&state, build, &headers).await
+}
+
+async fn list(_: SignedIn, State(state): State<super::State>) -> Result<Json<Vec<updates::Listed>>, ApiError> {
+    Ok(Json(updates::list(&state).await?))
+}
+
+/// Any stored build, for a User to test or hand out.
+async fn download(
+    _: SignedIn,
+    State(state): State<super::State>,
+    Path((version, target)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let build = updates::list(&state).await?.into_iter().find(|b| b.version == version && b.target == target).ok_or_else(not_found)?;
+    build_file(&state, updates::Build { version, sha256: build.sha256, size: build.size }, &headers).await
+}
+
+async fn delete_one(_: SignedIn, State(state): State<super::State>, Path((version, target)): Path<(String, String)>) -> Result<StatusCode, ApiError> {
+    delete(&state, &version, Some(&target)).await
+}
+
+async fn delete_version(_: SignedIn, State(state): State<super::State>, Path(version): Path<String>) -> Result<StatusCode, ApiError> {
+    delete(&state, &version, None).await
+}
+
+/// Devices running a deleted version are untouched; the stored file goes once no build row uses it.
+async fn delete(state: &super::State, version: &str, target: Option<&str>) -> Result<StatusCode, ApiError> {
+    let deleted = updates::delete(state, version, target).await?;
+    if deleted.is_empty() {
+        return Err(not_found());
+    }
+    for sha256 in deleted {
+        super::delete_unreferenced(state, storage::AGENT_BUILDS, &sha256).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn not_found() -> ApiError {
+    ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such Agent Build")
 }
 
 /// Streams a stored build (or the requested `Range` of it) with its version and sha256 headers.

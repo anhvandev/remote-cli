@@ -1,25 +1,56 @@
-//! `rcli upgrade`: fetch the Latest Build for this OS/arch, check it against the Server's sha256, and replace the
-//! running binary. As root/Administrator on an installed Device the Agent service is restarted onto it too.
+//! `rcli update`: fetch the Latest Build for this OS/arch, check it against the Server's sha256, and replace the
+//! running binary. It only ever moves up. As root/Administrator on an installed Device the Agent service is
+//! restarted onto it too.
 
-use std::path::Path;
+use std::{io::Write, path::Path};
 
 use crate::config::Machine;
 
 pub struct Upgraded {
+    /// The version running before the update.
+    pub from: String,
     pub version: String,
     pub target: String,
     pub path: std::path::PathBuf,
     pub restarted: bool,
 }
 
+pub enum Outcome {
+    Updated(Upgraded),
+    /// Already at the Latest Build (its version).
+    Latest(String),
+    /// Running a version above the Latest Build (its version): never downgraded.
+    Newer(String),
+}
+
+/// The version of this binary.
+pub const RUNNING: &str = env!("CARGO_PKG_VERSION");
+
 /// `data_dir` keeps the download (`updates/<sha256>.part`) until it is installed, so an interrupted run resumes.
-pub async fn run(config: &Machine, path: &Path, data_dir: &Path) -> anyhow::Result<Upgraded> {
+/// Each step is reported on `progress` as it happens.
+pub async fn run(config: &Machine, path: &Path, data_dir: &Path, progress: &mut dyn Write) -> anyhow::Result<Outcome> {
     let target = rcli_agent::target();
     let url = format!("{}/api/v1/agent-builds/{target}", crate::config::api_address(config)?.trim_end_matches('/'));
+    // A HEAD gives the Latest Build's version without starting a download that may not be needed.
+    let head = reqwest::Client::new().head(&url).header("x-rcli-server-key", &config.server_key).send().await?;
+    if head.status() == reqwest::StatusCode::NOT_FOUND {
+        anyhow::bail!("no build for {target} (upload one on the Updates page)");
+    }
+    let head = head.error_for_status()?;
+    let latest = head.headers().get("x-rcli-version").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+    let parsed = semver::Version::parse(&latest).map_err(|e| anyhow::anyhow!("the Server's latest version {latest:?}: {e}"))?;
+    writeln!(progress, "running {RUNNING}, the Server's latest is {latest}")?;
+    match semver::Version::parse(RUNNING)?.cmp(&parsed) {
+        std::cmp::Ordering::Equal => return Ok(Outcome::Latest(latest)),
+        std::cmp::Ordering::Greater => return Ok(Outcome::Newer(latest)),
+        std::cmp::Ordering::Less => {}
+    }
+    writeln!(progress, "downloading {latest} for {target}...")?;
     let build = rcli_agent::download::fetch_build(&url, &config.server_key, data_dir).await?;
+    writeln!(progress, "sha256 {} verified ({} bytes)", build.sha256, build.size)?;
     let installed = install(path, &build.path);
     let _ = std::fs::remove_file(&build.path);
-    Ok(Upgraded { version: build.version, target, path: path.to_owned(), restarted: installed? })
+    Ok(Outcome::Updated(Upgraded { from: RUNNING.into(), version: build.version, target, path: path.to_owned(), restarted: installed? }))
 }
 
 /// Puts the verified `build` at `path`, restarting the Agent service onto it when this upgrade owns one.
@@ -174,7 +205,7 @@ mod service {
     }
 
     /// `kickstart -k` kills the running Agent and starts it again from the (new) binary. It runs as root in the
-    /// system domain, so this needs the root `rcli upgrade`.
+    /// system domain, so this needs the root `rcli update`.
     pub fn restart() -> anyhow::Result<()> {
         let out = std::process::Command::new("/bin/launchctl").args(["kickstart", "-k", &format!("system/{DAEMON}")]).output()?;
         anyhow::ensure!(
