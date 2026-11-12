@@ -6,7 +6,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use super::{devices::resolve, Admin, ApiError};
+use super::{devices::resolve, ApiError, SignedIn};
 use crate::audit::{self, Entry};
 
 pub fn routes() -> Router<super::State> {
@@ -23,7 +23,7 @@ struct Params {
     until: Option<DateTime<Utc>>,
 }
 
-async fn list(_: Admin, State(state): State<super::State>, Query(p): Query<Params>) -> Result<Json<Vec<Entry>>, ApiError> {
+async fn list(_: SignedIn, State(state): State<super::State>, Query(p): Query<Params>) -> Result<Json<Vec<Entry>>, ApiError> {
     let device = match p.device {
         Some(d) => Some(resolve(&state, &d).await?),
         None => None,

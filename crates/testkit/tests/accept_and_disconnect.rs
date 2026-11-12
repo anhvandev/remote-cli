@@ -117,7 +117,7 @@ async fn info_lists_connected_controllers() {
     assert_eq!(status, StatusCode::OK, "{out}");
 
     // A Dashboard User shows as `<name> (Dashboard)`.
-    let alice = sys.create_user("alice", "operator").await;
+    let alice = sys.create_user("alice").await;
     let (status, out) = sys.api.with_token(Some(&alice)).post_json(&format!("/api/v1/devices/{dev}/exec"), &json!({ "command": "whoami" })).await;
     assert_eq!(status, StatusCode::OK, "{out}");
 
@@ -222,7 +222,7 @@ async fn accept_gates_the_screen_power_and_shells_too() {
 
     denied(device.post_json(&format!("/api/v1/devices/{dev}/actions"), &json!({ "actions": [] })).await);
     denied(device.post_json(&format!("/api/v1/devices/{dev}/power"), &json!({ "action": "lock" })).await);
-    let alice = sys.create_user("alice", "operator").await;
+    let alice = sys.create_user("alice").await;
     denied(sys.api.with_token(Some(&alice)).post_json(&format!("/api/v1/devices/{dev}/shell"), &json!({})).await);
 
     let asked: Vec<String> = agent.platform.accept_prompts().into_iter().map(|(who, _)| who).collect();

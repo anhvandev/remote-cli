@@ -11,7 +11,7 @@ use axum::{
 use rcli_protocol::update::MAX_BUILD_BYTES;
 use serde_json::{json, Value};
 
-use super::{bad_request, Admin, ApiError};
+use super::{bad_request, ApiError, SignedIn};
 use crate::{storage, updates};
 
 pub fn routes() -> Router<super::State> {
@@ -28,7 +28,7 @@ const PACKAGE_KINDS: [&str; 3] = ["dmg", "deb", "rpm"];
 
 /// Body: the package file, streamed into storage. Replaces the one stored for this kind and arch.
 async fn publish_package(
-    Admin(user): Admin,
+    SignedIn(user): SignedIn,
     State(state): State<super::State>,
     Path((kind, arch)): Path<(String, String)>,
     request: Request,
@@ -87,7 +87,7 @@ async fn download_package(
         ApiError::new(
             StatusCode::NOT_FOUND,
             "no_package",
-            format!("no .{kind} for {arch} is uploaded yet (an Admin runs `rcli package publish`)"),
+            format!("no .{kind} for {arch} is uploaded yet (upload one with `rcli package publish`)"),
         )
     })?;
     let mut response = super::stored_file(&state, storage::PACKAGES, &sha256, size as u64, &headers).await?;
@@ -128,15 +128,14 @@ async fn install_ps1(State(state): State<super::State>, headers: HeaderMap) -> R
     ([("content-type", "text/plain; charset=utf-8"), ("cache-control", "no-store")], script).into_response()
 }
 
-/// The build bytes of the fleet's build for `os-arch` (the one last rolled out to every Device), signed by the
-/// update key.
+/// The build bytes of the Latest Build for `os-arch`.
 async fn download(
     State(state): State<super::State>,
     Path((os, arch)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let target = format!("{os}-{arch}");
-    let build = updates::fleet_build(&state, &target).await?.ok_or_else(|| super::updates::no_build(&target))?;
+    let build = updates::latest_build(&state, &target).await?.ok_or_else(|| super::updates::no_build(&target))?;
     super::updates::build_file(&state, build, &headers).await
 }
 

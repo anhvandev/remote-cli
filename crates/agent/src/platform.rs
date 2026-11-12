@@ -40,7 +40,7 @@ pub trait Platform: Send + Sync + 'static {
     fn agent_version(&self) -> String {
         env!("CARGO_PKG_VERSION").into()
     }
-    /// Replaces the Agent binary with the file at `build` (signature already verified) and restarts the Agent
+    /// Replaces the Agent binary with the file at `build` (sha256 already verified) and restarts the Agent
     /// onto it. Real adapters normally do not return on success; if they do, the Agent reconnects. An adapter that
     /// does not return deletes `build` once the binary is swapped; otherwise the caller deletes it.
     fn install_update(&self, version: &str, build: &std::path::Path) -> anyhow::Result<()>;

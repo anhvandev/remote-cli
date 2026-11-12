@@ -1,5 +1,5 @@
 // Fixtures for Dashboard tests: the devstack's admin API access and signing in a fresh user.
-import { createHash, createHmac, createPrivateKey, sign } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { expect, type Page } from "@playwright/test";
 
@@ -7,17 +7,9 @@ type Info = {
   api: string;
   admin_token: string;
   now: number;
-  /** A build signed with the key the devstack's Agents trust. */
-  update: { version: string; target: string; build: string; signature: string; signing_key: string };
+  /** An Agent Build to upload. */
+  update: { version: string; target: string; build: string };
 };
-
-/** Hex update signature of `build` as `version` for `target`, in the format `rcli rollout publish` signs. */
-export async function signBuild(version: string, target: string, build: string): Promise<string> {
-  const { update } = await devstack();
-  const key = createPrivateKey({ key: Buffer.from(update.signing_key, "hex"), format: "der", type: "pkcs8" });
-  const sha256 = createHash("sha256").update(build).digest("hex");
-  return sign(null, Buffer.from(`rcli-agent-build\n${version}\n${target}\n${sha256}`), key).toString("hex");
-}
 
 /** Waits for rcli-devstack to finish seeding the fleet (it writes .devstack.json when ready). */
 export async function devstack(): Promise<Info> {
@@ -59,10 +51,10 @@ export function totp(secretBase32: string, unixSecs: number): string {
 let users = 0;
 
 /** Creates a fresh user with a password and TOTP (each code works once), returning what they type to sign in. */
-export async function newUser(role: "admin" | "operator" = "operator") {
+export async function newUser() {
   const name = `user-${process.pid}-${++users}`;
   const password = "correct horse battery";
-  await adminApi("/api/v1/users", { name, role });
+  await adminApi("/api/v1/users", { name });
   const { totp_secret } = await adminApi(`/api/v1/users/${name}/credentials`, { password });
   return { name, password, code: totp(totp_secret, (await devstack()).now) };
 }

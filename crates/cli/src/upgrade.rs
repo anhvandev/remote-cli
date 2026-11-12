@@ -1,36 +1,65 @@
-//! `rcli upgrade`: fetch the build the Server is rolling out for this OS/arch, verify it with the update key pinned
-//! at `rcli install`, and replace the running binary. As root/Administrator on an installed Device the Agent service is
+//! `rcli update`: fetch the Latest Build for this OS/arch, check it against the Server's sha256, and replace the
+//! running binary. It only ever moves up. As root/Administrator on an installed Device the Agent service is
 //! restarted onto it too.
 
-use std::path::{Path, PathBuf};
+use std::{io::Write, path::Path};
 
 use crate::config::Machine;
 
 pub struct Upgraded {
+    /// The version running before the update.
+    pub from: String,
     pub version: String,
     pub target: String,
     pub path: std::path::PathBuf,
     pub restarted: bool,
 }
 
-/// `data_dir` keeps the download (`updates/<sha256>.part`) until it is installed, so an interrupted run resumes.
-pub async fn run(config: &Machine, path: &Path, socket: Option<PathBuf>, data_dir: &Path) -> anyhow::Result<Upgraded> {
-    let key = hex::decode(config.update_key.trim()).unwrap_or_default();
-    anyhow::ensure!(!key.is_empty(), "no update key is pinned; run `sudo rcli install` again");
+pub enum Outcome {
+    Updated(Upgraded),
+    /// Already at the Latest Build (its version).
+    Latest(String),
+    /// Running a version above the Latest Build (its version): never downgraded.
+    Newer(String),
+}
 
+/// The version of this binary.
+pub const RUNNING: &str = env!("CARGO_PKG_VERSION");
+
+/// `data_dir` keeps the download (`updates/<sha256>.part`) until it is installed, so an interrupted run resumes.
+/// Each step is reported on `progress` as it happens.
+pub async fn run(config: &Machine, path: &Path, data_dir: &Path, progress: &mut dyn Write) -> anyhow::Result<Outcome> {
     let target = rcli_agent::target();
-    // A running Agent names this Device, so the Server serves the build rolled out to it; a Controller-only install
-    // has no Device row and gets the newest published build.
-    let device = local_device(&socket.unwrap_or_else(rcli_agent::ipc::default_socket)).await;
     let url = format!("{}/api/v1/agent-builds/{target}", crate::config::api_address(config)?.trim_end_matches('/'));
-    let url = match &device {
-        Some(device) => format!("{url}?device={device}"),
-        None => url,
-    };
-    let build = rcli_agent::download::fetch_build(&url, &config.server_key, data_dir, &key, &target).await?;
+    // A HEAD gives the Latest Build's version without starting a download that may not be needed.
+    let head = reqwest::Client::new().head(&url).header("x-rcli-server-key", &config.server_key).send().await?;
+    if head.status() == reqwest::StatusCode::NOT_FOUND {
+        anyhow::bail!("no build for {target} (upload one on the Updates page)");
+    }
+    let head = head.error_for_status()?;
+    let latest = head.headers().get("x-rcli-version").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+    let parsed = semver::Version::parse(&latest).map_err(|e| anyhow::anyhow!("the Server's latest version {latest:?}: {e}"))?;
+    writeln!(progress, "running {RUNNING}, the Server's latest is {latest}")?;
+    match semver::Version::parse(RUNNING)?.cmp(&parsed) {
+        std::cmp::Ordering::Equal => return Ok(Outcome::Latest(latest)),
+        std::cmp::Ordering::Greater => return Ok(Outcome::Newer(latest)),
+        std::cmp::Ordering::Less => {}
+    }
+    writeln!(progress, "downloading {latest} for {target}...")?;
+    let mut shown = None;
+    let build = rcli_agent::download::fetch_build(&url, &config.server_key, data_dir, |done, size| {
+        // One line per 10% step, so a large build shows progress without flooding the terminal.
+        let step = (done * 10).checked_div(size).unwrap_or(10);
+        if shown != Some(step) {
+            shown = Some(step);
+            let _ = writeln!(progress, "downloaded {}% ({done} of {size} bytes)", step * 10);
+        }
+    })
+    .await?;
+    writeln!(progress, "sha256 {} verified ({} bytes)", build.sha256, build.size)?;
     let installed = install(path, &build.path);
     let _ = std::fs::remove_file(&build.path);
-    Ok(Upgraded { version: build.version, target, path: path.to_owned(), restarted: installed? })
+    Ok(Outcome::Updated(Upgraded { from: RUNNING.into(), version: build.version, target, path: path.to_owned(), restarted: installed? }))
 }
 
 /// Puts the verified `build` at `path`, restarting the Agent service onto it when this upgrade owns one.
@@ -126,12 +155,6 @@ pub(crate) fn is_root() -> bool {
     std::process::Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
 }
 
-/// The Device ID of the local Agent, when one is running: `rcli upgrade` then fetches the build rolled out to it.
-async fn local_device(socket: &Path) -> Option<String> {
-    let info = rcli_agent::ipc::send(socket, &rcli_agent::ipc::Request::Info).await.ok()?;
-    Some(info["device_id"].as_str()?.to_owned())
-}
-
 /// Whether this upgrade replaces an installed Agent's binary, so its service must be restarted onto it. Root (an
 /// Administrator on Windows) on an installed Device only: a Controller-only install never touches a service, and a
 /// root upgrade with no service installed is refused *before* the swap (a new binary nobody starts is worse).
@@ -191,7 +214,7 @@ mod service {
     }
 
     /// `kickstart -k` kills the running Agent and starts it again from the (new) binary. It runs as root in the
-    /// system domain, so this needs the root `rcli upgrade`.
+    /// system domain, so this needs the root `rcli update`.
     pub fn restart() -> anyhow::Result<()> {
         let out = std::process::Command::new("/bin/launchctl").args(["kickstart", "-k", &format!("system/{DAEMON}")]).output()?;
         anyhow::ensure!(
@@ -309,7 +332,7 @@ mod service {
 mod tests {
     use super::*;
 
-    fn temp_dir(name: &str) -> PathBuf {
+    fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("rcli-upgrade-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

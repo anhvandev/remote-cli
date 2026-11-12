@@ -22,9 +22,6 @@ pub struct Machine {
     /// The Server Address the Agent dials, host:port.
     pub server: String,
     pub server_key: String,
-    /// Hex Ed25519 update key the Device pinned at registration.
-    #[serde(default)]
-    pub update_key: String,
     /// Where Controllers call the Server; empty until the Server has one.
     #[serde(default)]
     pub api_address: String,

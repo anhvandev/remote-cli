@@ -107,6 +107,11 @@ impl Agents {
         }
     }
 
+    /// The Devices whose Agent is connected now.
+    pub fn connected(&self) -> Vec<uuid::Uuid> {
+        self.senders.lock().unwrap().keys().copied().collect()
+    }
+
     fn reply(&self, device: uuid::Uuid, request_id: u64, msg: agent_message::Msg) {
         if let Some(tx) = self.pending.lock().unwrap().remove(&(device, request_id)) {
             let _ = tx.send(msg);
@@ -116,6 +121,8 @@ impl Agents {
 
 /// No frame (heartbeats arrive every 10 s) for this long means the connection is dead.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often a session re-offers the Latest Build to an Agent below the Minimum Version (a failed update retries).
+const UPDATE_RETRY: chrono::Duration = chrono::Duration::hours(1);
 
 pub fn acceptor(ca: &crate::pki::Ca, hostnames: Vec<String>) -> anyhow::Result<TlsAcceptor> {
     let mut roots = RootCertStore::empty();
@@ -213,8 +220,9 @@ async fn session<T>(
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let mut rollouts = state.rollouts.subscribe();
-    let mut offered = None;
+    // Checked every second against the Server clock, so tests can move time.
+    let mut every_second = tokio::time::interval(Duration::from_secs(1));
+    let mut next_offer = state.clock.now() + UPDATE_RETRY;
     loop {
         tokio::select! {
             msg = tokio::time::timeout(READ_TIMEOUT, conn.recv::<AgentMessage>()) => {
@@ -234,10 +242,7 @@ where
                     Some(agent_message::Msg::Processes(p)) => {
                         state.agents.reply(device, p.request_id, agent_message::Msg::Processes(p));
                     }
-                    Some(agent_message::Msg::Hello(h)) => {
-                        updates::agent_hello(state, device, &h).await?;
-                        offer_update(conn, state, device, &mut offered).await?;
-                    }
+                    Some(agent_message::Msg::Hello(h)) => updates::agent_hello(state, device, &h).await?,
                     Some(agent_message::Msg::UpdateFailed(f)) => updates::agent_failed(state, device, &f).await?,
                     Some(agent_message::Msg::IdentityUpdate(u)) => {
                         let reply = identity_update(state, device, u).await;
@@ -276,9 +281,11 @@ where
                     return Ok(());
                 }
             }
-            changed = rollouts.changed() => {
-                changed?;
-                offer_update(conn, state, device, &mut offered).await?;
+            _ = every_second.tick() => {
+                if state.clock.now() >= next_offer {
+                    next_offer = state.clock.now() + UPDATE_RETRY;
+                    updates::offer_update(state, device).await?;
+                }
             }
         }
     }
@@ -348,18 +355,4 @@ async fn identity_update(state: &AppState, device: uuid::Uuid, u: rcli_protocol:
     }
     let number = if u.device_id.is_empty() { number } else { u.device_id };
     reply(None, number)
-}
-
-/// Sends the Device its pending Agent update, once per version per session.
-async fn offer_update<T>(conn: &mut Conn<T>, state: &AppState, device: uuid::Uuid, offered: &mut Option<String>) -> anyhow::Result<()>
-where
-    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
-    if let Some(update) = updates::pending(state, device).await? {
-        if offered.as_ref() != Some(&update.version) {
-            *offered = Some(update.version.clone());
-            conn.send(&ServerMessage { msg: Some(server_message::Msg::Update(update)) }).await?;
-        }
-    }
-    Ok(())
 }

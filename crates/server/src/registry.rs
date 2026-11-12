@@ -38,29 +38,12 @@ pub struct Device {
     pub wake_error: Option<String>,
     /// Version the Agent reported on its last connection; null until it connected once.
     pub agent_version: Option<String>,
-    /// The Agent update rolled out to this Device, if any.
-    pub update: Option<Update>,
-    /// When an admin revoked the Device's credential; a revoked Device can no longer connect.
+    /// A Minimum Version is set and `agent_version` is below it.
+    pub needs_update: bool,
+    /// Why the Agent's last self-update toward the Minimum Version failed; null once it no longer needs one.
+    pub update_error: Option<String>,
+    /// When a User revoked the Device's credential; a revoked Device can no longer connect.
     pub revoked_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Serialize, Debug)]
-pub struct Update {
-    pub version: String,
-    /// "pending" | "updated" | "failed"
-    pub status: &'static str,
-    /// Why the Device could not install `version` (when failed).
-    pub error: Option<String>,
-}
-
-fn update(agent_version: Option<&str>, version: Option<String>, error: Option<String>) -> Option<Update> {
-    let version = version?;
-    let status = match (&error, agent_version == Some(version.as_str())) {
-        (Some(_), _) => "failed",
-        (None, true) => "updated",
-        (None, false) => "pending",
-    };
-    Some(Update { version, status, error })
 }
 
 fn status(
@@ -94,22 +77,22 @@ async fn fetch(state: &AppState, only: Option<Uuid>) -> anyhow::Result<Vec<Devic
         Option<DateTime<Utc>>,
         Option<String>,
         Option<String>,
-        Option<String>,
         Option<DateTime<Utc>>,
         Option<DateTime<Utc>>,
     );
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT id, device_number, name, last_seen_at, agent_version, update_version, update_error, revoked_at, wake_requested_at
+        "SELECT id, device_number, name, last_seen_at, agent_version, update_error, revoked_at, wake_requested_at
          FROM devices WHERE $1::uuid IS NULL OR id = $1 ORDER BY enrolled_at, id",
     )
     .bind(only)
     .fetch_all(&state.db)
     .await?;
     let now = state.clock.now();
+    let minimum = state.settings.minimum_version().await;
     let connected = state.connections.0.lock().unwrap();
     Ok(rows
         .into_iter()
-        .map(|(id, device_id, name, last_seen_at, agent_version, update_version, update_error, revoked_at, woken_at)| {
+        .map(|(id, device_id, name, last_seen_at, agent_version, update_error, revoked_at, woken_at)| {
             let status = status(connected.contains_key(&id), last_seen_at, woken_at, now);
             let wake_failed = woken_at.is_some() && status == DeviceStatus::Offline;
             Device {
@@ -119,7 +102,8 @@ async fn fetch(state: &AppState, only: Option<Uuid>) -> anyhow::Result<Vec<Devic
                 status,
                 last_seen_at,
                 wake_error: wake_failed.then(|| "Wake failed".to_owned()),
-                update: update(agent_version.as_deref(), update_version, update_error),
+                needs_update: crate::updates::below(agent_version.as_deref(), &minimum),
+                update_error,
                 agent_version,
                 revoked_at,
             }
@@ -226,7 +210,7 @@ pub async fn delete(state: &AppState, id: Uuid) -> anyhow::Result<()> {
 }
 
 /// Moves `old`'s resource history and audit entries to `new` (where both have a rollup for the same minute, `new`'s wins),
-/// then deletes `old`. Never done automatically: an admin decides two Devices are the same computer.
+/// then deletes `old`. Never done automatically: a User decides two Devices are the same computer.
 pub async fn merge(state: &AppState, old: Uuid, new: Uuid) -> anyhow::Result<()> {
     state.agents.disconnect(old, "device_deleted", "this Device was merged into another");
     // No rollup may run while samples change owner.

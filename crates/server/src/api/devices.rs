@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{bad_request, Admin, ApiError, Caller};
+use super::{bad_request, ApiError, Caller, SignedIn};
 use crate::{audit, auth::User, metrics, registry};
 
 pub fn routes() -> Router<super::State> {
@@ -21,7 +21,7 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/devices/{device}/merge", post(merge))
 }
 
-/// An Admin's change to a Device's identity; any field may be given, each one is applied on its own.
+/// A User's change to a Device's identity; any field may be given, each one is applied on its own.
 #[derive(Deserialize)]
 struct Change {
     name: Option<String>,
@@ -33,7 +33,7 @@ struct Change {
 /// A new ID or password is pushed to the Device's Agent first and only then stored on the Server, so a Device that
 /// cannot apply it (it is Offline, or its Secret Store refuses) leaves both sides unchanged.
 async fn change(
-    Admin(user): Admin,
+    SignedIn(user): SignedIn,
     State(state): State<super::State>,
     Path(key): Path<String>,
     body: Result<Json<Change>, JsonRejection>,
@@ -74,7 +74,7 @@ async fn change(
     Ok(Json(registry::get(&state, id).await?))
 }
 
-/// One identity field an Admin changed, and how it reaches the two sides.
+/// One identity field a User changed, and how it reaches the two sides.
 enum Identity<'a> {
     Password(&'a str),
     DeviceId(&'a str),
@@ -140,7 +140,7 @@ async fn push(state: &super::State, id: Uuid, update: IdentityUpdate) -> Result<
     }
 }
 
-async fn delete(Admin(user): Admin, State(state): State<super::State>, Path(key): Path<String>) -> Result<StatusCode, ApiError> {
+async fn delete(SignedIn(user): SignedIn, State(state): State<super::State>, Path(key): Path<String>) -> Result<StatusCode, ApiError> {
     let id = resolve(&state, &key).await?;
     let name = registry::get(&state, id).await?.name;
     // Recorded first: the entry captures the Device ID and name before they are gone.
@@ -156,7 +156,7 @@ struct Merge {
 }
 
 async fn merge(
-    Admin(user): Admin,
+    SignedIn(user): SignedIn,
     State(state): State<super::State>,
     Path(key): Path<String>,
     body: Result<Json<Merge>, JsonRejection>,
@@ -174,7 +174,7 @@ async fn merge(
 }
 
 async fn revoke(
-    Admin(user): Admin,
+    SignedIn(user): SignedIn,
     State(state): State<super::State>,
     Path(key): Path<String>,
 ) -> Result<Json<registry::Device>, ApiError> {

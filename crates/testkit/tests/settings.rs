@@ -11,7 +11,7 @@ async fn every_signed_in_user_reads_the_server_settings() {
     assert_eq!(body["server_address"], "localhost");
 
     // The Connect guide shows the Server Key and Server Address to every signed-in User (ticket 18).
-    let op = sys.api.with_token(Some(&sys.create_user("op", "operator").await));
+    let op = sys.api.with_token(Some(&sys.create_user("op").await));
     let (status, body) = op.get("/api/v1/server-settings").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["server_key"], sys.server_key());
@@ -51,7 +51,7 @@ async fn replacing_the_server_key_keeps_registered_devices_and_retires_the_old_k
 }
 
 #[tokio::test]
-async fn setting_the_server_address_reissues_the_certificate_and_is_refused_to_operators() {
+async fn setting_the_server_address_reissues_the_certificate() {
     let sys = TestSystem::start().await;
     let port = sys.server.agent_addr.port();
     // Only `localhost` is in the certificate at first, so the Agent's pinning refuses another name.
@@ -62,12 +62,52 @@ async fn setting_the_server_address_reissues_the_certificate_and_is_refused_to_o
     assert_eq!(sys.rcli(&["server-address", "show"]).await.unwrap().trim(), "127.0.0.1");
     // The certificate was reissued for the new name: registration through it now works.
     rcli_agent::register(&by_ip, &FakePlatform::new("lab-pc")).await.unwrap();
+}
 
-    let op = sys.create_user("op", "operator").await;
-    for args in [vec!["server-address", "set", "example.com"], vec!["server-key", "rotate"]] {
-        let err = sys.rcli_as(&op, &args).await.unwrap_err();
-        assert!(err.to_string().contains("admin_required"), "{err}");
-    }
-    let (status, _) = sys.api.with_token(Some(&op)).post("/api/v1/server-settings/server-key/rotate").await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+/// The Minimum Version is any semver (not checked against stored builds); empty means none.
+#[tokio::test]
+async fn the_minimum_version_is_set_and_cleared() {
+    let sys = TestSystem::start().await;
+    assert_eq!(sys.api.get("/api/v1/server-settings").await.1["minimum_version"], "");
+    let api = &sys.api;
+    let set = |v: &'static str| async move {
+        api.put_json("/api/v1/server-settings/minimum-version", &serde_json::json!({ "version": v })).await
+    };
+
+    let (status, body) = set("1.2.0").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(sys.api.get("/api/v1/server-settings").await.1["minimum_version"], "1.2.0");
+
+    let (status, body) = set("latest").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = set("").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(sys.api.get("/api/v1/server-settings").await.1["minimum_version"], "");
+}
+
+/// A Controller below the Minimum Version still runs its command and warns once on stderr; at or above it, or with
+/// none set, it stays quiet.
+#[tokio::test]
+async fn a_controller_below_the_minimum_version_warns_once() {
+    let sys = TestSystem::start().await;
+    let set = |v: &'static str| {
+        let api = &sys.api;
+        async move { api.put_json("/api/v1/server-settings/minimum-version", &serde_json::json!({ "version": v })).await }
+    };
+    let devices = || async {
+        let stderr = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let base = format!("http://{}", sys.server.http_addr);
+        let argv = ["rcli", "--server", &base, "--token", &sys.admin_token, "devices"];
+        rcli::run_with_input(argv, None, &mut Vec::new(), stderr.clone()).await.unwrap();
+        let stderr = String::from_utf8(stderr.lock().unwrap().clone()).unwrap();
+        stderr
+    };
+
+    assert_eq!(devices().await, "");
+    set("0.0.1").await;
+    assert_eq!(devices().await, "");
+
+    set("999.0.0").await;
+    assert_eq!(devices().await, "Server recommends rcli ≥ 999.0.0, run: rcli update\n");
 }

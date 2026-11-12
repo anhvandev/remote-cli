@@ -34,7 +34,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return parse<T>(res);
 }
 
-/** Where the browser reached the Dashboard: an Admin's visit over https:// teaches the Server its API Address.
+/** Where the browser reached the Dashboard: any User's visit over https:// teaches the Server its API Address.
  * `x-rcli-dashboard` marks it as the Dashboard's own request; `forward` strips it from what Controllers send. */
 async function forwarded() {
   const h = await headers();
@@ -76,9 +76,19 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 // Shapes of Controller API responses (see crates/server/src/api).
-export type User = { id: string; name: string; role: "admin" | "operator"; disabled_at: string | null };
-/** GET /api/v1/server-settings: the Server Key, Server Address and API Address ("" until learned) Admins edit. */
-export type ServerSettings = { server_key: string; ca_fingerprint: string; server_address: string; api_address: string };
+/** GET /api/v1/agent-builds: newest version first; `latest` marks the Latest Build of its target. */
+export type AgentBuild = {
+  version: string;
+  target: string;
+  size: number;
+  sha256: string;
+  uploaded_by: string;
+  uploaded_at: string;
+  latest: boolean;
+};
+export type User = { id: string; name: string; disabled_at: string | null };
+/** GET /api/v1/server-settings: the Server Key, Server Address and API Address ("" until learned) Users edit. */
+export type ServerSettings = { server_key: string; ca_fingerprint: string; server_address: string; api_address: string; minimum_version: string };
 export type DeviceStatus = "Online" | "Offline" | "Waking";
 export type Device = {
   id: string;
@@ -88,10 +98,13 @@ export type Device = {
   status: DeviceStatus;
   last_seen_at: string | null;
   agent_version: string | null;
-  update: { version: string; status: "pending" | "updated" | "failed"; error: string | null } | null;
   revoked_at: string | null;
   /** "Wake failed" when the last Wake timed out and the Device is still Offline. */
   wake_error: string | null;
+  /** A Minimum Version is set and `agent_version` is below it. */
+  needs_update: boolean;
+  /** Why the last self-update toward the Minimum Version failed. */
+  update_error: string | null;
 };
 export type Inventory = {
   os: string;

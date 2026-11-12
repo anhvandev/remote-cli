@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { MonitorSmartphone } from "lucide-react";
-import { api, type Device, type DeviceStatus } from "@/lib/api";
+import { api, type Device, type DeviceStatus, type ServerSettings } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Refresh } from "../refresh";
 import { Status } from "../status";
+import { DeviceMenu } from "./device-menu";
 import { FleetFilter } from "./fleet-filter";
 
 /** "2 phút trước" — easier to scan than an absolute clock. */
@@ -22,7 +23,10 @@ export default async function FleetPage({
 }: {
   searchParams: Promise<{ q?: string; status?: DeviceStatus }>;
 }) {
-  const devices = await api<Device[]>("/api/v1/devices");
+  const [devices, settings] = await Promise.all([
+    api<Device[]>("/api/v1/devices"),
+    api<ServerSettings>("/api/v1/server-settings"),
+  ]);
   const { q, status } = await searchParams;
   const name = q?.toLowerCase() ?? "";
   const shown = devices.filter((d) => d.name.toLowerCase().includes(name) && (!status || d.status === status));
@@ -45,6 +49,7 @@ export default async function FleetPage({
               <TableHead>Trạng thái</TableHead>
               <TableHead>Agent</TableHead>
               <TableHead>Lần cuối thấy</TableHead>
+              <TableHead />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -66,14 +71,17 @@ export default async function FleetPage({
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {d.agent_version ?? "—"}
-                  {d.update && d.update.status !== "updated" && (
-                    <span className={d.update.status === "failed" ? "text-destructive" : ""}>
-                      {" → "}
-                      {d.update.version} · {d.update.status}
-                    </span>
+                  {d.needs_update && (
+                    <Badge variant="outline" className="ml-2 border-warn/40 text-warn">
+                      update needed · {d.agent_version} &lt; {settings.minimum_version}
+                    </Badge>
                   )}
+                  {d.update_error && <div className="text-xs text-destructive">{d.update_error}</div>}
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-muted-foreground">{ago(d.last_seen_at)}</TableCell>
+                <TableCell className="w-0 text-right">
+                  <DeviceMenu device={d} others={devices.filter((o) => o.id !== d.id)} />
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>

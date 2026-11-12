@@ -101,7 +101,7 @@ async fn online(sys: &TestSystem, platform: FakePlatform) -> (String, rcli_testk
 async fn interactive_shell_runs_commands_as_the_logged_in_user_and_audits_start_and_end() {
     let sys = TestSystem::start().await;
     let (dev, _agent) = online(&sys, FakePlatform::new("lab-pc")).await;
-    let alice = sys.create_user("alice", "operator").await;
+    let alice = sys.create_user("alice").await;
     // Someone else holds the Control Lock: the terminal is not exclusive.
     assert_eq!(sys.api.post(&format!("/api/v1/devices/{dev}/lock")).await.0, StatusCode::OK);
 
@@ -154,7 +154,7 @@ async fn root_shells_are_not_gated_by_server_roles() {
     eventually(|| async { socket.exists().then_some(()) }).await;
     // The Device allows root always; who asks does not matter.
     sys.agent_rcli(&socket, &["agent", "root", "always"]).await.unwrap();
-    let alice = sys.create_user("alice", "operator").await;
+    let alice = sys.create_user("alice").await;
 
     let (mut sh, first) = Shell::open(&sys, &alice, &dev, json!({ "as": "root" })).await.unwrap();
     assert_eq!(first["as"], "root");
@@ -173,7 +173,7 @@ async fn root_shells_are_not_gated_by_server_roles() {
 async fn closing_the_stream_ends_the_session_and_only_its_owner_can_type() {
     let sys = TestSystem::start().await;
     let (dev, _agent) = online(&sys, FakePlatform::new("lab-pc")).await;
-    let alice = sys.create_user("alice", "operator").await;
+    let alice = sys.create_user("alice").await;
 
     let (mut sh, _) = Shell::open(&sys, &alice, &dev, json!({})).await.unwrap();
     sh.expect("$ ").await;
@@ -207,7 +207,7 @@ async fn the_stream_reports_a_device_disconnect() {
 async fn rcli_shell_relays_keystrokes_and_exits_with_the_remote_code() {
     let sys = TestSystem::start().await;
     let (_dev, _agent) = online(&sys, FakePlatform::new("lab-pc")).await;
-    let alice = sys.create_user("alice", "operator").await;
+    let alice = sys.create_user("alice").await;
     let base = format!("http://{}", sys.server.http_addr);
     let rcli = |token: &str, args: &[&str], keys: &[&str]| {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -215,7 +215,7 @@ async fn rcli_shell_relays_keystrokes_and_exits_with_the_remote_code() {
         let argv: Vec<String> = ["rcli", "--server", &base, "--token", token].iter().chain(args).map(|s| s.to_string()).collect();
         async move {
             let mut out = Vec::new();
-            let result = rcli::run_with_input(argv, Some(rx), &mut out).await;
+            let result = rcli::run_with_input(argv, Some(rx), &mut out, std::sync::Arc::new(std::sync::Mutex::new(std::io::stderr()))).await;
             (result, String::from_utf8(out).unwrap())
         }
     };
@@ -238,7 +238,7 @@ async fn disconnect_ends_only_that_controllers_shell() {
     let sys = TestSystem::start().await;
     let (agent, dir) = rcli_testkit::online(&sys, "disconnect-one", FakePlatform::new("lab-pc")).await;
     let dev = agent.device_id().to_owned();
-    let (alice, bob) = (sys.create_user("alice", "operator").await, sys.create_user("bob", "operator").await);
+    let (alice, bob) = (sys.create_user("alice").await, sys.create_user("bob").await);
     let (mut alices, _) = Shell::open(&sys, &alice, &dev, json!({})).await.unwrap();
     let (mut bobs, _) = Shell::open(&sys, &bob, &dev, json!({})).await.unwrap();
     alices.expect("$ ").await;

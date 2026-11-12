@@ -10,16 +10,16 @@ async fn audit(sys: &TestSystem, query: &str) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn every_action_is_recorded_and_filterable_by_admins_only() {
+async fn every_action_is_recorded_and_filterable_by_any_user() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id().to_owned();
     sys.wait_device(&dev, |d| d["status"] == "Online").await;
     let other = sys.start_agent("other-pc").await;
     sys.wait_device(other.device_id(), |d| d["status"] == "Online").await;
-    let alice_token = sys.create_user("alice", "operator").await;
+    let alice_token = sys.create_user("alice").await;
     let alice = sys.api.with_token(Some(&alice_token));
-    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob").await));
     alice.post(&format!("/api/v1/devices/{dev}/lock")).await;
 
     let click = json!({ "actions": [{"type": "click", "x": 10, "y": 20}], "observe": "shot" });
@@ -52,7 +52,7 @@ async fn every_action_is_recorded_and_filterable_by_admins_only() {
     assert_eq!(since.len(), 2);
 
     let (status, body) = alice.get("/api/v1/audit").await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(status, StatusCode::OK, "every User reads the audit log: {body}");
 
     let out = sys.rcli(&["audit", "--device", "lab-pc", "--user", "alice"]).await.unwrap();
     assert!(out.contains("alice") && out.contains("click"), "{out}");

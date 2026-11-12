@@ -69,9 +69,35 @@ export default async function SettingsPage() {
             </div>
           </Form>
           <p className="text-muted-foreground">
-            Địa chỉ https:// công khai của Dashboard, nơi Controller gọi tới Server. Server tự ghi lại lần đầu Admin mở
+            Địa chỉ https:// công khai của Dashboard, nơi Controller gọi tới Server. Server tự ghi lại lần đầu một User mở
             Dashboard qua https:// (không tính http://, localhost hay IP nội bộ). Sửa ở đây nếu nó sai hoặc Dashboard
             đổi địa chỉ: mọi Agent nhận địa chỉ mới ở lần kết nối sau.
+          </p>
+        </div>
+      </section>
+
+      <section className={card} aria-label="Minimum Version">
+        <div className={cardHead}>
+          <h3 className={title}>Minimum Version</h3>
+        </div>
+        <div className="grid gap-3 p-5 text-sm">
+          <Form action={act.setMinimumVersion} className="grid gap-2">
+            <Input
+              name="version"
+              aria-label="Minimum Version"
+              defaultValue={settings.minimum_version}
+              placeholder="vd. 0.3.0 (để trống = không có)"
+              className="h-8"
+            />
+            <div>
+              <Button size="sm" variant="secondary">
+                Lưu Minimum Version
+              </Button>
+            </div>
+          </Form>
+          <p className="text-muted-foreground">
+            Device có Agent cũ hơn bản này hiện nhãn "cần cập nhật" và tự cập nhật lên Latest Build (thử lại mỗi giờ nếu
+            lỗi). Không Device nào bị chặn. Để trống để bỏ.
           </p>
         </div>
       </section>

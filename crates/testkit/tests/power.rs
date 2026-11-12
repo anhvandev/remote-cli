@@ -13,7 +13,7 @@ async fn an_operator_restarts_a_device_and_it_is_audited() {
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
-    let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
+    let alice = sys.api.with_token(Some(&sys.create_user("alice").await));
 
     let (status, body) = alice.post_json(&power(dev), &json!({ "action": "restart" })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -31,8 +31,8 @@ async fn while_a_control_lock_is_held_only_the_holder_may_restart_shut_down_or_s
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
-    let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
-    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let alice = sys.api.with_token(Some(&sys.create_user("alice").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob").await));
     let (status, _) = alice.post(&format!("/api/v1/devices/{dev}/lock")).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -72,7 +72,7 @@ async fn without_a_control_lock_anyone_may_power_off_and_bad_actions_are_rejecte
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
-    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob").await));
 
     let (status, body) = bob.post_json(&power(dev), &json!({ "action": "hibernate" })).await;
     assert_eq!((status, body["error"]["code"].clone()), (StatusCode::BAD_REQUEST, json!("bad_request")));
@@ -86,8 +86,8 @@ async fn rcli_power_runs_the_action_and_prints_the_lock_holder_when_refused() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
-    let alice = sys.create_user("alice", "operator").await;
-    let bob = sys.create_user("bob", "operator").await;
+    let alice = sys.create_user("alice").await;
+    let bob = sys.create_user("bob").await;
 
     let out = sys.rcli_as(&bob, &["power", "lab-pc", "lock"]).await.unwrap();
     assert_eq!(out, "lab-pc: lock sent\n");

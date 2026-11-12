@@ -4,7 +4,7 @@ Có ba cách điều khiển, cùng gọi một Controller API nên cùng quyề
 
 - **`rcli`**: CLI, công cụ chính. Mọi lệnh có `--json` cho script và AI.
 - **`rcli mcp`**: cùng các thao tác đó dưới dạng MCP tools cho Claude Code và các AI agent khác.
-- **Dashboard** (trình duyệt): xem fleet, biểu đồ, live view, điều khiển trực tiếp, web terminal, nút power/Wake, màn hình admin.
+- **Dashboard** (trình duyệt): xem fleet, biểu đồ, live view, điều khiển trực tiếp, web terminal, nút power/Wake, màn hình quản lý.
 
 Từ ngữ (Device, Action, Observation, Mark, Control Lock, Wake Relay…) theo `GLOSSARY.md`. Cách dựng Server xem `docs/deploy.md`.
 
@@ -40,15 +40,15 @@ rcli connect 123456789                                                        # 
 
 `rcli install` (root/Administrator) cài Agent, đăng ký Device, in Device ID và Device Password, rồi ghi cấu hình
 Controller dùng chung cho cả máy (`/etc/rcli/controller.json`, trên Windows `%ProgramData%\rcli\controller.json`):
-Server Address, Server Key, update key đã pin và API Address. Mọi user trên máy đọc được file này nhưng không sửa được,
+Server Address, Server Key và API Address. Mọi user trên máy đọc được file này nhưng không sửa được,
 nên ai cũng chạy được `rcli connect` và `rcli mcp` mà không cài lại. Server Address là `host:port` của cổng Agent
 (8443). Không cần nhập URL nào khác: Server gửi API Address (URL của Dashboard) lúc đăng ký và mỗi lần Agent kết nối.
-Server tự ghi lại API Address lần đầu một Admin mở Dashboard qua `https://`. Trước đó cài vẫn thành công, nhưng các
+Server tự ghi lại API Address lần đầu một User mở Dashboard qua `https://`. Trước đó cài vẫn thành công, nhưng các
 lệnh Controller báo `the Server has no API Address yet`. Server Key sai thì lệnh cài thất bại ngay và không để lại gì.
 
 API Address phải là `https://`; `http://` chỉ được nhận khi trỏ tới chính máy này (localhost, cho test hoặc Server
 chạy cùng máy) — không có cờ nào cho phép http tới máy khác. Chạy thử trên một máy, Dashboard ở `http://localhost:3080`:
-Admin đặt API Address ở Server Settings của Dashboard, hoặc
+User đặt API Address ở Server Settings của Dashboard, hoặc
 `rcli --server http://localhost:3080 api-address set http://localhost:3080` (sau `rcli --server http://localhost:3080 login <tên>`).
 
 `rcli uninstall` (root/Administrator) gỡ Device khỏi Server, gỡ Agent và cấu hình dùng chung; Device Password đã nhớ
@@ -57,9 +57,10 @@ nhớ mật khẩu (OS keychain: Keychain trên macOS, Credential Manager trên 
 `0600` khi không có keychain hoặc khi dùng `--config-dir`), nên các lệnh sau chỉ cần Device ID.
 `rcli forget <Device ID>` xoá mật khẩu đã nhớ. `RCLI_SERVER`/`RCLI_TOKEN` không còn dùng.
 
-Lệnh quản trị Server (`user`, `rollout`, `audit`, `server-key`, `server-address`, `api-address`, đổi tên/xoá Device, `lock force-release`)
+Lệnh quản trị Server (`user`, `audit`, `server-key`, `server-address`, `api-address`, `build`, đổi tên/xoá Device, `lock force-release`)
 cần một phiên User: `rcli login <tên>` (mật khẩu Dashboard + mã TOTP), `rcli logout` để xoá.
-Operator đăng nhập được nhưng các lệnh đó trả `admin_required`. Các lệnh trên Device vẫn dùng `rcli connect`.
+Mọi User đều chạy được các lệnh này (không có vai trò). Kết nối bằng Device Password thì không: chúng trả
+`user_session_required`. Các lệnh trên Device vẫn dùng `rcli connect`.
 
 ## Cài trên Windows
 
@@ -109,16 +110,11 @@ Lệnh này gỡ Device khỏi Server (nếu Server không tới được thì c
 
 Build chưa ký nên SmartScreen có thể cảnh báo khi chạy `rcli.exe` vừa tải: chọn "More info" → "Run anyway" (trang Connect của Dashboard giải thích).
 
-## Vai trò
+## Không có vai trò
 
-Role chỉ còn quản trị Server; việc gì chạy được trên Device do Device Settings của chính Device đó quyết định.
-
-| | operator | admin |
-|---|---|---|
-| Xem fleet, metrics, lịch sử, màn hình | ✅ | ✅ |
-| Điều khiển (khi giữ Control Lock), `exec`, `shell`, `--as root` | ✅ | ✅ |
-| Restart/Shut down/Sleep khi người khác giữ lock | ❌ | ❌ |
-| Users, Server Key, Server Address, Device (đổi tên/xoá/thu hồi/gộp), rollout Agent, audit, force-release lock | ❌ | ✅ |
+Mọi User làm được mọi việc: điều khiển Device và quản lý Server (Users, Server Key, Server Address, Device, Agent
+Build, audit, force-release lock). Việc gì chạy được trên Device do Device Settings của chính Device đó quyết định.
+Không User nào tự vô hiệu chính mình hay vô hiệu User cuối cùng còn hoạt động.
 
 ## Xem fleet
 
@@ -217,26 +213,40 @@ rcli power demo-pc restart      # restart / shutdown / sleep: bị từ chối n
 rcli wake demo-pc               # Device Offline → Waking; quá 3 phút chưa Online thì "Wake failed"
 ```
 
-## Admin
+## Quản lý Server
 
 ```bash
 rcli login an                                 # hỏi mật khẩu Dashboard + mã TOTP, lưu phiên vào config
 rcli logout                                   # thu hồi và xoá phiên đã lưu
-rcli user create an --role operator
+rcli user create an
 rcli user set-password an --password '...'   # in TOTP secret + otpauth URL cho Dashboard
 rcli user disable an
 rcli server-key show                          # Server Key (rk_<CA fingerprint>_<secret>) để cài Agent
 rcli server-key rotate                        # đổi secret: Device đã đăng ký vẫn Online, bản cài mới cần key mới
 rcli server-address show                      # Server Address Agent dùng
 rcli server-address set vps.example.com       # cấp lại chứng chỉ TLS cho tên mới
-rcli api-address show                         # API Address (rỗng tới khi Admin mở Dashboard qua https://)
+rcli api-address show                         # API Address (rỗng tới khi một User mở Dashboard qua https://)
 rcli api-address set https://rcli.example.com # sửa API Address; Agent nhận ở lần kết nối sau
 rcli device rename demo-pc may-ke-toan
 rcli device revoke <id>                       # Agent bị cắt và không kết nối lại được
 rcli device merge <id-cũ> --into <id-mới>     # gộp lịch sử sau khi cài lại máy
 rcli device delete <id>
+rcli build list                               # Agent Build theo phiên bản, mới nhất trước; đánh dấu Latest Build
+rcli build upload ./rcli --version 0.3.0 --target linux-x86_64   # Server tự tính sha256
+rcli build delete 0.3.0 linux-x86_64          # bỏ target thì xoá cả phiên bản
 rcli audit --device demo-pc --since 2026-11-01T00:00:00Z
 ```
+
+Cập nhật một máy lên Latest Build của OS/arch của nó (trên Device đã cài thì chạy bằng sudo/Administrator để
+Agent được restart). Lệnh in phiên bản đang chạy, Latest Build, tiến độ tải, kiểm tra sha256 và restart; không bao giờ
+hạ phiên bản. `rcli upgrade` vẫn chạy như alias ẩn.
+
+```bash
+sudo rcli update
+```
+
+Đặt Minimum Version trong Server Settings: Device dưới mức này hiện "update needed", Controller dưới mức này in cảnh
+báo, và Agent dưới mức này tự cập nhật lên Latest Build.
 
 Audit giữ 90 ngày: ai, lúc nào, Device nào, tham số, kết quả, exit code của lệnh terminal. Mật khẩu, chữ gõ với `secret` và chữ gõ ở màn khoá/màn đăng nhập bị che; ảnh, clip và phím gõ trong `shell` không bao giờ được lưu.
 
@@ -248,7 +258,8 @@ Mở `http://<server>:3080`, đăng nhập bằng tên + mật khẩu + mã TOTP
 - **Trang Device**: inventory, tài nguyên hiện tại, màn khoá/màn đăng nhập, người giữ Control Lock và giờ hết hạn, biểu đồ lịch sử (1h / 24h / 7d / 90d), nút Wake / Lock screen / Sleep / Restart / Shut down.
 - **Live view**: xem màn hình trực tiếp qua WebRTC, chọn màn hình nếu Device có nhiều. Video ở độ phân giải gốc của màn hình; chọn Live View Quality trên thanh công cụ (Quality: nét nhất, Balanced: mặc định, Speed: mượt nhất), đổi giữa chừng không phải kết nối lại. Khi bạn giữ Control Lock thì click và gõ trực tiếp lên video. Người khác giữ lock thì vẫn xem được và thấy ai giữ đến lúc nào.
 - **Web terminal**: ngay dưới live view; admin có thêm ô "as root".
-- **Quản trị** (chỉ admin): users, rollout Agent, đổi tên/gộp/thu hồi/xoá Device.
+- **Quản lý** (mọi User): Users, Updates (upload/xoá Agent Build), Settings (Server Key, Server Address, Minimum Version).
+- **Thao tác Device**: menu `⋯` trên mỗi dòng ở trang Devices: đổi tên, đổi Device ID, đổi Device Password, gộp, thu hồi, xoá.
 
 ## Dùng với Claude Code (MCP)
 

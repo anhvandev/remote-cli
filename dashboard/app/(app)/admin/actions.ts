@@ -1,6 +1,6 @@
 "use server";
 // Admin server actions. Each returns a Result for <Form/>: the one-time TOTP secret is shown once in
-// `message` and never stored by the Dashboard. The Server enforces admin-only on every call.
+// `message` and never stored by the Dashboard.
 import { api, json } from "@/lib/api";
 import { run } from "./run";
 
@@ -12,7 +12,7 @@ const seg = encodeURIComponent;
 
 export async function createUser(_: Result, form: FormData) {
   return run("/admin", async () => {
-    await api("/api/v1/users", json("POST", { name: str(form, "name"), role: str(form, "role") }));
+    await api("/api/v1/users", json("POST", { name: str(form, "name") }));
   });
 }
 
@@ -32,27 +32,31 @@ export async function disableUser(_: Result, form: FormData) {
 
 const device = (form: FormData) => `/api/v1/devices/${seg(str(form, "device"))}`;
 
-export async function renameDevice(_: Result, form: FormData) {
-  return run("/admin", () => api(device(form), json("PATCH", { name: str(form, "name") })));
+/** Renames a Device or changes its Device ID or Device Password: whichever of those fields the form has. */
+export async function updateDevice(_: Result, form: FormData) {
+  const fields = ["name", "device_id", "device_password"].filter((k) => form.has(k));
+  const change = Object.fromEntries(fields.map((k) => [k, str(form, k)]));
+  return run("/", async () => {
+    await api(device(form), json("PATCH", change));
+    return "Đã lưu";
+  });
 }
 
 export async function revokeDevice(_: Result, form: FormData) {
-  return run("/admin", () => api(`${device(form)}/revoke`, json("POST")));
+  return run("/", () => api(`${device(form)}/revoke`, json("POST")));
 }
 
 export async function deleteDevice(_: Result, form: FormData) {
-  return run("/admin", () => api(device(form), json("DELETE")));
+  return run("/", () => api(device(form), json("DELETE")));
+}
+
+/** Deletes one Agent Build (`target` set) or every target of a version. */
+export async function deleteBuild(_: Result, form: FormData) {
+  const target = str(form, "target");
+  const path = `/api/v1/agent-builds/${seg(str(form, "version"))}${target ? `/${seg(target)}` : ""}`;
+  return run("/admin/updates", () => api(path, json("DELETE")));
 }
 
 export async function mergeDevice(_: Result, form: FormData) {
-  return run("/admin", () => api(`${device(form)}/merge`, json("POST", { from: str(form, "from") })));
-}
-
-export async function rollout(_: Result, form: FormData) {
-  return run("/admin", async () => {
-    const devices = form.getAll("devices").map(String);
-    const body = form.get("scope") === "all" ? { all: true } : { devices };
-    const r = await api<{ devices: number }>(`/api/v1/agent-builds/${seg(str(form, "version"))}/rollout`, json("POST", body));
-    return `Đã rollout tới ${r.devices} Device`;
-  });
+  return run("/", () => api(`${device(form)}/merge`, json("POST", { from: str(form, "from") })));
 }

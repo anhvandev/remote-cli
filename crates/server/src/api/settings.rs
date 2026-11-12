@@ -1,4 +1,4 @@
-//! Server Settings (admin): the Server Key, the Server Address and the API Address.
+//! Server Settings (any User): the Server Key, the Server Address, the API Address and the Minimum Version.
 
 use axum::{
     extract::{rejection::JsonRejection, State},
@@ -8,7 +8,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{bad_request, Admin, ApiError, Caller};
+use super::{bad_request, ApiError, SignedIn};
 use crate::settings;
 
 pub fn routes() -> Router<super::State> {
@@ -17,29 +17,22 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/server-settings/server-key/rotate", post(rotate_key))
         .route("/api/v1/server-settings/server-address", put(set_address))
         .route("/api/v1/server-settings/api-address", put(set_api_address))
+        .route("/api/v1/server-settings/minimum-version", put(set_minimum_version))
 }
 
-/// Readable by every signed-in User: the Connect guide shows the Server Key and Server Address to all of them
-/// (ticket 18). A password connection has no Server-admin rights and is refused (spec). Rotate and set-address
-/// stay Admin.
-async fn show(Caller(user): Caller, State(state): State<super::State>) -> Result<Json<Value>, ApiError> {
-    if user.role == "controller" {
-        return Err(ApiError::new(
-            axum::http::StatusCode::FORBIDDEN,
-            "user_session_required",
-            "a password connection may not read the Server Settings",
-        ));
-    }
+/// Readable by every signed-in User: the Connect guide shows the Server Key and Server Address to all of them.
+async fn show(_: SignedIn, State(state): State<super::State>) -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({
         "server_key": state.settings.key().await,
         "ca_fingerprint": state.ca.fingerprint,
         "server_address": state.settings.address().await,
         "api_address": state.settings.api_address().await,
+        "minimum_version": state.settings.minimum_version().await,
     })))
 }
 
 /// Changes only the secret: registered Devices keep their certificates and stay Online.
-async fn rotate_key(Admin(_): Admin, State(state): State<super::State>) -> Result<Json<Value>, ApiError> {
+async fn rotate_key(_: SignedIn, State(state): State<super::State>) -> Result<Json<Value>, ApiError> {
     let server_key = state.settings.rotate_key(&state.db, &state.ca).await?;
     Ok(Json(json!({ "server_key": server_key, "ca_fingerprint": state.ca.fingerprint })))
 }
@@ -51,7 +44,7 @@ struct Address {
 
 /// Reissues the Server's TLS certificate so new connections get the new name.
 async fn set_address(
-    Admin(_): Admin,
+    _: SignedIn,
     State(state): State<super::State>,
     body: Result<Json<Address>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -68,10 +61,10 @@ async fn set_address(
     Ok(Json(json!({ "server_address": body.address })))
 }
 
-/// An Admin's correction of the API Address: an `https://` origin (or `http://` to loopback), no path. Agents get it
+/// A User's correction of the API Address: an `https://` origin (or `http://` to loopback), no path. Agents get it
 /// on their next connection.
 async fn set_api_address(
-    Admin(_): Admin,
+    _: SignedIn,
     State(state): State<super::State>,
     body: Result<Json<Address>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -86,4 +79,25 @@ async fn set_api_address(
     let url = format!("{scheme}://{authority}");
     state.settings.set_api_address(&state.db, &url, false).await?;
     Ok(Json(json!({ "api_address": url })))
+}
+
+#[derive(Deserialize)]
+struct MinimumVersion {
+    version: String,
+}
+
+/// Empty clears it. Not checked against the stored Agent Builds; connected Agents below it are offered the Latest Build.
+async fn set_minimum_version(
+    _: SignedIn,
+    State(state): State<super::State>,
+    body: Result<Json<MinimumVersion>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Json(body) = body.map_err(|e| bad_request(e.body_text()))?;
+    let version = body.version.trim();
+    if !version.is_empty() && semver::Version::parse(version).is_err() {
+        return Err(bad_request("the Minimum Version must be semver, such as 1.2.0"));
+    }
+    state.settings.set_minimum_version(&state.db, version).await?;
+    crate::updates::minimum_version_changed(&state).await?;
+    Ok(Json(json!({ "minimum_version": version })))
 }

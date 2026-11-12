@@ -1,5 +1,5 @@
 "use server";
-// Server Settings actions. The Server enforces admin-only on every call.
+// Server Settings actions.
 import { api, json, type ServerSettings } from "@/lib/api";
 import type { Result } from "../actions";
 import { run } from "../run";
@@ -28,5 +28,15 @@ export async function setApiAddress(_: Result, form: FormData) {
       json("PUT", { address: String(form.get("address") ?? "") }),
     );
     return `Đã đặt API Address: ${r.api_address}`;
+  });
+}
+
+export async function setMinimumVersion(_: Result, form: FormData) {
+  return run("/admin/settings", async () => {
+    const r = await api<{ minimum_version: string }>(
+      "/api/v1/server-settings/minimum-version",
+      json("PUT", { version: String(form.get("version") ?? "") }),
+    );
+    return r.minimum_version ? `Đã đặt Minimum Version: ${r.minimum_version}` : "Đã bỏ Minimum Version";
   });
 }

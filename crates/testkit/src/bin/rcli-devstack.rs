@@ -7,7 +7,7 @@
 //! `golf` Online (power test), `hotel` Offline in alpha's LAN whose last Wake failed (wake test),
 //! `india` Online (its Control Lock belongs to the control-reminder test), `juliet` Online with no displays
 //! (headless: the Dashboard hides its Screen tab).
-//! `update` in info.json is a build signed with the key the Agents trust, for the update screen tests.
+//! `update` in info.json is an Agent Build to upload, for the update screen tests.
 //! The clock starts at real time (the Dashboard picks history ranges by its own clock) and is frozen after seeding.
 
 use rcli_testkit::{platform::SessionState, Clock, DisplayInfo, FakePlatform, TestAgent, TestSystem};
@@ -110,16 +110,12 @@ async fn main() -> anyhow::Result<()> {
     }
     // A real target from the Dashboard picker that no test Agent runs on.
     let (version, target, build) = ("9.9.9", "windows-aarch64", "fake agent build");
-    let signature = rcli_protocol::update::sign(&sys.update_signing_key, version, target, &rcli_protocol::update::sha256_hex(build.as_bytes()))?;
 
     let info = json!({
         "api": format!("http://{}", sys.server.http_addr),
         "admin_token": sys.admin_token,
         "now": sys.clock.now().timestamp(),
-        "update": {"version": version, "target": target, "build": build,
-                   "signature": data_encoding::HEXLOWER.encode(&signature),
-                   // PKCS#8 of the throwaway update key, so specs can sign builds for other versions and targets.
-                   "signing_key": data_encoding::HEXLOWER.encode(&sys.update_signing_key)},
+        "update": {"version": version, "target": target, "build": build},
     });
     std::fs::write(out, info.to_string())?;
     println!("rcli-devstack ready: {info}");

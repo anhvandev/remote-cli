@@ -2,8 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { adminApi, newUser, signIn } from "./devstack";
 
 async function openSettings(page: Page) {
-  await signIn(page, await newUser("admin"));
-  await page.getByRole("link", { name: "Quản trị" }).click();
+  await signIn(page, await newUser());
+  await page.getByRole("link", { name: "Quản lý" }).click();
   await page.getByRole("main").getByRole("link", { name: "Server Settings", exact: true }).click();
   await expect(page).toHaveURL(/\/admin\/settings$/);
 }
@@ -78,14 +78,20 @@ test("an admin reads the API Address and corrects it", async ({ page }) => {
   expect((await adminApi("/api/v1/server-settings")).api_address).toBe("https://rcli.example.com");
 });
 
-test("operators cannot see the Server Settings page", async ({ page }) => {
-  await signIn(page, await newUser("operator"));
-  const nav = page.getByRole("navigation");
-  // Wait for sign-in to finish before navigating; on /signin the nav does not exist yet.
-  await expect(nav.getByRole("link", { name: "Device", exact: true }).first()).toBeVisible();
-  await expect(nav.getByRole("link", { name: "Server Settings" })).toHaveCount(0);
+test("a Minimum Version above a Device's Agent shows the update needed badge on the Devices page", async ({ page }) => {
+  await openSettings(page);
+  const card = page.getByRole("region", { name: "Minimum Version" });
+  await card.getByRole("textbox", { name: "Minimum Version" }).fill("99.0.0");
+  await card.getByRole("button", { name: "Lưu Minimum Version" }).click();
+  await expect(card.getByRole("status")).toContainText("Đã đặt Minimum Version: 99.0.0");
 
+  await page.goto("/");
+  const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: "alpha", exact: true }) });
+  await expect(row).toContainText(/update needed · \S+ < 99\.0\.0/);
+
+  // Back to none, so the other specs see no badge.
   await page.goto("/admin/settings");
-  await expect(page.getByText("Chỉ Admin mới xem được trang Quản trị.")).toBeVisible();
-  await expect(page.getByRole("region")).toHaveCount(0);
+  await card.getByRole("textbox", { name: "Minimum Version" }).fill("");
+  await card.getByRole("button", { name: "Lưu Minimum Version" }).click();
+  await expect(card.getByRole("status")).toContainText("Đã bỏ Minimum Version");
 });

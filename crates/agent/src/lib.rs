@@ -84,8 +84,6 @@ pub struct Credentials {
     pub key_pem: String,
     /// DER of the Server's CA that the Server Key's fingerprint pinned at registration.
     pub ca_der: Vec<u8>,
-    /// Raw Ed25519 public key pinned at registration; empty rejects every update.
-    pub update_key: Vec<u8>,
     /// The Device Password returned at registration. Never written to `credentials.json`: the Agent keeps it in its
     /// Secret Store and the Server only its hash.
     #[serde(default, skip_serializing)]
@@ -201,7 +199,7 @@ async fn connect_with_config(addr: &str, config: ClientConfig) -> anyhow::Result
 }
 
 /// Registers this Device with the Server Key: checks the Server's CA against the key's fingerprint, presents its
-/// secret, and gets back this Device's mTLS certificate, 9-digit Device ID and update key to pin.
+/// secret, and gets back this Device's mTLS certificate and 9-digit Device ID.
 /// The private key never leaves the Agent; only a CSR is sent.
 pub async fn register(server: &ServerAccess, platform: &dyn Platform) -> anyhow::Result<Credentials> {
     let key = rcgen::KeyPair::generate()?;
@@ -212,7 +210,6 @@ pub async fn register(server: &ServerAccess, platform: &dyn Platform) -> anyhow:
         cert_pem: r.cert_pem,
         key_pem: key.serialize_pem(),
         ca_der,
-        update_key: r.update_key,
         device_password: r.device_password,
         api_address: r.api_address,
     })
@@ -623,10 +620,9 @@ async fn session(
                         if updating.get(&update.version).is_none_or(|t| t.is_finished()) {
                             let api = status.map(|s| s.api_address()).filter(|a| !a.is_empty());
                             let job = UpdateJob {
-                                url: api.map(|api| format!("{}/api/v1/agent-builds/{}?device={}", api.trim_end_matches('/'), target(), creds.device_id)),
+                                url: api.map(|api| format!("{}/api/v1/agent-builds/{}", api.trim_end_matches('/'), target())),
                                 server_key: server_key.to_owned(),
                                 dir: agent.settings.dir().unwrap_or_else(std::env::temp_dir),
-                                key: creds.update_key.clone(),
                                 platform: agent.platform.clone(),
                                 replies: replies.clone(),
                                 update,
@@ -1004,13 +1000,11 @@ fn clamp_u16(n: u32) -> u16 {
 /// What an update task needs, taken from the session that received the `AgentUpdate`.
 struct UpdateJob {
     update: AgentUpdate,
-    /// The build lookup endpoint on the API Address, naming this Device; `None` while no API Address is known.
+    /// The build lookup endpoint on the API Address; `None` while no API Address is known.
     url: Option<String>,
     server_key: String,
     /// The Agent's data directory; the download goes to `updates/` in it.
     dir: std::path::PathBuf,
-    /// The update key pinned at registration.
-    key: Vec<u8>,
     platform: Arc<dyn Platform>,
     replies: tokio::sync::mpsc::UnboundedSender<agent_message::Msg>,
 }
@@ -1037,17 +1031,15 @@ async fn update_agent(job: UpdateJob) -> bool {
     }
 }
 
-/// Checks `job.update` against the pinned update key and this Agent's target, downloads and verifies the build,
-/// then installs it.
+/// Checks `job.update` against this Agent's target, downloads the build, checks its sha256, then installs it.
 async fn download_and_install(job: &UpdateJob) -> anyhow::Result<()> {
     let update = &job.update;
-    anyhow::ensure!(!job.key.is_empty(), "no update key pinned on this Agent");
     anyhow::ensure!(update.target == target(), "build is for {}, this Agent is {}", update.target, target());
     let url = job.url.as_deref().ok_or_else(|| anyhow::anyhow!("this Agent knows no API Address to download the build from"))?;
-    let build = download::fetch_build(url, &job.server_key, &job.dir, &job.key, &update.target).await?;
+    let build = download::fetch_build(url, &job.server_key, &job.dir, |_, _| {}).await?;
     if (build.sha256.as_str(), build.size) != (update.sha256.as_str(), update.size) {
         let _ = tokio::fs::remove_file(&build.path).await;
-        anyhow::bail!("the Server served a build ({} bytes, sha256 {}) other than the one rolled out", build.size, build.sha256);
+        anyhow::bail!("the Server served a build ({} bytes, sha256 {}) other than the one it offered", build.size, build.sha256);
     }
     let (platform, version, path) = (job.platform.clone(), build.version, build.path.clone());
     let installed = tokio::task::spawn_blocking(move || platform.install_update(&version, &path)).await?;

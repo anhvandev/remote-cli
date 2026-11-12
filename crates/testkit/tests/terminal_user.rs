@@ -65,7 +65,7 @@ async fn ask_accept_reject_and_the_thirty_second_timeout() {
     let (agent, dir) = online(&sys, "ask", FakePlatform::new("lab-pc")).await;
     let dev = agent.device_id().to_owned();
     let socket = dir.join("agent.sock");
-    let alice = sys.create_user("alice", "operator").await;
+    let alice = sys.create_user("alice").await;
 
     let (status, out) = root_whoami(&sys, &alice, &dev).await;
     assert_eq!((status, &out["error"]["code"]), (StatusCode::FORBIDDEN, &json!("root_denied")), "{out}");
@@ -127,13 +127,13 @@ async fn a_session_grant_lasts_until_the_session_ends() {
 
     // The person at the Device grants root to alice for this session, without changing the setting.
     sys.agent_rcli(&socket, &["agent", "root", "grant", "alice"]).await.unwrap();
-    let alice = sys.create_user("alice", "operator").await;
+    let alice = sys.create_user("alice").await;
     let (status, out) = root_whoami(&sys, &alice, &dev).await;
     assert_eq!(status, StatusCode::OK, "{out}");
     assert_eq!(out["root_decision"], "session", "{out}");
     assert!(agent.platform.root_prompts().is_empty(), "a grant needs no prompt");
     // Someone else still asks.
-    let bob = sys.create_user("bob", "operator").await;
+    let bob = sys.create_user("bob").await;
     let (status, _) = root_whoami(&sys, &bob, &dev).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
@@ -174,7 +174,7 @@ async fn a_session_grant_ends_when_its_controller_is_disconnected() {
     let (agent, dir) = online(&sys, "grant-disconnect", FakePlatform::new("lab-pc")).await;
     let dev = agent.device_id().to_owned();
     let socket = dir.join("agent.sock");
-    let alice = sys.create_user("alice", "operator").await;
+    let alice = sys.create_user("alice").await;
 
     // The GUI grants by the name it lists: "alice (Dashboard)".
     sys.agent_rcli(&socket, &["agent", "root", "grant", "alice (Dashboard)"]).await.unwrap();
@@ -192,7 +192,7 @@ async fn rcli_root_on_makes_exec_request_root_by_default() {
     let sys = TestSystem::start().await;
     let (agent, _dir) = online(&sys, "controller-root", FakePlatform::new("lab-pc")).await;
     let dev = agent.device_id().to_owned();
-    let _alice = sys.create_user("alice", "operator").await;
+    let _alice = sys.create_user("alice").await;
     let config_dir = temp_dir("controller-root-config");
     // A Controller that connected with the Device Password, as `rcli install` + `rcli connect` leave it.
     sys.controller_config(&config_dir, Some((&dev, &agent.device_password().unwrap()))).await;
@@ -219,7 +219,7 @@ async fn every_root_run_and_prompt_answer_is_audited() {
     let sys = TestSystem::start().await;
     let (agent, _dir) = online(&sys, "audit", FakePlatform::new("lab-pc")).await;
     let dev = agent.device_id().to_owned();
-    let alice = sys.create_user("alice", "operator").await;
+    let alice = sys.create_user("alice").await;
 
     // accepted
     agent.platform.answer_root_prompts([true]);

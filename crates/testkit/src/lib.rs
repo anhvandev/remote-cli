@@ -13,7 +13,7 @@ pub use live::{local_candidate_type, LiveViewer, StreamRate, TestTurn};
 pub use rcli_agent::platform::{self, Button, DisplayInfo, FakePlatform, Input, SessionState, UiElement};
 use rcli_agent::{Credentials, ServerAccess};
 pub use rcli_server::clock::{Clock, ManualClock};
-pub use reqwest::StatusCode;
+pub use reqwest::{Method, StatusCode};
 pub use rmcp;
 use serde_json::Value;
 use testcontainers_modules::{
@@ -41,8 +41,6 @@ pub struct TestSystem {
     pub admin_token: String,
     /// The `admin` user's TOTP secret, so `sign_in_admin` needs no admin access.
     pub admin_totp_secret: String,
-    /// PKCS#8 Ed25519 key that signs Agent builds; the Server hands its public half to Devices at registration.
-    pub update_signing_key: Vec<u8>,
     /// The TURN relay the Server hands out, if started with `start_with_turn`.
     pub turn: Option<TestTurn>,
     /// The running Server's config (`database_url` reaches its Postgres).
@@ -99,7 +97,6 @@ impl TestSystem {
         let port = postgres.get_host_port_ipv4(5432).await.unwrap();
         let (storage, s3) = Self::start_storage().await;
         let clock = Arc::new(ManualClock::default());
-        let (update_signing_key, update_public_key) = rcli_protocol::update::generate_key().unwrap();
         let config = rcli_server::Config {
             database_url: format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
             http_addr,
@@ -109,7 +106,6 @@ impl TestSystem {
             master_key,
             ice_urls: turn.iter().map(|t| format!("turn:{}?transport=udp", t.addr)).collect(),
             turn_secret: turn.as_ref().map(|_| TURN_SECRET.into()),
-            update_public_key: Some(update_public_key),
             // The Dashboard calls the Server from this host, as a trusted proxy (`ApiClient::via_proxy`).
             trusted_proxies: vec![std::net::Ipv4Addr::LOCALHOST.into()],
             s3,
@@ -121,13 +117,12 @@ impl TestSystem {
             server,
             admin_token: String::new(),
             admin_totp_secret: String::new(),
-            update_signing_key,
             turn,
             config,
             _postgres: postgres,
             _storage: storage,
         };
-        sys.admin_totp_secret = sys.create_dashboard_user("admin", "admin").await;
+        sys.admin_totp_secret = sys.create_dashboard_user("admin").await;
         sys.admin_token = sys.sign_in("admin", &sys.admin_totp_secret.clone()).await;
         sys.api = sys.api.with_token(Some(&sys.admin_token));
         sys
@@ -180,10 +175,10 @@ impl TestSystem {
         body["token"].as_str().unwrap().to_owned()
     }
 
-    /// Creates `name` with `role`, sets its Dashboard password to `TestSystem::PASSWORD`, and returns its TOTP
+    /// Creates `name`, sets its Dashboard password to `TestSystem::PASSWORD`, and returns its TOTP
     /// secret (what `rcli login` needs); it does not sign in.
-    pub async fn create_dashboard_user(&self, name: &str, role: &str) -> String {
-        let (status, body) = self.api.post_json("/api/v1/users", &serde_json::json!({ "name": name, "role": role })).await;
+    pub async fn create_dashboard_user(&self, name: &str) -> String {
+        let (status, body) = self.api.post_json("/api/v1/users", &serde_json::json!({ "name": name })).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         let (status, enrolled) =
             self.api.post_json(&format!("/api/v1/users/{name}/credentials"), &serde_json::json!({ "password": Self::PASSWORD })).await;
@@ -207,10 +202,16 @@ impl TestSystem {
         self.server.server_key.clone()
     }
 
-    /// Hex update signature of `build` as `version` for `target`, with the key the Server and Devices trust.
-    pub fn sign_build(&self, version: &str, target: &str, build: &[u8]) -> String {
-        let sha256 = rcli_protocol::update::sha256_hex(build);
-        hex::encode(rcli_protocol::update::sign(&self.update_signing_key, version, target, &sha256).unwrap())
+    /// Uploads `build` as the Agent Build `version` for `target` (as the admin).
+    pub async fn upload_build(&self, version: &str, target: &str, build: &[u8]) {
+        let (status, body) = self.api.put_bytes(&format!("/api/v1/agent-builds/{version}/{target}"), build.to_vec()).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    /// Sends `update` straight to the connected Agent of `device` (its Device JSON), as an old Server would.
+    pub fn send_agent_update(&self, device: &Value, update: rcli_protocol::agent::AgentUpdate) {
+        let id = device["id"].as_str().unwrap().parse().unwrap();
+        self.server.state.agents.send(id, rcli_protocol::agent::server_message::Msg::Update(update));
     }
 
     /// `localhost:port` of the Agent port, as an Agent is given it.
@@ -317,7 +318,6 @@ impl TestSystem {
         let machine = rcli::config::Machine {
             server: self.agent_addr(),
             server_key: self.server_key(),
-            update_key: hex::encode(self.config.update_public_key.clone().unwrap_or_default()),
             api_address: format!("http://{}", self.server.http_addr),
         };
         rcli::config::save_machine(&rcli::config::machine_path(Some(dir)), &machine).unwrap();
@@ -326,9 +326,9 @@ impl TestSystem {
         }
     }
 
-    /// Creates a user with `role` ("admin" | "operator"), signs them in, and returns their session token.
-    pub async fn create_user(&self, name: &str, role: &str) -> String {
-        let secret = self.create_dashboard_user(name, role).await;
+    /// Creates a user, signs them in, and returns their session token.
+    pub async fn create_user(&self, name: &str) -> String {
+        let secret = self.create_dashboard_user(name).await;
         self.sign_in(name, &secret).await
     }
 
@@ -662,6 +662,10 @@ impl DeviceClient {
 
     pub async fn post_json(&self, path: &str, body: &Value) -> (StatusCode, Value) {
         self.send(self.api.http.post(self.url(path)).json(body)).await
+    }
+
+    pub async fn request(&self, method: reqwest::Method, path: &str, body: &Value) -> (StatusCode, Value) {
+        self.send(self.api.http.request(method, self.url(path)).json(body)).await
     }
 
     /// Opens a streaming GET (e.g. the Control Lock `watch`) and waits for its first chunk.

@@ -35,8 +35,6 @@ pub fn router(state: State) -> Router {
     Router::new()
         .route("/api/v1/server-ca", get(|s: axum::extract::State<State>| async move { s.ca.cert_pem.clone() }))
         .route("/api/v1/server-key", get(server_key))
-        // Public. No rcli Controller reads it: `rcli install` pins the update key at registration over the Agent port.
-        .route("/api/v1/update-key", get(update_key))
         .merge(settings::routes())
         .merge(devices::routes())
         .merge(history::routes())
@@ -52,12 +50,22 @@ pub fn router(state: State) -> Router {
         .merge(sessions::routes())
         .merge(live::routes())
         .merge(shell::routes())
+        .layer(axum::middleware::map_response_with_state(state.clone(), minimum_version_header))
         .with_state(state)
 }
 
-/// The Server Key (admin): Agents and Controllers need it to connect.
+/// Every response announces the Minimum Version, when one is set, so Controllers below it can warn.
+async fn minimum_version_header(axum::extract::State(state): axum::extract::State<State>, mut resp: Response) -> Response {
+    let minimum = state.settings.minimum_version().await;
+    if let Some(value) = Some(minimum).filter(|m| !m.is_empty()).and_then(|m| m.parse().ok()) {
+        resp.headers_mut().insert("x-rcli-minimum-version", value);
+    }
+    resp
+}
+
+/// The Server Key: Agents and Controllers need it to connect.
 async fn server_key(
-    _: Admin,
+    _: SignedIn,
     axum::extract::State(state): axum::extract::State<State>,
 ) -> Json<serde_json::Value> {
     Json(json!({ "server_key": state.settings.key().await, "ca_fingerprint": state.ca.fingerprint }))
@@ -67,15 +75,6 @@ async fn server_key(
 fn remaining_secs(until: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chrono::Utc>) -> i64 {
     let ms = (until - now).num_milliseconds().max(0);
     (ms + 999) / 1000
-}
-
-/// The update-signing public key (hex); empty = no updates. `rcli install` pins it at registration instead.
-/// `mac` is its HMAC under the Server Key's secret, which the Controller already holds; an impostor rewriting
-/// `/api/v1/server-ca` and `/api/v1/update-key` over plain HTTP cannot forge it.
-async fn update_key(axum::extract::State(state): axum::extract::State<State>) -> Json<serde_json::Value> {
-    let key = state.config.update_public_key.as_deref().map(hex::encode).unwrap_or_default();
-    let mac = hex::encode(rcli_protocol::update::pin_mac(&crate::server_key::current(&state).await.secret, &key));
-    Json(json!({ "update_key": key, "mac": mac }))
 }
 
 /// Typed API error: `{"error": {"code": "...", "message": "..."}}`.
@@ -207,9 +206,9 @@ impl FromRequestParts<State> for Caller {
                 .await?
                 .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"))?;
             // Only the Dashboard's own requests mark themselves; its `/api/v1` pass-through for Controllers strips the
-            // mark, so an Admin's CLI call through the Dashboard URL teaches nothing.
+            // mark, so a User's CLI call through the Dashboard URL teaches nothing.
             let (proto, host) = (header("x-forwarded-proto"), header("x-forwarded-host"));
-            let dashboard = user.is_admin() && header("x-rcli-dashboard").is_some();
+            let dashboard = header("x-rcli-dashboard").is_some();
             if let Some(url) = dashboard.then(|| api_address_of(peer, proto, host, &state.config.trusted_proxies)).flatten() {
                 state.settings.set_api_address(&state.db, &url, true).await?;
             }
@@ -242,18 +241,23 @@ impl FromRequestParts<State> for Caller {
     }
 }
 
-/// Extractor: like `Caller`, but the user must be an admin; operators get 403 `admin_required`.
-pub struct Admin(pub crate::auth::User);
+/// Extractor: like `Caller`, but a signed-in User; a password connection (scoped to one Device) gets 403
+/// `user_session_required`. Every User may administer the Server (ADR 0009).
+pub struct SignedIn(pub crate::auth::User);
 
-impl FromRequestParts<State> for Admin {
+impl FromRequestParts<State> for SignedIn {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &State) -> Result<Self, Self::Rejection> {
         let Caller(user) = Caller::from_request_parts(parts, state).await?;
-        if !user.is_admin() {
-            return Err(ApiError::new(StatusCode::FORBIDDEN, "admin_required", "this operation requires the admin role"));
+        if user.device_scope.is_some() {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "user_session_required",
+                "a password connection may only reach its own Device; sign in as a User",
+            ));
         }
-        Ok(Admin(user))
+        Ok(SignedIn(user))
     }
 }
 
