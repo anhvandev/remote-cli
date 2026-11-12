@@ -108,7 +108,8 @@ async fn main() -> anyhow::Result<()> {
     for name in ["delta", "echo", "foxtrot"] {
         sys.register(&FakePlatform::new(name)).await?;
     }
-    let (version, target, build) = ("9.9.9", "fake-x86_64", "fake agent build");
+    // A real target from the Dashboard picker that no test Agent runs on.
+    let (version, target, build) = ("9.9.9", "windows-aarch64", "fake agent build");
     let signature = rcli_protocol::update::sign(&sys.update_signing_key, version, target, build.as_bytes())?;
 
     let info = json!({
