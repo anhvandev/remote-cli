@@ -4,9 +4,9 @@ import { newUser, signIn } from "./devstack";
 test("signed-in pages share a sidebar that marks the current entry", async ({ page }) => {
   await signIn(page, await newUser());
   const nav = page.getByRole("navigation");
-  const device = nav.getByRole("link", { name: "Device", exact: true }).first(); // the Quản trị group has its own Device
+  const device = nav.getByRole("link", { name: "Device", exact: true }).first();
   await expect(device).toHaveAttribute("aria-current", "page");
-  await expect(nav.getByRole("link", { name: "Quản trị" })).toHaveCount(0);
+  await expect(nav.getByRole("link", { name: "Quản lý" })).toHaveCount(1); // every User, no roles (ADR 0009)
   await expect(nav).toContainText("Đăng xuất");
 
   // The Device entry stays current on a Device page; the sidebar persists across navigation.
@@ -15,12 +15,12 @@ test("signed-in pages share a sidebar that marks the current entry", async ({ pa
   await expect(device).toHaveAttribute("aria-current", "page");
 });
 
-test("an admin sees Quản trị marked when on it", async ({ page }) => {
-  await signIn(page, await newUser("admin"));
-  await page.getByRole("link", { name: "Quản trị" }).click();
-  await expect(page.getByRole("heading", { name: "Quản trị" })).toBeVisible();
+test("a User sees Quản lý marked when on it", async ({ page }) => {
+  await signIn(page, await newUser());
+  await page.getByRole("link", { name: "Quản lý" }).click();
+  await expect(page.getByRole("heading", { name: "Quản lý" })).toBeVisible();
   const nav = page.getByRole("navigation");
-  await expect(nav.getByRole("link", { name: "Quản trị" })).toHaveAttribute("aria-current", "page");
+  await expect(nav.getByRole("link", { name: "Quản lý" })).toHaveAttribute("aria-current", "page");
   await expect(nav.getByRole("link", { name: "Device", exact: true }).first()).not.toHaveAttribute("aria-current", "page");
 });
 

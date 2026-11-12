@@ -24,8 +24,8 @@ async fn input_needs_the_control_lock_but_anyone_can_observe() {
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
-    let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
-    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let alice = sys.api.with_token(Some(&sys.create_user("alice").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob").await));
     let actions = format!("/api/v1/devices/{dev}/actions");
     let click = act(json!({"type": "click", "x": 10, "y": 10}), "none");
 
@@ -215,7 +215,7 @@ async fn shot_waits_for_the_screen_to_settle_and_repeats_say_unchanged() {
     assert_eq!(obs["images"][0]["data"], Value::Null);
 
     // "Unchanged" is relative to what each Controller saw.
-    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob").await));
     let (_, obs) = bob.post_json(&actions, &json!({ "actions": [] })).await;
     assert_eq!(obs["images"][0]["unchanged"], false);
 

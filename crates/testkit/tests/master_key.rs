@@ -15,7 +15,7 @@ async fn at_rest(sys: &TestSystem) -> (bool, Vec<u8>) {
 async fn the_master_key_encrypts_the_ca_key_and_totp_secrets_and_seals_old_plaintext_on_startup() {
     // Without a master key everything still works, in plaintext.
     let mut sys = TestSystem::start_without_master_key().await;
-    sys.create_user("vanna", "operator").await;
+    sys.create_user("vanna").await;
     let (_, enrolled) = sys.api.post_json("/api/v1/users/vanna/credentials", &json!({"password": "pw-1234567"})).await;
     let secret = enrolled["totp_secret"].as_str().unwrap().to_owned();
     let raw = data_encoding::BASE32_NOPAD.decode(secret.as_bytes()).unwrap();

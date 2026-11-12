@@ -38,12 +38,12 @@ EOF
 
 | Biến | Bắt buộc | Ý nghĩa |
 |---|---|---|
-| `RCLI_BOOTSTRAP_ADMIN_TOKEN` | có | Token admin tạm để tạo admin đầu tiên. Chỉ có hiệu lực khi chưa có admin nào còn phiên đăng nhập hợp lệ. |
+| `RCLI_BOOTSTRAP_ADMIN_TOKEN` | có | Token tạm để tạo User đầu tiên. Chỉ có hiệu lực khi chưa có User nào còn phiên đăng nhập hợp lệ. |
 | `RCLI_TURN_SECRET` | có | Secret chung giữa Server và coturn để cấp credential TURN. |
 | `RCLI_TURN_HOST` | nên đặt | Tên/IP public của VPS mà trình duyệt và Agent dùng để tới coturn. Mặc định `localhost`. |
 | `RCLI_AGENT_HOSTNAMES` | chỉ lần đầu | Server Address ban đầu (đưa vào chứng chỉ TLS cổng 8443). Sau lần khởi động đầu, đổi bằng `rcli server-address set` hoặc trang Server Settings. Mặc định `localhost`. |
 | `RCLI_MASTER_KEY` | nên đặt | 64 ký tự hex. Mã hoá CA private key và TOTP secret. |
-| `RCLI_TRUSTED_PROXIES` | không | Mặc định là IP của Dashboard trong mạng Docker (`172.31.250.10`, `compose.yaml`). Chỉ với request từ các IP này, Server mới lấy IP thật của Controller từ `X-Forwarded-For` (proxy TLS trước Dashboard phải thêm header này). Nhờ vậy giới hạn nhập sai Device Password và audit tính theo từng Controller, không theo Dashboard. Server cũng chỉ ghi lại API Address từ request của Admin qua Dashboard đến từ các IP này. Chỉ đổi khi đổi mạng Docker trong `compose.yaml`. |
+| `RCLI_TRUSTED_PROXIES` | không | Mặc định là IP của Dashboard trong mạng Docker (`172.31.250.10`, `compose.yaml`). Chỉ với request từ các IP này, Server mới lấy IP thật của Controller từ `X-Forwarded-For` (proxy TLS trước Dashboard phải thêm header này). Nhờ vậy giới hạn nhập sai Device Password và audit tính theo từng Controller, không theo Dashboard. Server cũng chỉ ghi lại API Address từ request của User qua Dashboard đến từ các IP này. Chỉ đổi khi đổi mạng Docker trong `compose.yaml`. |
 | `RCLI_S3_ACCESS_KEY`, `RCLI_S3_SECRET_KEY` | có | Credential của service lưu file `storage` (SeaweedFS, S3). Compose đặt cùng giá trị cho `storage` và Server. |
 | `RCLI_S3_ENDPOINT`, `RCLI_S3_BUCKET` | không | Mặc định `http://storage:8333` và `rcli`. Server tự tạo bucket nếu chưa có. Server không khởi động nếu thiếu một trong bốn biến `RCLI_S3_*` (compose đặt sẵn hai biến này). |
 | `POSTGRES_PASSWORD` | nên đặt | Mặc định `rcli`. |
@@ -62,22 +62,22 @@ docker compose ps        # cả 5 service: postgres, storage, server, dashboard,
 
 Lần build đầu mất vài phút (biên dịch Rust và `next build`).
 
-## 4. Tạo admin đầu tiên
+## 4. Tạo User đầu tiên
 
 Cần binary `rcli` trên máy của bạn (xem `docs/usage.md`, mục Cài rcli). Máy này chưa cài nên các lệnh dưới đây chỉ
 thẳng URL của Dashboard bằng `--server`:
 
 ```bash
-rcli --server https://vps.example.com --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user create me --role admin
+rcli --server https://vps.example.com --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user create me
 rcli --server https://vps.example.com --token "$RCLI_BOOTSTRAP_ADMIN_TOKEN" user set-password me --password '<mật khẩu Dashboard>'
 #   → in ra totp_secret và otpauth_url: quét otpauth_url bằng app Authenticator
 rcli --server https://vps.example.com login me   # mật khẩu Dashboard + mã TOTP; phiên được lưu vào config
 ```
 
-Từ lúc admin `me` đăng nhập, bootstrap token hết tác dụng. Nó chỉ hoạt động lại nếu mọi admin bị vô hiệu hoá hoặc phiên đã hết hạn (đường cứu hộ).
+Từ lúc User `me` đăng nhập, bootstrap token hết tác dụng. Nó chỉ hoạt động lại nếu mọi User bị vô hiệu hoá hoặc phiên đã hết hạn (đường cứu hộ).
 
 Mở `https://vps.example.com`, đăng nhập bằng `me` + mật khẩu + mã TOTP. Sai 5 lần liên tiếp thì tài khoản bị khoá 15 phút.
-Lần đầu một Admin mở Dashboard qua `https://`, Server ghi lại URL này làm API Address và gửi nó cho mọi bản cài (xem
+Lần đầu một User mở Dashboard qua `https://`, Server ghi lại URL này làm API Address và gửi nó cho mọi bản cài (xem
 và sửa ở Server Settings hoặc `rcli api-address`).
 
 ## 5. Thêm Device

@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A former Operator can perform every former admin-only action; existing Operators need no migration step
 - [ ] A Device-Password caller is refused on every former admin-only route

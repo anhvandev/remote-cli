@@ -26,8 +26,8 @@ async fn any_action_from_the_holder_resets_the_ten_minute_idle_timer() {
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
-    let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
-    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let alice = sys.api.with_token(Some(&sys.create_user("alice").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob").await));
 
     let (status, l) = alice.post(&lock(dev)).await;
     assert_eq!(status, StatusCode::OK, "{l}");
@@ -72,8 +72,8 @@ async fn lock_survives_a_short_holder_disconnect_and_ends_after_60_seconds() {
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
-    let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
-    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let alice = sys.api.with_token(Some(&sys.create_user("alice").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob").await));
     alice.post(&lock(dev)).await;
 
     // Alice's connection: open, then drop. The Server notices, then 59 s pass.
@@ -105,20 +105,18 @@ async fn lock_survives_a_short_holder_disconnect_and_ends_after_60_seconds() {
 }
 
 #[tokio::test]
-async fn admin_force_release_is_audited_and_others_cannot_pre_empt() {
+async fn force_release_is_audited_and_others_cannot_pre_empt() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
-    let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
-    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let alice = sys.api.with_token(Some(&sys.create_user("alice").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob").await));
     alice.post(&lock(dev)).await;
 
-    // Neither an operator nor an admin can take a held lock; operators cannot force-release.
+    // Nobody else can take a held lock; force-release is the way to recover it.
     let (status, body) = sys.api.post(&lock(dev)).await;
     assert_eq!((status, body["error"]["code"].clone()), (StatusCode::CONFLICT, json!("control_lock_held")));
-    let (status, _) = bob.post(&format!("{}/force-release", lock(dev))).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
 
     // Non-holders still observe and read metrics.
     let (status, _) = bob.post_json(&actions(dev), &json!({ "actions": [] })).await;
@@ -180,7 +178,7 @@ async fn cli_shows_expiry_and_admin_force_releases() {
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
-    let alice = sys.create_user("alice", "operator").await;
+    let alice = sys.create_user("alice").await;
     sys.rcli_as(&alice, &["lock", "acquire", dev]).await.unwrap();
 
     let err = sys.rcli(&["lock", "acquire", dev]).await.unwrap_err().to_string();

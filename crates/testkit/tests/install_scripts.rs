@@ -137,10 +137,7 @@ async fn an_admin_publishes_install_packages_that_anyone_downloads() {
     assert_eq!(status, StatusCode::OK);
     assert!(bytes == large, "the large package came back different ({} bytes)", bytes.len());
 
-    // Only an Admin uploads, and only the package kinds the guide offers.
-    let operator = sys.create_user("olga", "operator").await;
-    let (status, _) = sys.api.with_token(Some(&operator)).put_bytes("/api/v1/packages/deb/x86_64", b"x".to_vec()).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Only the package kinds the guide offers.
     let (status, _) = sys.api.put_bytes("/api/v1/packages/zip/x86_64", b"x".to_vec()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }

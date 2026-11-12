@@ -459,12 +459,7 @@ enum PackageCommand {
 #[derive(Subcommand)]
 enum UserCommand {
     /// Create a user.
-    Create {
-        name: String,
-        /// admin or operator.
-        #[arg(long)]
-        role: String,
-    },
+    Create { name: String },
     /// List users.
     List,
     /// Disable a user; all of their sessions stop working.
@@ -616,7 +611,7 @@ where
         }
         config::set_session(&dir, Some(str_of(&body["token"]).to_owned()))?;
         let user = &body["user"];
-        let text = format!("signed in as {} ({})\n", str_of(&user["name"]), str_of(&user["role"]));
+        let text = format!("signed in as {}\n", str_of(&user["name"]));
         return match cli.json {
             true => Ok(writeln!(out, "{}", json!({ "user": user, "expires_at": body["expires_at"] }))?),
             false => Ok(write!(out, "{text}")?),
@@ -818,18 +813,18 @@ where
             let text = format!("api address {}\n", str_of(&s["api_address"]));
             (s, text)
         }
-        Command::User(UserCommand::Create { name, role }) => {
-            let body = serde_json::json!({ "name": name, "role": role });
+        Command::User(UserCommand::Create { name }) => {
+            let body = serde_json::json!({ "name": name });
             let user = api.call(reqwest::Method::POST, "/api/v1/users", Some(&body)).await?;
-            let text = format!("created {} ({})\n", str_of(&user["name"]), str_of(&user["role"]));
+            let text = format!("created {}\n", str_of(&user["name"]));
             (user, text)
         }
         Command::User(UserCommand::List) => {
             let users = api.call(reqwest::Method::GET, "/api/v1/users", None).await?;
-            let mut text = format!("{:<24}  {:<8}  {}\n", "NAME", "ROLE", "STATE");
+            let mut text = format!("{:<24}  {}\n", "NAME", "STATE");
             for u in users.as_array().into_iter().flatten() {
                 let state = if u["disabled_at"].is_null() { "enabled" } else { "disabled" };
-                text += &format!("{:<24}  {:<8}  {}\n", str_of(&u["name"]), str_of(&u["role"]), state);
+                text += &format!("{:<24}  {}\n", str_of(&u["name"]), state);
             }
             (users, text)
         }

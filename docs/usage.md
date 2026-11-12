@@ -43,12 +43,12 @@ Controller dùng chung cho cả máy (`/etc/rcli/controller.json`, trên Windows
 Server Address, Server Key và API Address. Mọi user trên máy đọc được file này nhưng không sửa được,
 nên ai cũng chạy được `rcli connect` và `rcli mcp` mà không cài lại. Server Address là `host:port` của cổng Agent
 (8443). Không cần nhập URL nào khác: Server gửi API Address (URL của Dashboard) lúc đăng ký và mỗi lần Agent kết nối.
-Server tự ghi lại API Address lần đầu một Admin mở Dashboard qua `https://`. Trước đó cài vẫn thành công, nhưng các
+Server tự ghi lại API Address lần đầu một User mở Dashboard qua `https://`. Trước đó cài vẫn thành công, nhưng các
 lệnh Controller báo `the Server has no API Address yet`. Server Key sai thì lệnh cài thất bại ngay và không để lại gì.
 
 API Address phải là `https://`; `http://` chỉ được nhận khi trỏ tới chính máy này (localhost, cho test hoặc Server
 chạy cùng máy) — không có cờ nào cho phép http tới máy khác. Chạy thử trên một máy, Dashboard ở `http://localhost:3080`:
-Admin đặt API Address ở Server Settings của Dashboard, hoặc
+User đặt API Address ở Server Settings của Dashboard, hoặc
 `rcli --server http://localhost:3080 api-address set http://localhost:3080` (sau `rcli --server http://localhost:3080 login <tên>`).
 
 `rcli uninstall` (root/Administrator) gỡ Device khỏi Server, gỡ Agent và cấu hình dùng chung; Device Password đã nhớ
@@ -59,7 +59,8 @@ nhớ mật khẩu (OS keychain: Keychain trên macOS, Credential Manager trên 
 
 Lệnh quản trị Server (`user`, `audit`, `server-key`, `server-address`, `api-address`, đổi tên/xoá Device, `lock force-release`)
 cần một phiên User: `rcli login <tên>` (mật khẩu Dashboard + mã TOTP), `rcli logout` để xoá.
-Operator đăng nhập được nhưng các lệnh đó trả `admin_required`. Các lệnh trên Device vẫn dùng `rcli connect`.
+Mọi User đều chạy được các lệnh này (không có vai trò). Kết nối bằng Device Password thì không: chúng trả
+`user_session_required`. Các lệnh trên Device vẫn dùng `rcli connect`.
 
 ## Cài trên Windows
 
@@ -109,16 +110,11 @@ Lệnh này gỡ Device khỏi Server (nếu Server không tới được thì c
 
 Build chưa ký nên SmartScreen có thể cảnh báo khi chạy `rcli.exe` vừa tải: chọn "More info" → "Run anyway" (trang Connect của Dashboard giải thích).
 
-## Vai trò
+## Không có vai trò
 
-Role chỉ còn quản trị Server; việc gì chạy được trên Device do Device Settings của chính Device đó quyết định.
-
-| | operator | admin |
-|---|---|---|
-| Xem fleet, metrics, lịch sử, màn hình | ✅ | ✅ |
-| Điều khiển (khi giữ Control Lock), `exec`, `shell`, `--as root` | ✅ | ✅ |
-| Restart/Shut down/Sleep khi người khác giữ lock | ❌ | ❌ |
-| Users, Server Key, Server Address, Device (đổi tên/xoá/thu hồi/gộp), upload Agent Build, audit, force-release lock | ❌ | ✅ |
+Mọi User làm được mọi việc: điều khiển Device và quản lý Server (Users, Server Key, Server Address, Device, Agent
+Build, audit, force-release lock). Việc gì chạy được trên Device do Device Settings của chính Device đó quyết định.
+Không User nào tự vô hiệu chính mình hay vô hiệu User cuối cùng còn hoạt động.
 
 ## Xem fleet
 
@@ -222,14 +218,14 @@ rcli wake demo-pc               # Device Offline → Waking; quá 3 phút chưa 
 ```bash
 rcli login an                                 # hỏi mật khẩu Dashboard + mã TOTP, lưu phiên vào config
 rcli logout                                   # thu hồi và xoá phiên đã lưu
-rcli user create an --role operator
+rcli user create an
 rcli user set-password an --password '...'   # in TOTP secret + otpauth URL cho Dashboard
 rcli user disable an
 rcli server-key show                          # Server Key (rk_<CA fingerprint>_<secret>) để cài Agent
 rcli server-key rotate                        # đổi secret: Device đã đăng ký vẫn Online, bản cài mới cần key mới
 rcli server-address show                      # Server Address Agent dùng
 rcli server-address set vps.example.com       # cấp lại chứng chỉ TLS cho tên mới
-rcli api-address show                         # API Address (rỗng tới khi Admin mở Dashboard qua https://)
+rcli api-address show                         # API Address (rỗng tới khi một User mở Dashboard qua https://)
 rcli api-address set https://rcli.example.com # sửa API Address; Agent nhận ở lần kết nối sau
 rcli device rename demo-pc may-ke-toan
 rcli device revoke <id>                       # Agent bị cắt và không kết nối lại được

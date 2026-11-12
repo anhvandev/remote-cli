@@ -8,7 +8,7 @@ use axum::{
 use rcli_protocol::update::MAX_BUILD_BYTES;
 use serde_json::{json, Value};
 
-use super::{bad_request, Admin, ApiError};
+use super::{bad_request, ApiError, SignedIn};
 use crate::{
     storage,
     updates::{self, UpdateError},
@@ -62,7 +62,7 @@ impl From<UpdateError> for ApiError {
 /// Body: the raw build, streamed into storage; the Server computes its sha256 and size. A refused upload leaves no
 /// row and no object.
 async fn publish(
-    Admin(user): Admin,
+    SignedIn(user): SignedIn,
     State(state): State<super::State>,
     Path((version, target)): Path<(String, String)>,
     request: Request,

@@ -2,8 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { adminApi, newUser, signIn } from "./devstack";
 
 async function openSettings(page: Page) {
-  await signIn(page, await newUser("admin"));
-  await page.getByRole("link", { name: "Quản trị" }).click();
+  await signIn(page, await newUser());
+  await page.getByRole("link", { name: "Quản lý" }).click();
   await page.getByRole("main").getByRole("link", { name: "Server Settings", exact: true }).click();
   await expect(page).toHaveURL(/\/admin\/settings$/);
 }
@@ -76,16 +76,4 @@ test("an admin reads the API Address and corrects it", async ({ page }) => {
   await page.getByRole("region", { name: "API Address" }).getByRole("button", { name: "Lưu API Address" }).click();
   await expect(page.getByRole("region", { name: "API Address" }).getByRole("alert")).toContainText("https://");
   expect((await adminApi("/api/v1/server-settings")).api_address).toBe("https://rcli.example.com");
-});
-
-test("operators cannot see the Server Settings page", async ({ page }) => {
-  await signIn(page, await newUser("operator"));
-  const nav = page.getByRole("navigation");
-  // Wait for sign-in to finish before navigating; on /signin the nav does not exist yet.
-  await expect(nav.getByRole("link", { name: "Device", exact: true }).first()).toBeVisible();
-  await expect(nav.getByRole("link", { name: "Server Settings" })).toHaveCount(0);
-
-  await page.goto("/admin/settings");
-  await expect(page.getByText("Chỉ Admin mới xem được trang Quản trị.")).toBeVisible();
-  await expect(page.getByRole("region")).toHaveCount(0);
 });

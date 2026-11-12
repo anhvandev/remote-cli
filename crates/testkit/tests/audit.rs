@@ -17,9 +17,9 @@ async fn every_action_is_recorded_and_filterable_by_admins_only() {
     sys.wait_device(&dev, |d| d["status"] == "Online").await;
     let other = sys.start_agent("other-pc").await;
     sys.wait_device(other.device_id(), |d| d["status"] == "Online").await;
-    let alice_token = sys.create_user("alice", "operator").await;
+    let alice_token = sys.create_user("alice").await;
     let alice = sys.api.with_token(Some(&alice_token));
-    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob").await));
     alice.post(&format!("/api/v1/devices/{dev}/lock")).await;
 
     let click = json!({ "actions": [{"type": "click", "x": 10, "y": 20}], "observe": "shot" });

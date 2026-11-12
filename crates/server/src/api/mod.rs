@@ -53,9 +53,9 @@ pub fn router(state: State) -> Router {
         .with_state(state)
 }
 
-/// The Server Key (admin): Agents and Controllers need it to connect.
+/// The Server Key: Agents and Controllers need it to connect.
 async fn server_key(
-    _: Admin,
+    _: SignedIn,
     axum::extract::State(state): axum::extract::State<State>,
 ) -> Json<serde_json::Value> {
     Json(json!({ "server_key": state.settings.key().await, "ca_fingerprint": state.ca.fingerprint }))
@@ -196,9 +196,9 @@ impl FromRequestParts<State> for Caller {
                 .await?
                 .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid API token"))?;
             // Only the Dashboard's own requests mark themselves; its `/api/v1` pass-through for Controllers strips the
-            // mark, so an Admin's CLI call through the Dashboard URL teaches nothing.
+            // mark, so a User's CLI call through the Dashboard URL teaches nothing.
             let (proto, host) = (header("x-forwarded-proto"), header("x-forwarded-host"));
-            let dashboard = user.is_admin() && header("x-rcli-dashboard").is_some();
+            let dashboard = header("x-rcli-dashboard").is_some();
             if let Some(url) = dashboard.then(|| api_address_of(peer, proto, host, &state.config.trusted_proxies)).flatten() {
                 state.settings.set_api_address(&state.db, &url, true).await?;
             }
@@ -231,18 +231,23 @@ impl FromRequestParts<State> for Caller {
     }
 }
 
-/// Extractor: like `Caller`, but the user must be an admin; operators get 403 `admin_required`.
-pub struct Admin(pub crate::auth::User);
+/// Extractor: like `Caller`, but a signed-in User; a password connection (scoped to one Device) gets 403
+/// `user_session_required`. Every User may administer the Server (ADR 0009).
+pub struct SignedIn(pub crate::auth::User);
 
-impl FromRequestParts<State> for Admin {
+impl FromRequestParts<State> for SignedIn {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &State) -> Result<Self, Self::Rejection> {
         let Caller(user) = Caller::from_request_parts(parts, state).await?;
-        if !user.is_admin() {
-            return Err(ApiError::new(StatusCode::FORBIDDEN, "admin_required", "this operation requires the admin role"));
+        if user.device_scope.is_some() {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "user_session_required",
+                "a password connection may only reach its own Device; sign in as a User",
+            ));
         }
-        Ok(Admin(user))
+        Ok(SignedIn(user))
     }
 }
 

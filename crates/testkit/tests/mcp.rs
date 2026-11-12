@@ -103,7 +103,7 @@ async fn a_held_control_lock_is_a_readable_tool_error() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
-    let bob = sys.create_user("bob", "operator").await;
+    let bob = sys.create_user("bob").await;
     sys.rcli_as(&bob, &["lock", "acquire", "lab-pc"]).await.unwrap();
     let mcp = sys.mcp_as(&sys.admin_token).await;
 
@@ -153,9 +153,9 @@ async fn an_agent_locks_the_screen_and_restart_is_refused_while_someone_else_hol
     let sys = TestSystem::start().await;
     let agent = sys.start_agent("lab-pc").await;
     sys.wait_device(agent.device_id(), |d| d["status"] == "Online").await;
-    let bob = sys.api.with_token(Some(&sys.create_user("bob", "operator").await));
+    let bob = sys.api.with_token(Some(&sys.create_user("bob").await));
     bob.post("/api/v1/devices/lab-pc/lock").await;
-    let mcp = sys.mcp_as(&sys.create_user("alice", "operator").await).await;
+    let mcp = sys.mcp_as(&sys.create_user("alice").await).await;
 
     let (r, _) = ok(&mcp, "power", json!({ "device": "lab-pc", "action": "lock" })).await;
     assert_eq!(r, json!({ "action": "lock" }));
@@ -197,7 +197,7 @@ async fn mcp_reads_the_saved_config_with_no_env_vars() {
     let dir = std::path::Path::new("/tmp").join(format!("rcli05mcp-{}-login", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     sys.controller_config(&dir, None).await;
-    let secret = sys.create_dashboard_user("mcp-user", "operator").await;
+    let secret = sys.create_dashboard_user("mcp-user").await;
     sys.rcli_in(&dir, &["login", "mcp-user", "--password", TestSystem::PASSWORD, "--totp", &sys.totp(&secret)])
         .await
         .unwrap();

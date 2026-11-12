@@ -1,5 +1,5 @@
 "use server";
-// Server Settings actions. The Server enforces admin-only on every call.
+// Server Settings actions.
 import { api, json, type ServerSettings } from "@/lib/api";
 import type { Result } from "../actions";
 import { run } from "../run";

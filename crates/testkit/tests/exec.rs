@@ -15,7 +15,7 @@ async fn exec_returns_output_and_exit_code_as_the_terminal_user_without_the_lock
     let agent = sys.start_agent("lab-pc").await;
     let dev = agent.device_id().to_owned();
     sys.wait_device(&dev, |d| d["status"] == "Online").await;
-    let alice_token = sys.create_user("alice", "operator").await;
+    let alice_token = sys.create_user("alice").await;
     let alice = sys.api.with_token(Some(&alice_token));
     // Someone else holds the Control Lock: the terminal is not exclusive.
     let (status, _) = sys.api.post(&format!("/api/v1/devices/{dev}/lock")).await;
@@ -85,7 +85,7 @@ async fn root_is_not_gated_by_server_roles() {
     rcli_testkit::eventually(|| async { socket.exists().then_some(()) }).await;
     // The Device allows root always; who asks does not matter.
     sys.agent_rcli(&socket, &["agent", "root", "always"]).await.unwrap();
-    let alice_token = sys.create_user("alice", "operator").await;
+    let alice_token = sys.create_user("alice").await;
     let path = format!("/api/v1/devices/{dev}/exec");
     let as_root = json!({ "command": "whoami", "as": "root" });
 
@@ -109,7 +109,7 @@ async fn with_nobody_logged_in_commands_still_run_as_the_terminal_user() {
     let agent = sys.start_agent_on(platform).await;
     let dev = agent.device_id().to_owned();
     sys.wait_device(&dev, |d| d["status"] == "Online").await;
-    let alice = sys.api.with_token(Some(&sys.create_user("alice", "operator").await));
+    let alice = sys.api.with_token(Some(&sys.create_user("alice").await));
     let path = format!("/api/v1/devices/{dev}/exec");
 
     // The Terminal User is a local account, so it exists with nobody at the console.
