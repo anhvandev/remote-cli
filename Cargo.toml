@@ -20,6 +20,7 @@ crossterm = { version = "0.28", default-features = false, features = ["windows"]
 eframe = "0.31"
 futures = "0.3"
 mp4 = "0.14"
+object_store = { version = "0.12", default-features = false, features = ["aws"] }
 openh264 = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 prost = "0.13"

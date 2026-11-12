@@ -145,6 +145,13 @@ async fn an_admin_publishes_install_packages_that_anyone_downloads() {
     sys.rcli(&["package", "publish", deb.to_str().unwrap(), "--arch", "x86_64"]).await.unwrap();
     let (status, bytes) = sys.api.with_token(None).get_bytes("/download/package/deb/x86_64").await;
     assert_eq!((status, bytes.as_slice()), (StatusCode::OK, b"second deb".as_slice()));
+    // A package larger than one storage upload part comes back byte for byte.
+    let large: Vec<u8> = (0..12 << 20).map(|i: u32| (i % 251) as u8).collect();
+    let (status, body) = sys.api.put_bytes("/api/v1/packages/rpm/x86_64", large.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, bytes) = sys.api.with_token(None).get_bytes("/download/package/rpm/x86_64").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(bytes == large, "the large package came back different ({} bytes)", bytes.len());
 
     // Only an Admin uploads, and only the package kinds the guide offers.
     let operator = sys.create_user("olga", "operator").await;
@@ -152,4 +159,43 @@ async fn an_admin_publishes_install_packages_that_anyone_downloads() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = sys.api.put_bytes("/api/v1/packages/zip/x86_64", b"x".to_vec()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// A package download resumes: `Range: bytes=N-` and `N-M` answer 206 with the slice and its `Content-Range`.
+#[tokio::test]
+async fn a_package_download_answers_range_requests() {
+    let sys = TestSystem::start().await;
+    let (status, body) = sys.api.put_bytes("/api/v1/packages/rpm/aarch64", b"0123456789".to_vec()).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let url = format!("http://{}/download/package/rpm/aarch64", sys.server.http_addr);
+    let http = reqwest::Client::new();
+
+    let full = http.get(&url).send().await.unwrap();
+    assert_eq!((full.status(), full.content_length()), (StatusCode::OK, Some(10)));
+    assert_eq!(full.bytes().await.unwrap().as_ref(), b"0123456789");
+    for (range, slice, content_range) in [("bytes=6-", "6789", "bytes 6-9/10"), ("bytes=2-4", "234", "bytes 2-4/10")] {
+        let part = http.get(&url).header("range", range).send().await.unwrap();
+        assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT, "{range}");
+        assert_eq!(part.headers()["content-range"], content_range);
+        assert_eq!(part.content_length(), Some(slice.len() as u64));
+        assert_eq!(part.bytes().await.unwrap().as_ref(), slice.as_bytes());
+    }
+    let past_end = http.get(&url).header("range", "bytes=10-").send().await.unwrap();
+    assert_eq!(past_end.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+}
+
+/// A package whose stored bytes no longer match what was uploaded fails to download instead of being served.
+#[tokio::test]
+async fn a_corrupted_package_is_refused() {
+    let sys = TestSystem::start().await;
+    let (status, body) = sys.api.put_bytes("/api/v1/packages/dmg/aarch64", b"original package".to_vec()).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    sys.corrupt_stored_file(b"original package", b"tampered package").await;
+
+    // The response breaks off (before or after its headers), so no client takes it for the whole file.
+    let served = match reqwest::get(format!("http://{}/download/package/dmg/aarch64", sys.server.http_addr)).await {
+        Ok(resp) => resp.bytes().await.is_ok(),
+        Err(_) => false,
+    };
+    assert!(!served, "the corrupted bytes were served as a complete download");
 }

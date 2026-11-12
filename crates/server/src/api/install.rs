@@ -2,18 +2,18 @@
 //! the one-line install has no credentials before registration. The Dashboard origin proxies these paths.
 
 use axum::{
-    body::Bytes,
-    extract::{DefaultBodyLimit, Path, State},
-    http::{HeaderMap, StatusCode},
+    body::Body,
+    extract::{DefaultBodyLimit, Path, Request, State},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, put},
-    Json, Router,
+    Json, RequestExt, Router,
 };
 use rcli_protocol::update::MAX_BUILD_BYTES;
 use serde_json::{json, Value};
 
 use super::{bad_request, Admin, ApiError};
-use crate::updates;
+use crate::{storage, updates};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -27,12 +27,12 @@ pub fn routes() -> Router<super::State> {
 /// The package kinds the Connect guide offers.
 const PACKAGE_KINDS: [&str; 3] = ["dmg", "deb", "rpm"];
 
-/// Body: the package file. Replaces the one stored for this kind and arch.
+/// Body: the package file, streamed into storage. Replaces the one stored for this kind and arch.
 async fn publish_package(
     Admin(user): Admin,
     State(state): State<super::State>,
     Path((kind, arch)): Path<(String, String)>,
-    package: Bytes,
+    request: Request,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     if !PACKAGE_KINDS.contains(&kind.as_str()) {
         return Err(bad_request(format!("the package kind must be one of {}", PACKAGE_KINDS.join(", "))));
@@ -40,42 +40,108 @@ async fn publish_package(
     if arch.is_empty() || arch.len() > 32 || !arch.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(bad_request("arch must be 1-32 chars of [A-Za-z0-9_], e.g. x86_64 or aarch64"));
     }
-    if package.is_empty() {
+    let stored = state.storage.put(storage::PACKAGES, request.into_limited_body().into_data_stream()).await?;
+    if stored.size == 0 {
+        delete_unreferenced(&state, &stored.sha256).await?;
         return Err(bad_request("empty package"));
     }
-    sqlx::query(
-        "INSERT INTO install_packages (kind, arch, package, uploaded_at, uploaded_by) VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (kind, arch) DO UPDATE SET package = $3, uploaded_at = $4, uploaded_by = $5",
+    let replaced: Result<Option<String>, _> = sqlx::query_scalar(
+        "WITH old AS (SELECT sha256 FROM install_packages WHERE kind = $1 AND arch = $2)
+         INSERT INTO install_packages (kind, arch, sha256, size, uploaded_at, uploaded_by) VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (kind, arch) DO UPDATE SET sha256 = $3, size = $4, uploaded_at = $5, uploaded_by = $6
+         RETURNING (SELECT sha256 FROM old)",
     )
     .bind(&kind)
     .bind(&arch)
-    .bind(package.as_ref())
+    .bind(&stored.sha256)
+    .bind(stored.size as i64)
     .bind(state.clock.now())
     .bind(&user.name)
-    .execute(&state.db)
-    .await
-    .map_err(anyhow::Error::from)?;
-    Ok((StatusCode::CREATED, Json(json!({ "kind": kind, "arch": arch, "size": package.len() }))))
+    .fetch_one(&state.db)
+    .await;
+    let replaced = match replaced {
+        Ok(replaced) => replaced,
+        Err(e) => {
+            delete_unreferenced(&state, &stored.sha256).await?;
+            return Err(anyhow::Error::from(e).into());
+        }
+    };
+    if let Some(old) = replaced.filter(|old| *old != stored.sha256) {
+        delete_unreferenced(&state, &old).await?;
+    }
+    Ok((StatusCode::CREATED, Json(json!({ "kind": kind, "arch": arch, "size": stored.size }))))
+}
+
+/// Removes the stored package `sha256` unless a package row still points at it (two arches may share bytes).
+async fn delete_unreferenced(state: &super::State, sha256: &str) -> anyhow::Result<()> {
+    let used: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM install_packages WHERE sha256 = $1)")
+        .bind(sha256)
+        .fetch_one(&state.db)
+        .await?;
+    if !used {
+        state.storage.delete(storage::PACKAGES, sha256).await?;
+    }
+    Ok(())
 }
 
 /// The uploaded package, as a download named `rcli-<arch>.<kind>`.
-async fn download_package(State(state): State<super::State>, Path((kind, arch)): Path<(String, String)>) -> Result<Response, ApiError> {
-    let package: Option<Vec<u8>> = sqlx::query_scalar("SELECT package FROM install_packages WHERE kind = $1 AND arch = $2")
+async fn download_package(
+    State(state): State<super::State>,
+    Path((kind, arch)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let package: Option<(String, i64)> = sqlx::query_as("SELECT sha256, size FROM install_packages WHERE kind = $1 AND arch = $2")
         .bind(&kind)
         .bind(&arch)
         .fetch_optional(&state.db)
         .await
         .map_err(anyhow::Error::from)?;
-    let package = package.ok_or_else(|| {
+    let (sha256, size) = package.ok_or_else(|| {
         ApiError::new(
             StatusCode::NOT_FOUND,
             "no_package",
             format!("no .{kind} for {arch} is uploaded yet (an Admin runs `rcli package publish`)"),
         )
     })?;
+    let mut response = stored_file(&state, storage::PACKAGES, &sha256, size as u64, &headers).await?;
     // `kind` and `arch` matched a stored row, so they are the validated characters only.
     let disposition = format!("attachment; filename=\"rcli-{arch}.{kind}\"");
-    Ok(([("content-type", "application/octet-stream".to_owned()), ("content-disposition", disposition)], package).into_response())
+    response.headers_mut().insert(header::CONTENT_DISPOSITION, disposition.parse().expect("validated characters"));
+    Ok(response)
+}
+
+/// Streams a stored file of `size` bytes. A single `Range: bytes=N-` or `bytes=N-M` gets `206` with that slice.
+// shortcut: no cap on simultaneous downloads; add a limit here when fleets grow.
+pub(super) async fn stored_file(state: &super::State, prefix: &str, sha256: &str, size: u64, headers: &HeaderMap) -> Result<Response, ApiError> {
+    let requested = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).and_then(parse_range);
+    let range = match requested {
+        None => None,
+        Some((start, end)) => {
+            let end = end.unwrap_or(u64::MAX).min(size.saturating_sub(1));
+            if start >= size || end < start {
+                let mut refused = ApiError::new(StatusCode::RANGE_NOT_SATISFIABLE, "bad_range", format!("the file has {size} bytes")).into_response();
+                refused.headers_mut().insert(header::CONTENT_RANGE, format!("bytes */{size}").parse().expect("digits"));
+                return Ok(refused);
+            }
+            Some(start..end + 1)
+        }
+    };
+    let body = Body::from_stream(state.storage.get(prefix, sha256, range.clone()).await?);
+    let response = Response::builder().header(header::CONTENT_TYPE, "application/octet-stream");
+    let response = match range {
+        None => response.status(StatusCode::OK).header(header::CONTENT_LENGTH, size),
+        Some(r) => response
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_LENGTH, r.end - r.start)
+            .header(header::CONTENT_RANGE, format!("bytes {}-{}/{size}", r.start, r.end - 1)),
+    };
+    Ok(response.body(body).map_err(anyhow::Error::from)?)
+}
+
+/// `bytes=N-` or `bytes=N-M` as (N, M); anything else (suffix or multiple ranges) is ignored and the whole file sent.
+fn parse_range(value: &str) -> Option<(u64, Option<u64>)> {
+    let (start, end) = value.strip_prefix("bytes=")?.split_once('-')?;
+    Some((start.trim().parse().ok()?, if end.trim().is_empty() { None } else { Some(end.trim().parse().ok()?) }))
 }
 
 /// The origin the script was fetched from, so its download URL works through the Dashboard origin too.

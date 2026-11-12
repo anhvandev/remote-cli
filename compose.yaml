@@ -1,5 +1,8 @@
-# Server + Postgres + Dashboard + coturn. Set RCLI_BOOTSTRAP_ADMIN_TOKEN, RCLI_TURN_SECRET and RCLI_TURN_HOST
-# (the VPS's public name/IP; Agents and browsers must reach it) (and POSTGRES_PASSWORD) in the environment or .env.
+# Server + Postgres + file storage + Dashboard + coturn. Set RCLI_BOOTSTRAP_ADMIN_TOKEN, RCLI_TURN_SECRET,
+# RCLI_TURN_HOST (the VPS's public name/IP; Agents and browsers must reach it), RCLI_S3_ACCESS_KEY and
+# RCLI_S3_SECRET_KEY (and POSTGRES_PASSWORD) in the environment or .env.
+# Backup = `pg_dump` of Postgres plus the `filedata` volume (install packages and Agent builds live there, not in
+# the database).
 services:
   postgres:
     image: postgres:16-alpine
@@ -14,10 +17,27 @@ services:
       interval: 2s
       retries: 30
 
+  # SeaweedFS with its S3 gateway: install packages and Agent builds. Internal only (no host port): files are
+  # served through the Server's access checks.
+  storage:
+    image: chrislusf/seaweedfs:4.53
+    command: ["server", "-s3", "-dir=/data"]
+    environment:
+      AWS_ACCESS_KEY_ID: ${RCLI_S3_ACCESS_KEY:?set RCLI_S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${RCLI_S3_SECRET_KEY:?set RCLI_S3_SECRET_KEY}
+    volumes:
+      - filedata:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 2s
+      retries: 30
+
   server:
     build: .
     depends_on:
       postgres:
+        condition: service_healthy
+      storage:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://rcli:${POSTGRES_PASSWORD:-rcli}@postgres:5432/rcli
@@ -35,6 +55,11 @@ services:
       # WebRTC (live view): peers try direct paths first, then relay through coturn with short-lived credentials.
       RCLI_ICE_URLS: stun:${RCLI_TURN_HOST:-localhost}:3478,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=udp,turn:${RCLI_TURN_HOST:-localhost}:3478?transport=tcp
       RCLI_TURN_SECRET: ${RCLI_TURN_SECRET:?set RCLI_TURN_SECRET}
+      # The file storage service (the Server creates the bucket if missing).
+      RCLI_S3_ENDPOINT: ${RCLI_S3_ENDPOINT:-http://storage:8333}
+      RCLI_S3_BUCKET: ${RCLI_S3_BUCKET:-rcli}
+      RCLI_S3_ACCESS_KEY: ${RCLI_S3_ACCESS_KEY:?set RCLI_S3_ACCESS_KEY}
+      RCLI_S3_SECRET_KEY: ${RCLI_S3_SECRET_KEY:?set RCLI_S3_SECRET_KEY}
     ports:
       # The Controller API (8080) stays internal: Controllers reach it through the Dashboard (ADR 0006).
       - "8443:8443" # Agent connections (TLS / mTLS)
@@ -72,6 +97,7 @@ services:
 
 volumes:
   pgdata:
+  filedata:
 
 networks:
   default:
