@@ -85,21 +85,23 @@ fn field(v: Option<&str>) -> String {
     v.unwrap_or_default().trim().to_owned()
 }
 
-/// Parses the values of `loginctl show-session … -p Name -p UID -p Class -p Type -p Display -p LockedHint` in
-/// that order (the caller asks for those properties), or `None` when the first value is empty.
-pub fn parse_session(values: &[&str]) -> Option<SessionInfo> {
-    let user = field(values.first().copied());
+/// Parses the `Key=Value` lines of `loginctl show-session … -p Name -p User -p Class -p Type -p Display -p
+/// LockedHint`, or `None` when there is no `Name`. By key, not position: loginctl prints in its own order, and
+/// `--value` would leave no way to tell an empty `Display` (GDM's X11 user session) from a missing one.
+pub fn parse_session(text: &str) -> Option<SessionInfo> {
+    let get = |key: &str| field(text.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix('=')));
+    let user = get("Name");
     if user.is_empty() {
         return None;
     }
     Some(SessionInfo {
         id: String::new(),
         user,
-        uid: field(values.get(1).copied()).parse().ok(),
-        class: field(values.get(2).copied()),
-        session_type: field(values.get(3).copied()),
-        display: field(values.get(4).copied()),
-        locked_hint: field(values.get(5).copied()),
+        uid: get("User").parse().ok(),
+        class: get("Class"),
+        session_type: get("Type"),
+        display: get("Display"),
+        locked_hint: get("LockedHint"),
     })
 }
 
@@ -234,18 +236,10 @@ pub fn seat_session(run: &dyn Fn(&[&str]) -> Option<String>) -> Option<SessionIn
     if id.is_empty() || id == "-" {
         return None;
     }
-    let values = |props: &[&str]| -> Option<String> {
-        let mut args = vec!["show-session", id];
-        for p in props {
-            args.push("-p");
-            args.push(p);
-        }
-        args.push("--value");
-        run(&args)
-    };
-    let text = values(&["Name", "UID", "Class", "Type", "Display", "LockedHint"])?;
-    let lines: Vec<&str> = text.lines().collect();
-    let mut session = parse_session(&lines)?;
+    let text = run(&[
+        "show-session", id, "-p", "Name", "-p", "User", "-p", "Class", "-p", "Type", "-p", "Display", "-p", "LockedHint",
+    ])?;
+    let mut session = parse_session(&text)?;
     session.id = id.to_owned();
     Some(session)
 }
@@ -669,21 +663,22 @@ mod tests {
     }
 
     #[test]
-    fn loginctl_values_are_parsed_in_the_property_order() {
-        let parsed = parse_session(&["alice", "1000", "user", "x11", ":1", "no"]).unwrap();
+    fn loginctl_properties_are_parsed_by_key() {
+        // Ubuntu 24.04's GDM X11 user session, as loginctl prints it: its own order, `Display` empty.
+        let parsed = parse_session("User=1000\nName=vner\nDisplay=\nType=x11\nClass=user\nLockedHint=no\n").unwrap();
         assert_eq!(
             parsed,
             SessionInfo {
                 id: String::new(),
-                user: "alice".into(),
+                user: "vner".into(),
                 uid: Some(1000),
                 class: "user".into(),
                 session_type: "x11".into(),
-                display: ":1".into(),
+                display: String::new(),
                 locked_hint: "no".into(),
             }
         );
-        assert!(parse_session(&["", "1000"]).is_none());
+        assert!(parse_session("User=1000\nName=\n").is_none());
     }
 
     #[test]
@@ -699,7 +694,9 @@ mod tests {
         let run = |args: &[&str]| -> Option<String> {
             match args {
                 ["show-seat", "seat0", "-p", "ActiveSession", "--value"] => Some("c1\n".into()),
-                ["show-session", "c1", ..] => Some("lightdm\n111\ngreeter\nx11\n:0\nno\n".into()),
+                ["show-session", "c1", ..] => {
+                    Some("User=111\nName=lightdm\nDisplay=:0\nType=x11\nClass=greeter\nLockedHint=no\n".into())
+                }
                 _ => None,
             }
         };
@@ -780,7 +777,7 @@ mod tests {
             match args {
                 ["show-seat", "seat0", "-p", "ActiveSession", "--value"] => Some("2\n".into()),
                 ["show-session", "2", ..] => Some(format!(
-                    "{}\n{}\n{}\n{}\n{}\n{}\n",
+                    "Name={}\nUser={}\nClass={}\nType={}\nDisplay={}\nLockedHint={}\n",
                     session.user,
                     session.uid.unwrap_or(0),
                     session.class,
