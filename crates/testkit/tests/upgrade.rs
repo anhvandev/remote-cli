@@ -1,5 +1,5 @@
-//! `rcli upgrade`: fetch the Latest Build for this OS/arch, check it against the Server's sha256, replace the
-//! binary. The replacement path is a temp file here (the seam), never the running test binary.
+//! `rcli update`: fetch the Latest Build for this OS/arch, check it against the Server's sha256, replace the
+//! binary. It only ever moves up. The replacement path is a temp file here (the seam), never the running test binary.
 
 use std::path::PathBuf;
 
@@ -9,9 +9,12 @@ fn http_addr(sys: &TestSystem) -> String {
     format!("http://{}", sys.server.http_addr)
 }
 
-/// An installed machine upgrades itself with no key or other setup: the Server's sha256 is the only check.
+/// The version of the in-process `rcli` under test (the workspace shares one version).
+const RUNNING: &str = env!("CARGO_PKG_VERSION");
+
+/// An installed machine updates itself with no key or other setup: the Server's sha256 is the only check.
 #[tokio::test]
-async fn an_installed_machine_upgrades_itself() {
+async fn an_installed_machine_updates_itself() {
     let sys = TestSystem::start().await;
     sys.rcli(&["api-address", "set", &http_addr(&sys)]).await.unwrap();
     let dir = temp_dir("controller");
@@ -20,16 +23,16 @@ async fn an_installed_machine_upgrades_itself() {
 
     let target = temp_dir("controller-target").join("rcli");
     std::fs::write(&target, b"old rcli binary").unwrap();
-    let out = sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap();
+    let out = sys.rcli_in(&dir, &["update", "--target", target.to_str().unwrap()]).await.unwrap();
 
-    assert!(out.contains("9.9.9"), "{out}");
+    assert!(out.contains(&format!("updated {RUNNING} → 9.9.9")), "{out}");
     assert_eq!(std::fs::read(&target).unwrap(), b"new rcli binary");
 }
 
 /// The Latest Build is the highest semver version, whatever the upload order: 1.10.0 beats 1.9.0, and a
-/// pre-release ranks below its release.
+/// pre-release ranks below its release. `rcli update` is a hidden alias of `rcli update`.
 #[tokio::test]
-async fn upgrade_fetches_the_latest_build() {
+async fn upgrade_is_a_hidden_alias_that_fetches_the_latest_build() {
     let sys = TestSystem::start().await;
     let dir = temp_dir("latest");
     sys.controller_config(&dir, None).await;
@@ -44,6 +47,30 @@ async fn upgrade_fetches_the_latest_build() {
 
     assert!(out.contains("1.10.0"), "{out}");
     assert_eq!(std::fs::read(&path).unwrap(), b"build 1.10.0");
+    let help = sys.rcli_in(&dir, &["--help"]).await.unwrap();
+    assert!(help.contains("update") && !help.contains("upgrade"), "{help}");
+}
+
+/// At the Latest Build or above it, `rcli update` says so, exits 0 and changes nothing: it never downgrades.
+#[tokio::test]
+async fn update_never_reinstalls_or_downgrades() {
+    let sys = TestSystem::start().await;
+    let dir = temp_dir("no-change");
+    sys.controller_config(&dir, None).await;
+    let path = temp_dir("no-change-target").join("rcli");
+    std::fs::write(&path, b"installed build").unwrap();
+    let args = ["update", "--target", path.to_str().unwrap()];
+    let update = || sys.rcli_in(&dir, &args);
+
+    sys.upload_build("0.0.1", &rcli_agent::target(), b"older build").await;
+    let out = update().await.unwrap();
+    assert!(out.contains(&format!("running {RUNNING}, newer than the Server's latest (0.0.1)")), "{out}");
+
+    sys.upload_build(RUNNING, &rcli_agent::target(), b"same build").await;
+    let out = update().await.unwrap();
+    assert!(out.contains(&format!("already the latest version ({RUNNING})")), "{out}");
+
+    assert_eq!(std::fs::read(&path).unwrap(), b"installed build");
 }
 
 #[tokio::test]
@@ -55,15 +82,15 @@ async fn no_build_for_this_os_and_arch_is_a_clear_error() {
     std::fs::write(&target, b"old rcli binary").unwrap();
 
     let err = sys
-        .rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()])
+        .rcli_in(&dir, &["update", "--target", target.to_str().unwrap()])
         .await
         .unwrap_err();
 
-    assert!(err.to_string().contains(rcli_agent::target().as_str()), "{err}");
+    assert!(err.to_string().contains(&format!("no build for {}", rcli_agent::target())), "{err}");
     assert_eq!(std::fs::read(&target).unwrap(), b"old rcli binary");
 }
 
-/// The lookup `rcli upgrade` makes needs the Server Key.
+/// The lookup `rcli update` makes needs the Server Key.
 #[tokio::test]
 async fn the_build_lookup_needs_the_server_key() {
     let sys = TestSystem::start().await;
@@ -99,7 +126,7 @@ async fn the_build_lookup_needs_the_server_key() {
 }
 
 /// Uploads `build` for a Controller set up in a new `name` dir, and leaves `part` as the partial download
-/// `rcli upgrade` finds in its data dir. Returns the dir, the `.part` path and the binary to replace.
+/// `rcli update` finds in its data dir. Returns the dir, the `.part` path and the binary to replace.
 async fn with_partial(sys: &TestSystem, name: &str, build: &[u8], part: &[u8]) -> (PathBuf, PathBuf, PathBuf) {
     let dir = temp_dir(name);
     sys.controller_config(&dir, None).await;
@@ -116,11 +143,11 @@ async fn with_partial(sys: &TestSystem, name: &str, build: &[u8], part: &[u8]) -
 
 /// An interrupted download resumes from the bytes already on disk.
 #[tokio::test]
-async fn upgrade_completes_from_a_partial_download() {
+async fn update_completes_from_a_partial_download() {
     let sys = TestSystem::start().await;
     let (dir, part, target) = with_partial(&sys, "resume", b"new rcli binary", b"new rcli").await;
 
-    let out = sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap();
+    let out = sys.rcli_in(&dir, &["update", "--target", target.to_str().unwrap()]).await.unwrap();
 
     assert!(out.contains("3.0.0"), "{out}");
     assert_eq!(std::fs::read(&target).unwrap(), b"new rcli binary");
@@ -133,7 +160,7 @@ async fn a_partial_download_with_wrong_bytes_is_discarded() {
     let sys = TestSystem::start().await;
     let (dir, part, target) = with_partial(&sys, "corrupt", b"new rcli binary", b"garbage!").await;
 
-    sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap();
+    sys.rcli_in(&dir, &["update", "--target", target.to_str().unwrap()]).await.unwrap();
 
     assert_eq!(std::fs::read(&target).unwrap(), b"new rcli binary");
     assert!(!part.exists(), "the download is left behind");
@@ -147,7 +174,7 @@ async fn a_download_that_does_not_match_the_sha256_keeps_the_old_binary() {
     let (dir, _, target) = with_partial(&sys, "mismatch", b"new rcli binary", b"garbage!").await;
     sys.corrupt_stored_file(b"new rcli binary", b"bad rcli binary").await;
 
-    sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap_err();
+    sys.rcli_in(&dir, &["update", "--target", target.to_str().unwrap()]).await.unwrap_err();
 
     assert_eq!(std::fs::read(&target).unwrap(), b"old rcli binary");
 }
@@ -161,7 +188,7 @@ async fn a_complete_download_on_disk_is_installed_without_fetching_it_again() {
     let (dir, part, target) = with_partial(&sys, "complete", &build, &build).await;
     sys.corrupt_stored_file(&build, &vec![8u8; 4 << 20]).await;
 
-    sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap();
+    sys.rcli_in(&dir, &["update", "--target", target.to_str().unwrap()]).await.unwrap();
 
     assert!(std::fs::read(&target).unwrap() == build, "the installed binary is not the build");
     assert!(!part.exists(), "the download is left behind");

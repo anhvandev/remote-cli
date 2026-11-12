@@ -110,7 +110,7 @@ Wake chỉ hoạt động khi trong cùng LAN (cùng subnet) với máy cần b�
 
 Trên trang Updates, upload Agent Build: chọn file, phiên bản semver (`X.Y.Z`, có thể thêm `-pre`) và target
 (`<os>-<arch>`); file tên kiểu `rcli-0.3.0-linux-x86_64` tự điền hai ô này. Không có khoá, chữ ký hay rollout: Server
-tự tính sha256. Latest Build của mỗi target là bản có phiên bản semver cao nhất; bản cài mới và `sudo rcli upgrade`
+tự tính sha256. Latest Build của mỗi target là bản có phiên bản semver cao nhất; bản cài mới và `sudo rcli update`
 tải bản đó và kiểm sha256. Upload trùng phiên bản + target bị từ chối (xoá bản cũ trước). Bảo vệ đường truyền dựa vào
 API Address là `https://` (ADR 0008).
 
@@ -281,7 +281,7 @@ sudo apt purge rcli         # Debian: xoá luôn /etc/rcli/agent.conf
 
 - Có package mới: `sudo apt install ./rcli_<version>_<arch>.deb` → `postinst` chép binary mới vào
   `/usr/local/lib/rcli/rcli` và `systemctl restart rcli-agent.service` (service chạy binary mới, Device ID giữ nguyên).
-- Không dùng package: `sudo rcli upgrade` thay binary đang chạy và service (Latest Build của Server, kiểm sha256).
+- Không dùng package: `sudo rcli update` thay binary đang chạy và service (Latest Build của Server, kiểm sha256).
 - Sau khi nâng cấp: `systemctl is-active rcli-agent.service` = active, `rcli agent info` = connected.
 
 ### 10.6. Headless server

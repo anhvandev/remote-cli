@@ -25,7 +25,7 @@ pub fn routes() -> Router<super::State> {
         .route("/api/v1/agent-builds/{target}", get(current).delete(delete_version))
 }
 
-/// `rcli upgrade` and Agents fetch the Latest Build for their target and check it against `x-rcli-sha256`. The
+/// `rcli update` and Agents fetch the Latest Build for their target and check it against `x-rcli-sha256`. The
 /// Server Key (header `X-Rcli-Server-Key`) is the only credential.
 async fn current(State(state): State<super::State>, Path(target): Path<String>, headers: HeaderMap) -> Result<Response, ApiError> {
     let presented = headers.get("x-rcli-server-key").and_then(|v| v.to_str().ok()).unwrap_or_default();
