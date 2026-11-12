@@ -107,7 +107,7 @@ test("an upload with a version that is not semver is refused with the reason", a
   await openAdmin(page, "Cập nhật Agent");
   const card = page.getByRole("region", { name: "Cập nhật Agent" });
   await card.getByLabel("File build").setInputFiles({ name: "rcli", mimeType: "application/octet-stream", buffer: Buffer.from(update.build) });
-  await card.getByLabel("Phiên bản").fill("t02-not-semver");
+  await card.getByLabel("Phiên bản", { exact: true }).fill("t02-not-semver");
   await card.getByLabel("Hệ điều hành").click();
   await page.getByRole("option", { name: update.target }).click();
   await card.getByRole("button", { name: "Tải lên" }).click();
@@ -120,7 +120,7 @@ test("a User uploads an Agent Build prefilled from its file name, sees it Latest
   const card = page.getByRole("region", { name: "Cập nhật Agent" });
   const name = `rcli-${update.version}-${update.target}`;
   await card.getByLabel("File build").setInputFiles({ name, mimeType: "application/octet-stream", buffer: Buffer.from(update.build) });
-  await expect(card.getByLabel("Phiên bản")).toHaveValue(update.version);
+  await expect(card.getByLabel("Phiên bản", { exact: true })).toHaveValue(update.version);
   await expect(card.getByLabel("Hệ điều hành")).toContainText(update.target);
   await card.getByRole("button", { name: "Tải lên" }).click();
   await expect(card.getByRole("status").first()).toContainText(`Đã tải lên ${update.version}`);
