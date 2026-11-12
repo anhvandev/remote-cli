@@ -30,6 +30,8 @@ RCLI_TURN_SECRET=$(openssl rand -hex 16)
 RCLI_MASTER_KEY=$(openssl rand -hex 32)
 RCLI_TURN_HOST=vps.example.com
 RCLI_AGENT_HOSTNAMES=vps.example.com
+RCLI_S3_ACCESS_KEY=$(openssl rand -hex 16)
+RCLI_S3_SECRET_KEY=$(openssl rand -hex 32)
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
 EOF
 ```
@@ -42,6 +44,8 @@ EOF
 | `RCLI_AGENT_HOSTNAMES` | chỉ lần đầu | Server Address ban đầu (đưa vào chứng chỉ TLS cổng 8443). Sau lần khởi động đầu, đổi bằng `rcli server-address set` hoặc trang Server Settings. Mặc định `localhost`. |
 | `RCLI_MASTER_KEY` | nên đặt | 64 ký tự hex. Mã hoá CA private key và TOTP secret. |
 | `RCLI_TRUSTED_PROXIES` | không | Mặc định là IP của Dashboard trong mạng Docker (`172.31.250.10`, `compose.yaml`). Chỉ với request từ các IP này, Server mới lấy IP thật của Controller từ `X-Forwarded-For` (proxy TLS trước Dashboard phải thêm header này). Nhờ vậy giới hạn nhập sai Device Password và audit tính theo từng Controller, không theo Dashboard. Server cũng chỉ ghi lại API Address từ request của Admin qua Dashboard đến từ các IP này. Chỉ đổi khi đổi mạng Docker trong `compose.yaml`. |
+| `RCLI_S3_ACCESS_KEY`, `RCLI_S3_SECRET_KEY` | có | Credential của service lưu file `storage` (SeaweedFS, S3). Compose đặt cùng giá trị cho `storage` và Server. |
+| `RCLI_S3_ENDPOINT`, `RCLI_S3_BUCKET` | không | Mặc định `http://storage:8333` và `rcli`. Server tự tạo bucket nếu chưa có. Server không khởi động nếu thiếu một trong bốn biến `RCLI_S3_*` (compose đặt sẵn hai biến này). |
 | `POSTGRES_PASSWORD` | nên đặt | Mặc định `rcli`. |
 
 **Về `RCLI_MASTER_KEY` — đọc kỹ:**
@@ -53,7 +57,7 @@ EOF
 
 ```bash
 docker compose up -d --build
-docker compose ps        # cả 4 service: postgres, server, dashboard, coturn đều phải "running"
+docker compose ps        # cả 5 service: postgres, storage, server, dashboard, coturn đều phải "running"
 ```
 
 Lần build đầu mất vài phút (biên dịch Rust và `next build`).
@@ -112,7 +116,9 @@ rcli rollout <version> --all             # hoặc --device <id> ...
 rcli devices                             # cột AGENT / UPDATE cho biết tiến độ
 ```
 
-Server không giữ private key và không tự kiểm chữ ký; chính Agent kiểm bằng public key đã pin lúc đăng ký (`RCLI_UPDATE_PUBLIC_KEY` của Server). "--all" chỉ gồm các Device đã có lúc rollout.
+Server không giữ private key. Lúc upload, Server kiểm chữ ký bằng `RCLI_UPDATE_PUBLIC_KEY` và từ chối ngay nếu chưa cấu hình key hoặc chữ ký sai (không lưu gì, nên upload lại cùng version + target được); Agent kiểm lại bằng public key đã pin lúc đăng ký. "--all" chỉ gồm các Device đã có lúc rollout.
+
+Chữ ký là Ed25519 trên chuỗi `rcli-agent-build\n{version}\n{target}\n{sha256 hex chữ thường của file}`, nên có thể ký ngoài rcli bằng công cụ chuẩn.
 
 Mục Tải xuống của trang Connect guide: `rcli.exe` là bản build đã rollout cho `windows-x86_64`; `.dmg`, `.deb` và
 `.rpm` là package do Admin upload (build bằng `packaging/macos/build-dmg.sh`, `packaging/linux/build-deb.sh`,
@@ -126,10 +132,11 @@ rcli package publish rcli-0.1.0-1.x86_64.rpm --arch x86_64
 
 ## 8. Vận hành
 
-- **Dữ liệu:** tất cả nằm trong volume Postgres `pgdata`. Sao lưu bằng `docker compose exec postgres pg_dump -U rcli rcli > backup.sql`.
+- **Dữ liệu:** metadata nằm trong volume Postgres `pgdata`. File (install package `.deb`/`.rpm`/`.dmg`, Agent build) nằm trong volume `filedata` của service `storage`, không có trong database. `storage` chỉ chạy trong mạng compose (không mở cổng ra host); file chỉ tải được qua Server.
+- **Sao lưu = `pg_dump` + volume `filedata`:** `docker compose exec postgres pg_dump -U rcli rcli > backup.sql`, rồi sao chép volume `filedata`, ví dụ `docker run --rm -v <tên volume filedata>:/data -v "$PWD":/backup alpine tar czf /backup/filedata.tgz -C /data .` (`docker volume ls` cho tên đầy đủ).
 - **Lưu trữ:** metrics 5 giây giữ 7 ngày, metrics 1 phút giữ 90 ngày, audit giữ 90 ngày; tự dọn, không cần cron.
 - **Log:** `docker compose logs -f server`.
-- **Dừng:** `docker compose down` (giữ dữ liệu) hoặc `docker compose down -v` (xoá cả Postgres).
+- **Dừng:** `docker compose down` (giữ dữ liệu) hoặc `docker compose down -v` (xoá cả Postgres và file trong `filedata`).
 
 ## 9. Các điểm chưa kiểm hoặc còn hở
 

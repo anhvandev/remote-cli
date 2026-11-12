@@ -707,7 +707,7 @@ where
     if let Command::Upgrade { target, socket } = &cli.command {
         let installed = config::installed(&machine)?;
         let path = target.clone().unwrap_or_else(|| std::env::current_exe().unwrap_or_default());
-        let done = upgrade::run(&installed, &path, socket.clone()).await?;
+        let done = upgrade::run(&installed, &path, socket.clone(), &dir).await?;
         let text = format!(
             "upgraded {} to {} for {}{}\n",
             done.path.display(),
@@ -1020,17 +1020,19 @@ where
         Command::Mcp => return mcp::serve(api, tokio::io::stdin(), tokio::io::stdout()).await,
         Command::Agent(_) => unreachable!("handled before connecting"),
         Command::Rollout { command: Some(RolloutCommand::Publish { file, version, target, key }), .. } => {
-            let build = std::fs::read(&file)?;
-            let signature = rcli_protocol::update::sign(&std::fs::read(&key)?, &version, &target, &build)?;
+            let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+            std::io::copy(&mut std::fs::File::open(&file)?, &mut hasher)?;
+            let sha256 = hex::encode(sha2::Digest::finalize(hasher));
+            let signature = rcli_protocol::update::sign(&std::fs::read(&key)?, &version, &target, &sha256)?;
             let url = format!("{}/api/v1/agent-builds/{version}/{target}", api.base.trim_end_matches('/'));
-            let req = api.http.put(url).query(&[("signature", hex::encode(signature))]).body(build);
+            let req = api.http.put(url).query(&[("signature", hex::encode(signature))]).body(tokio::fs::File::open(&file).await?);
             let published = api.send(req, None).await?;
             (published, format!("published {version} for {target}\n"))
         }
         Command::Package(PackageCommand::Publish { file, arch }) => {
             let kind = std::path::Path::new(&file).extension().and_then(|e| e.to_str()).unwrap_or_default().to_owned();
             let url = format!("{}/api/v1/packages/{kind}/{arch}", api.base.trim_end_matches('/'));
-            let published = api.send(api.http.put(url).body(std::fs::read(&file)?), None).await?;
+            let published = api.send(api.http.put(url).body(tokio::fs::File::open(&file).await?), None).await?;
             (published, format!("published the .{kind} for {arch}\n"))
         }
         Command::Rollout { command: None, version: Some(version), all, device } => {

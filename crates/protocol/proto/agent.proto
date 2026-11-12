@@ -105,13 +105,16 @@ message AgentHello {
   string target = 2;
 }
 
-// An Agent build to install. `signature` is Ed25519 over version, target and build
-// (see `rcli_protocol::update`); the Agent checks it with its configured update key.
+// An Agent build to install. The Agent downloads it from the build lookup endpoint; `signature` is Ed25519 over
+// version, target and `sha256` (see `rcli_protocol::update`), checked with the Agent's pinned update key.
 message AgentUpdate {
   string version = 1;
   string target = 2;
-  bytes build = 3;
+  reserved 3;
   bytes signature = 4;
+  uint64 size = 5;
+  // Lowercase hex.
+  string sha256 = 6;
 }
 
 // The Agent refused or failed to install an AgentUpdate.

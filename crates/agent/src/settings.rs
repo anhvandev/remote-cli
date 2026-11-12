@@ -160,6 +160,11 @@ impl Handle {
         *self.dir.lock().unwrap() = Some(dir);
     }
 
+    /// Where the settings are saved: the Agent's state directory.
+    pub fn dir(&self) -> Option<PathBuf> {
+        self.dir.lock().unwrap().clone()
+    }
+
     pub fn get(&self) -> DeviceSettings {
         self.settings.lock().unwrap().clone()
     }

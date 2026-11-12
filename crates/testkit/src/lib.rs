@@ -18,7 +18,11 @@ pub use rmcp;
 use serde_json::Value;
 use testcontainers_modules::{
     postgres::Postgres,
-    testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt},
+    testcontainers::{
+        core::{IntoContainerPort, WaitFor},
+        runners::AsyncRunner,
+        ContainerAsync, GenericImage, ImageExt,
+    },
 };
 use tokio::task::JoinHandle;
 
@@ -44,6 +48,7 @@ pub struct TestSystem {
     /// The running Server's config (`database_url` reaches its Postgres).
     pub config: rcli_server::Config,
     _postgres: ContainerAsync<Postgres>,
+    _storage: ContainerAsync<GenericImage>,
 }
 
 impl TestSystem {
@@ -92,6 +97,7 @@ impl TestSystem {
     async fn start_inner(http_addr: std::net::SocketAddr, turn: Option<TestTurn>, master_key: Option<rcli_server::master_key::MasterKey>) -> Self {
         let postgres = Postgres::default().with_tag("16-alpine").start().await.expect("start postgres container");
         let port = postgres.get_host_port_ipv4(5432).await.unwrap();
+        let (storage, s3) = Self::start_storage().await;
         let clock = Arc::new(ManualClock::default());
         let (update_signing_key, update_public_key) = rcli_protocol::update::generate_key().unwrap();
         let config = rcli_server::Config {
@@ -106,6 +112,7 @@ impl TestSystem {
             update_public_key: Some(update_public_key),
             // The Dashboard calls the Server from this host, as a trusted proxy (`ApiClient::via_proxy`).
             trusted_proxies: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            s3,
         };
         let server = rcli_server::start(config.clone(), clock.clone()).await.expect("start server");
         let mut sys = Self {
@@ -118,11 +125,48 @@ impl TestSystem {
             turn,
             config,
             _postgres: postgres,
+            _storage: storage,
         };
         sys.admin_totp_secret = sys.create_dashboard_user("admin", "admin").await;
         sys.admin_token = sys.sign_in("admin", &sys.admin_totp_secret.clone()).await;
         sys.api = sys.api.with_token(Some(&sys.admin_token));
         sys
+    }
+
+    /// SeaweedFS with its S3 gateway, as compose runs it, and the `RCLI_S3_*` settings that reach it.
+    async fn start_storage() -> (ContainerAsync<GenericImage>, rcli_server::storage::S3Config) {
+        let (access_key, secret_key) = ("test-access-key", "test-secret-key");
+        let storage = GenericImage::new("chrislusf/seaweedfs", "4.53")
+            .with_exposed_port(8333.tcp())
+            .with_wait_for(WaitFor::message_on_stderr("Start Seaweed S3 API Server"))
+            .with_env_var("AWS_ACCESS_KEY_ID", access_key)
+            .with_env_var("AWS_SECRET_ACCESS_KEY", secret_key)
+            .with_cmd(["server", "-s3", "-dir=/data", "-master.volumeSizeLimitMB=64"])
+            .start()
+            .await
+            .expect("start storage container");
+        let port = storage.get_host_port_ipv4(8333).await.unwrap();
+        let s3 = rcli_server::storage::S3Config {
+            endpoint: format!("http://127.0.0.1:{port}"),
+            bucket: "rcli".into(),
+            access_key: access_key.into(),
+            secret_key: secret_key.into(),
+        };
+        (storage, s3)
+    }
+
+    /// Overwrites, directly in storage, the stored file whose content was `original` with `bytes` (disk corruption).
+    pub async fn corrupt_stored_file(&self, original: &[u8], bytes: &[u8]) {
+        use object_store::ObjectStore;
+        use sha2::Digest;
+        let s3 = self.config.s3.client().unwrap();
+        let sha256 = hex::encode(sha2::Sha256::digest(original));
+        let listed: Vec<_> = futures::TryStreamExt::try_collect(s3.list(None)).await.unwrap();
+        let stored: Vec<_> = listed.into_iter().filter(|o| o.location.filename() == Some(sha256.as_str())).collect();
+        assert!(!stored.is_empty(), "no stored file holds those bytes");
+        for object in stored {
+            s3.put(&object.location, bytes.to_vec().into()).await.unwrap();
+        }
     }
 
     /// The Dashboard password every test user is signed in with.
@@ -161,6 +205,12 @@ impl TestSystem {
     /// The Server Key as an admin reads it (`rcli server-key show`).
     pub fn server_key(&self) -> String {
         self.server.server_key.clone()
+    }
+
+    /// Hex update signature of `build` as `version` for `target`, with the key the Server and Devices trust.
+    pub fn sign_build(&self, version: &str, target: &str, build: &[u8]) -> String {
+        let sha256 = rcli_protocol::update::sha256_hex(build);
+        hex::encode(rcli_protocol::update::sign(&self.update_signing_key, version, target, &sha256).unwrap())
     }
 
     /// `localhost:port` of the Agent port, as an Agent is given it.

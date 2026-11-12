@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { adminApi, devstack, newUser, signIn } from "./devstack";
+import { adminApi, devstack, newUser, signBuild, signIn } from "./devstack";
 
 // Devices `delta`, `echo`, `foxtrot` exist only for these tests (rcli-devstack); alpha/bravo/charlie stay untouched.
 
@@ -159,11 +159,12 @@ test("the overview lists a failed Agent update with the Device name, error and a
   // golf is Online and no other spec asserts on its update state (power-wake only drives its power actions).
   const golf = devices.find((d: { name: string }) => d.name === "golf");
 
-  // Publish the devstack's signed build for a target no Agent reports, then roll it out: the Online
+  // Publish a signed build for a target no Agent reports, then roll it out: the Online
   // Device cannot install it, so it ends up with update.status "failed" and the reason.
   const version = "t07-failed";
   const target = "t07-fake-x86_64";
-  const res = await fetch(`${api}/api/v1/agent-builds/${version}/${target}?signature=${update.signature}`, {
+  const signature = await signBuild(version, target, update.build);
+  const res = await fetch(`${api}/api/v1/agent-builds/${version}/${target}?signature=${signature}`, {
     method: "PUT",
     headers: { authorization: `Bearer ${admin_token}` },
     body: update.build,
@@ -192,6 +193,20 @@ test("the overview lists a failed Agent update with the Device name, error and a
   await link.click();
   await expect(page).toHaveURL(new RegExp(`/devices/${golf.id}$`));
   await expect(page.getByRole("heading", { name: /golf/ })).toBeVisible();
+});
+
+test("an upload whose signature does not match is refused with the reason", async ({ page }) => {
+  const { update } = await devstack();
+  await openAdmin(page, "Cập nhật Agent");
+  const card = page.getByRole("region", { name: "Cập nhật Agent" });
+  await card.getByLabel("File build").setInputFiles({ name: "rcli", mimeType: "application/octet-stream", buffer: Buffer.from(update.build) });
+  // The devstack's signature is for another version, so it does not match this one.
+  await card.getByLabel("Phiên bản").first().fill("t02-wrong-signature");
+  await card.getByLabel("Hệ điều hành").click();
+  await page.getByRole("option", { name: update.target }).click();
+  await card.getByLabel("Chữ ký (hex)").fill(update.signature);
+  await card.getByRole("button", { name: "Tải lên" }).click();
+  await expect(card.getByRole("alert").first()).toContainText("the signature does not match this version, target and file");
 });
 
 test("admin uploads a signed Agent build and rolls it out to selected Devices", async ({ page }) => {

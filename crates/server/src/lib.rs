@@ -17,6 +17,7 @@ pub mod registry;
 pub mod server_key;
 pub mod settings;
 pub mod shell;
+pub mod storage;
 pub mod updates;
 pub mod wake;
 pub mod master_key;
@@ -49,6 +50,8 @@ pub struct Config {
     /// Reverse proxies in front of the Controller API (`RCLI_TRUSTED_PROXIES`): from these peers the Controller's
     /// IP is read from `X-Forwarded-For`, so the Device Password limiter and audit see the real client.
     pub trusted_proxies: Vec<std::net::IpAddr>,
+    /// The file store holding Agent builds and install packages (`RCLI_S3_*`).
+    pub s3: storage::S3Config,
 }
 
 impl Config {
@@ -56,7 +59,13 @@ impl Config {
         let var = |k: &str, default: Option<&str>| -> anyhow::Result<String> {
             std::env::var(k).or_else(|_| default.map(str::to_owned).ok_or_else(|| anyhow::anyhow!("{k} is required")))
         };
+        let s3 = ["RCLI_S3_ENDPOINT", "RCLI_S3_BUCKET", "RCLI_S3_ACCESS_KEY", "RCLI_S3_SECRET_KEY"]
+            .map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()).ok_or(k));
+        let missing: Vec<&str> = s3.iter().filter_map(|v| v.as_ref().err().copied()).collect();
+        anyhow::ensure!(missing.is_empty(), "the file storage settings are required; missing: {}", missing.join(", "));
+        let [endpoint, bucket, access_key, secret_key] = s3.map(Result::unwrap);
         Ok(Self {
+            s3: storage::S3Config { endpoint, bucket, access_key, secret_key },
             database_url: var("DATABASE_URL", None)?,
             http_addr: var("RCLI_HTTP_ADDR", Some("0.0.0.0:8080"))?.parse()?,
             agent_addr: var("RCLI_AGENT_ADDR", Some("0.0.0.0:8443"))?.parse()?,
@@ -82,6 +91,7 @@ impl Config {
 /// Shared state handed to every area module.
 pub struct AppState {
     pub db: PgPool,
+    pub storage: storage::Storage,
     pub clock: Arc<dyn Clock>,
     pub ca: pki::Ca,
     /// The Server Key and Server Address, editable by Admins.
@@ -127,6 +137,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
         None => tracing::warn!("no RCLI_MASTER_KEY: the CA private key and TOTP secrets are stored unencrypted"),
     }
     let ca_pem = ca.cert_pem.clone();
+    let storage = storage::Storage::connect(&config.s3).await?;
 
     let http = tokio::net::TcpListener::bind(config.http_addr).await?;
     let agents = tokio::net::TcpListener::bind(config.agent_addr).await?;
@@ -136,6 +147,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> anyhow::Result<Serv
 
     let state = Arc::new(AppState {
         db,
+        storage,
         clock,
         ca,
         settings,

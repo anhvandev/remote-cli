@@ -35,12 +35,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Conn<T> {
         Self { inner: Framed::new(io, LengthDelimitedCodec::new()) }
     }
 
-    /// Like `new` but frames up to `max` bytes (the 8 MiB default is too small for Agent builds).
-    /// Use it only once the peer is authenticated: the receiver reserves up to `max` per frame.
-    pub fn with_max_frame(io: T, max: usize) -> Self {
-        Self { inner: Framed::new(io, LengthDelimitedCodec::builder().max_frame_length(max).new_codec()) }
-    }
-
     pub async fn send<S: Message>(&mut self, msg: &S) -> anyhow::Result<()> {
         self.inner.send(bytes::Bytes::from(msg.encode_to_vec())).await?;
         Ok(())

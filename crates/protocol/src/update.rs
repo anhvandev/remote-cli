@@ -1,6 +1,6 @@
-//! Agent build signatures: Ed25519 over the version, the target and the build bytes, so a
-//! signed build cannot be relabeled as another version or OS. The private key stays with the
-//! admin (`rcli rollout keygen`); Agents are configured with the public key; the Server only stores.
+//! Agent build signatures: Ed25519 over `rcli-agent-build\n{version}\n{target}\n{sha256 lowercase hex}`, so a
+//! signed build cannot be relabeled as another version or OS, and is checked without the build in memory. The private key stays with the
+//! admin (`rcli rollout keygen`); Agents and the Server are configured with the public key.
 
 use ring::{
     rand::SystemRandom,
@@ -9,13 +9,14 @@ use ring::{
 
 /// Largest Agent build the Server accepts.
 pub const MAX_BUILD_BYTES: usize = 200 << 20;
-/// Frame limit for authenticated Device sessions: a build plus room for the rest of the message.
-pub const MAX_SESSION_FRAME: usize = MAX_BUILD_BYTES + (1 << 20);
 
-fn message(version: &str, target: &str, build: &[u8]) -> Vec<u8> {
-    let mut m = format!("rcli-agent-build\n{version}\n{target}\n").into_bytes();
-    m.extend_from_slice(build);
-    m
+fn message(version: &str, target: &str, sha256: &str) -> Vec<u8> {
+    format!("rcli-agent-build\n{version}\n{target}\n{sha256}").into_bytes()
+}
+
+/// Lowercase hex sha256 of a build, the digest the signature covers.
+pub fn sha256_hex(build: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, build).as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// A new signing key: `(pkcs8 private key, raw 32-byte public key)`.
@@ -25,13 +26,13 @@ pub fn generate_key() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     Ok((pkcs8.as_ref().to_vec(), public))
 }
 
-pub fn sign(pkcs8: &[u8], version: &str, target: &str, build: &[u8]) -> anyhow::Result<Vec<u8>> {
+pub fn sign(pkcs8: &[u8], version: &str, target: &str, sha256: &str) -> anyhow::Result<Vec<u8>> {
     let key = Ed25519KeyPair::from_pkcs8(pkcs8).map_err(|_| anyhow::anyhow!("not an Ed25519 PKCS#8 signing key"))?;
-    Ok(key.sign(&message(version, target, build)).as_ref().to_vec())
+    Ok(key.sign(&message(version, target, sha256)).as_ref().to_vec())
 }
 
-pub fn verify(public_key: &[u8], version: &str, target: &str, build: &[u8], signature: &[u8]) -> bool {
-    UnparsedPublicKey::new(&ED25519, public_key).verify(&message(version, target, build), signature).is_ok()
+pub fn verify(public_key: &[u8], version: &str, target: &str, sha256: &str, signature: &[u8]) -> bool {
+    UnparsedPublicKey::new(&ED25519, public_key).verify(&message(version, target, sha256), signature).is_ok()
 }
 
 /// HMAC-SHA256 of the hex update key under the Server Key's secret, served with `/api/v1/update-key`. A Controller checking it
@@ -46,15 +47,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn signature_binds_key_version_target_and_bytes() {
+    fn signature_binds_key_version_target_and_digest() {
         let (private, public) = generate_key().unwrap();
         let (_, other) = generate_key().unwrap();
-        let sig = sign(&private, "1.2.0", "linux-x86_64", b"bin").unwrap();
-        assert!(verify(&public, "1.2.0", "linux-x86_64", b"bin", &sig));
-        assert!(!verify(&other, "1.2.0", "linux-x86_64", b"bin", &sig));
-        assert!(!verify(&public, "1.3.0", "linux-x86_64", b"bin", &sig));
-        assert!(!verify(&public, "1.2.0", "windows-x86_64", b"bin", &sig));
-        assert!(!verify(&public, "1.2.0", "linux-x86_64", b"bin!", &sig));
-        assert!(!verify(&public, "1.2.0", "linux-x86_64", b"bin", b""));
+        let digest = sha256_hex(b"bin");
+        // Worked value from `printf bin | sha256sum`.
+        assert_eq!(digest, "51a1f05af85e342e3c849b47d387086476282d5f50dc240c19216d6edfb1eb5a");
+        let sig = sign(&private, "1.2.0", "linux-x86_64", &digest).unwrap();
+        assert!(verify(&public, "1.2.0", "linux-x86_64", &digest, &sig));
+        assert!(!verify(&other, "1.2.0", "linux-x86_64", &digest, &sig));
+        assert!(!verify(&public, "1.3.0", "linux-x86_64", &digest, &sig));
+        assert!(!verify(&public, "1.2.0", "windows-x86_64", &digest, &sig));
+        assert!(!verify(&public, "1.2.0", "linux-x86_64", &sha256_hex(b"bin!"), &sig));
+        assert!(!verify(&public, "1.2.0", "linux-x86_64", &digest, b""));
+    }
+
+    #[test]
+    fn signed_message_is_the_documented_format() {
+        let (private, public) = generate_key().unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(&private).unwrap();
+        let sig = key.sign(b"rcli-agent-build\n1.2.0\nlinux-x86_64\nabc123");
+        assert!(verify(&public, "1.2.0", "linux-x86_64", "abc123", sig.as_ref()));
     }
 }

@@ -4,6 +4,7 @@ pub mod backlog;
 pub mod contract;
 mod clip;
 mod coords;
+pub mod download;
 mod encoder;
 mod executor;
 pub mod ipc;
@@ -196,7 +197,7 @@ async fn connect_with_config(addr: &str, config: ClientConfig) -> anyhow::Result
     let name = ServerName::try_from(host.trim_matches(['[', ']']).to_owned())?;
     let tcp = TcpStream::connect(addr).await?;
     let tls = TlsConnector::from(Arc::new(config)).connect(name, tcp).await?;
-    Ok(Conn::with_max_frame(tls, rcli_protocol::update::MAX_SESSION_FRAME))
+    Ok(Conn::new(tls))
 }
 
 /// Registers this Device with the Server Key: checks the Server's CA against the key's fingerprint, presents its
@@ -319,7 +320,7 @@ pub async fn run(server: ServerAccess, mut creds: Credentials, platform: Arc<dyn
                 if let Some(s) = &agent.status {
                     s.set_connected(true);
                 }
-                match session(conn, &mut creds, &agent, &mut inbox).await {
+                match session(conn, &server_access.server_key, &mut creds, &agent, &mut inbox).await {
                     Ok(now) => reconnect = now,
                     Err(e) => tracing::warn!("connection to server lost: {e}"),
                 }
@@ -404,6 +405,7 @@ async fn sample_forever(platform: Arc<dyn Platform>, backlog: Arc<Backlog>) {
 
 async fn session(
     mut conn: Conn<TlsStream<TcpStream>>,
+    server_key: &str,
     creds: &mut Credentials,
     agent: &AgentState,
     inbox: &mut Inbox,
@@ -423,6 +425,10 @@ async fn session(
     let mut pending: std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Result<String, String>>> = Default::default();
     // Shells are opened off this loop (a prompt may wait 30 s), so the map is shared with those tasks.
     let shells = Arc::new(Mutex::new(Shells::default()));
+    // Updates download and install off this loop, one task per version; each ends `true` once installed. Dropping the
+    // set with the session aborts them, and the next session's task resumes the partial download.
+    let mut updates = tokio::task::JoinSet::new();
+    let mut updating: std::collections::HashMap<String, tokio::task::AbortHandle> = Default::default();
     // What every request that may prompt at the Device needs, cloned into the task that serves it.
     let gate = || Gate {
         platform: agent.platform.clone(),
@@ -454,6 +460,12 @@ async fn session(
                     let sample = ResourceSample { resources: Some(delta(&resources, &cur)), age_ms };
                     conn.send(&send(agent_message::Msg::Sample(sample))).await?;
                     resources = cur;
+                }
+            }
+            Some(done) = updates.join_next() => {
+                // Reconnect so the Server sees the new version (real adapters restart instead).
+                if matches!(done, Ok(true)) {
+                    return Ok(true);
                 }
             }
             Some(reply) = replies_rx.recv() => {
@@ -608,15 +620,18 @@ async fn session(
                         });
                     }
                     Some(server_message::Msg::Update(update)) => {
-                        // shortcut: installs inline, blocking heartbeats; fine while installs take well under 30 s.
-                        match install(creds, platform, &update) {
-                            // Reconnect so the Server sees the new version (real adapters restart instead).
-                            Ok(()) => return Ok(true),
-                            Err(e) => {
-                                tracing::warn!("rejected Agent update {}: {e:#}", update.version);
-                                let failed = UpdateFailed { version: update.version, reason: format!("{e:#}") };
-                                conn.send(&send(agent_message::Msg::UpdateFailed(failed))).await?;
-                            }
+                        if updating.get(&update.version).is_none_or(|t| t.is_finished()) {
+                            let api = status.map(|s| s.api_address()).filter(|a| !a.is_empty());
+                            let job = UpdateJob {
+                                url: api.map(|api| format!("{}/api/v1/agent-builds/{}?device={}", api.trim_end_matches('/'), target(), creds.device_id)),
+                                server_key: server_key.to_owned(),
+                                dir: agent.settings.dir().unwrap_or_else(std::env::temp_dir),
+                                key: creds.update_key.clone(),
+                                platform: agent.platform.clone(),
+                                replies: replies.clone(),
+                                update,
+                            };
+                            updating.insert(job.update.version.clone(), updates.spawn(update_agent(job)));
                         }
                     }
                     Some(server_message::Msg::ControlIndicator(c)) => {
@@ -986,16 +1001,58 @@ fn clamp_u16(n: u32) -> u16 {
     n.clamp(1, u16::MAX.into()) as u16
 }
 
-/// Verifies `update` against the update key pinned at registration and the target, then installs it.
-fn install(creds: &Credentials, platform: &dyn Platform, update: &AgentUpdate) -> anyhow::Result<()> {
-    anyhow::ensure!(!creds.update_key.is_empty(), "no update key pinned on this Agent");
-    let key = &creds.update_key;
+/// What an update task needs, taken from the session that received the `AgentUpdate`.
+struct UpdateJob {
+    update: AgentUpdate,
+    /// The build lookup endpoint on the API Address, naming this Device; `None` while no API Address is known.
+    url: Option<String>,
+    server_key: String,
+    /// The Agent's data directory; the download goes to `updates/` in it.
+    dir: std::path::PathBuf,
+    /// The update key pinned at registration.
+    key: Vec<u8>,
+    platform: Arc<dyn Platform>,
+    replies: tokio::sync::mpsc::UnboundedSender<agent_message::Msg>,
+}
+
+/// Downloads, verifies and installs `job.update`; `true` once installed. A network failure or 5xx retries after a
+/// random 30-60 s; anything else is reported to the Server as `UpdateFailed`.
+async fn update_agent(job: UpdateJob) -> bool {
+    let version = job.update.version.clone();
+    loop {
+        match download_and_install(&job).await {
+            Ok(()) => return true,
+            Err(e) if download::transient(&e) => {
+                tracing::warn!("Agent update {version} failed, retrying: {e:#}");
+                let mut byte = [0u8];
+                let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut byte);
+                tokio::time::sleep(Duration::from_secs(30 + u64::from(byte[0]) % 31)).await;
+            }
+            Err(e) => {
+                tracing::warn!("rejected Agent update {version}: {e:#}");
+                let _ = job.replies.send(agent_message::Msg::UpdateFailed(UpdateFailed { version, reason: format!("{e:#}") }));
+                return false;
+            }
+        }
+    }
+}
+
+/// Checks `job.update` against the pinned update key and this Agent's target, downloads and verifies the build,
+/// then installs it.
+async fn download_and_install(job: &UpdateJob) -> anyhow::Result<()> {
+    let update = &job.update;
+    anyhow::ensure!(!job.key.is_empty(), "no update key pinned on this Agent");
     anyhow::ensure!(update.target == target(), "build is for {}, this Agent is {}", update.target, target());
-    anyhow::ensure!(
-        rcli_protocol::update::verify(key, &update.version, &update.target, &update.build, &update.signature),
-        "bad signature: build is not signed with this Agent's update key"
-    );
-    platform.install_update(&update.version, &update.build)
+    let url = job.url.as_deref().ok_or_else(|| anyhow::anyhow!("this Agent knows no API Address to download the build from"))?;
+    let build = download::fetch_build(url, &job.server_key, &job.dir, &job.key, &update.target).await?;
+    if (build.sha256.as_str(), build.size) != (update.sha256.as_str(), update.size) {
+        let _ = tokio::fs::remove_file(&build.path).await;
+        anyhow::bail!("the Server served a build ({} bytes, sha256 {}) other than the one rolled out", build.size, build.sha256);
+    }
+    let (platform, version, path) = (job.platform.clone(), build.version, build.path.clone());
+    let installed = tokio::task::spawn_blocking(move || platform.install_update(&version, &path)).await?;
+    let _ = tokio::fs::remove_file(&build.path).await;
+    installed
 }
 
 fn sample_resources(platform: &dyn Platform) -> anyhow::Result<Resources> {

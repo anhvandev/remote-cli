@@ -20,9 +20,8 @@ async fn install_sh_is_a_shell_script_that_installs_the_agent() {
 #[tokio::test]
 async fn download_serves_the_rolled_out_build_and_unknown_targets_error() {
     let sys = TestSystem::start().await;
-    // The Server stores, never checks, signatures; any 64-byte hex value will do here.
-    let signature = "ab".repeat(64);
     for (version, build) in [("0.1.0", "old build"), ("0.2.0", "rolled out build"), ("0.3.0", "published, not rolled out")] {
+        let signature = sys.sign_build(version, "linux-x86_64", build.as_bytes());
         let (status, body) = sys
             .api
             .put_bytes(&format!("/api/v1/agent-builds/{version}/linux-x86_64?signature={signature}"), build.as_bytes().to_vec())
@@ -96,7 +95,7 @@ async fn a_scripted_install_makes_the_machine_a_device_that_can_connect() {
     let args_file = rcli_testkit::temp_dir("scripted-args").join("args");
     let build = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", args_file.display());
     let target_name = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-    let signature = "ab".repeat(64);
+    let signature = sys.sign_build("0.1.0", &target_name, build.as_bytes());
     let path = format!("/api/v1/agent-builds/0.1.0/{target_name}?signature={signature}");
     let (status, body) = sys.api.put_bytes(&path, build.into_bytes()).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -145,6 +144,13 @@ async fn an_admin_publishes_install_packages_that_anyone_downloads() {
     sys.rcli(&["package", "publish", deb.to_str().unwrap(), "--arch", "x86_64"]).await.unwrap();
     let (status, bytes) = sys.api.with_token(None).get_bytes("/download/package/deb/x86_64").await;
     assert_eq!((status, bytes.as_slice()), (StatusCode::OK, b"second deb".as_slice()));
+    // A package larger than one storage upload part comes back byte for byte.
+    let large: Vec<u8> = (0..12 << 20).map(|i: u32| (i % 251) as u8).collect();
+    let (status, body) = sys.api.put_bytes("/api/v1/packages/rpm/x86_64", large.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, bytes) = sys.api.with_token(None).get_bytes("/download/package/rpm/x86_64").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(bytes == large, "the large package came back different ({} bytes)", bytes.len());
 
     // Only an Admin uploads, and only the package kinds the guide offers.
     let operator = sys.create_user("olga", "operator").await;
@@ -152,4 +158,88 @@ async fn an_admin_publishes_install_packages_that_anyone_downloads() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = sys.api.put_bytes("/api/v1/packages/zip/x86_64", b"x".to_vec()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// A package download resumes: `Range: bytes=N-` and `N-M` answer 206 with the slice and its `Content-Range`.
+#[tokio::test]
+async fn a_package_download_answers_range_requests() {
+    let sys = TestSystem::start().await;
+    let (status, body) = sys.api.put_bytes("/api/v1/packages/rpm/aarch64", b"0123456789".to_vec()).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let url = format!("http://{}/download/package/rpm/aarch64", sys.server.http_addr);
+    let http = reqwest::Client::new();
+
+    let full = http.get(&url).send().await.unwrap();
+    assert_eq!((full.status(), full.content_length()), (StatusCode::OK, Some(10)));
+    assert_eq!(full.bytes().await.unwrap().as_ref(), b"0123456789");
+    for (range, slice, content_range) in [("bytes=6-", "6789", "bytes 6-9/10"), ("bytes=2-4", "234", "bytes 2-4/10")] {
+        let part = http.get(&url).header("range", range).send().await.unwrap();
+        assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT, "{range}");
+        assert_eq!(part.headers()["content-range"], content_range);
+        assert_eq!(part.content_length(), Some(slice.len() as u64));
+        assert_eq!(part.bytes().await.unwrap().as_ref(), slice.as_bytes());
+    }
+    let past_end = http.get(&url).header("range", "bytes=10-").send().await.unwrap();
+    assert_eq!(past_end.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+}
+
+/// A package whose stored bytes no longer match what was uploaded fails to download instead of being served.
+#[tokio::test]
+async fn a_corrupted_package_is_refused() {
+    let sys = TestSystem::start().await;
+    let (status, body) = sys.api.put_bytes("/api/v1/packages/dmg/aarch64", b"original package".to_vec()).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    sys.corrupt_stored_file(b"original package", b"tampered package").await;
+
+    // The response breaks off (before or after its headers), so no client takes it for the whole file.
+    let served = match reqwest::get(format!("http://{}/download/package/dmg/aarch64", sys.server.http_addr)).await {
+        Ok(resp) => resp.bytes().await.is_ok(),
+        Err(_) => false,
+    };
+    assert!(!served, "the corrupted bytes were served as a complete download");
+}
+
+/// Publishes `build` as 1.0.0 for linux-x86_64 and rolls it out to the fleet, so `/download/linux/x86_64` serves it.
+async fn roll_out_linux_build(sys: &TestSystem, build: &[u8]) {
+    let signature = sys.sign_build("1.0.0", "linux-x86_64", build);
+    let (status, body) = sys.api.put_bytes(&format!("/api/v1/agent-builds/1.0.0/linux-x86_64?signature={signature}"), build.to_vec()).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = sys.api.post_json("/api/v1/agent-builds/1.0.0/rollout", &serde_json::json!({ "all": true })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// A build download names its sha256 and resumes: `Range` answers 206 with the slice.
+#[tokio::test]
+async fn a_build_download_names_its_sha256_and_answers_range_requests() {
+    let sys = TestSystem::start().await;
+    roll_out_linux_build(&sys, b"0123456789").await;
+    let url = format!("http://{}/download/linux/x86_64", sys.server.http_addr);
+    let http = reqwest::Client::new();
+
+    let full = http.get(&url).send().await.unwrap();
+    assert_eq!((full.status(), full.content_length()), (StatusCode::OK, Some(10)));
+    // sha256("0123456789")
+    assert_eq!(full.headers()["x-rcli-sha256"], "84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882");
+    assert_eq!(full.headers()["x-rcli-version"], "1.0.0");
+    assert!(full.headers().contains_key("x-rcli-signature"));
+    assert_eq!(full.bytes().await.unwrap().as_ref(), b"0123456789");
+    let part = http.get(&url).header("range", "bytes=6-").send().await.unwrap();
+    assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(part.headers()["content-range"], "bytes 6-9/10");
+    assert_eq!(part.headers()["x-rcli-version"], "1.0.0");
+    assert_eq!(part.bytes().await.unwrap().as_ref(), b"6789");
+}
+
+/// A build whose stored bytes no longer match what was uploaded fails to download instead of being served.
+#[tokio::test]
+async fn a_corrupted_build_is_refused() {
+    let sys = TestSystem::start().await;
+    roll_out_linux_build(&sys, b"original build").await;
+    sys.corrupt_stored_file(b"original build", b"tampered build").await;
+
+    let served = match reqwest::get(format!("http://{}/download/linux/x86_64", sys.server.http_addr)).await {
+        Ok(resp) => resp.bytes().await.is_ok(),
+        Err(_) => false,
+    };
+    assert!(!served, "the corrupted bytes were served as a complete download");
 }

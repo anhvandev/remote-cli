@@ -27,7 +27,7 @@ use axum::{
 };
 use serde_json::json;
 
-use crate::AppState;
+use crate::{storage, AppState};
 
 pub type State = Arc<AppState>;
 
@@ -255,6 +255,67 @@ impl FromRequestParts<State> for Admin {
         }
         Ok(Admin(user))
     }
+}
+
+/// Streams the request body into storage under `prefix`; a body over the route's `DefaultBodyLimit` is 413.
+async fn store(state: &State, prefix: &str, request: axum::extract::Request) -> Result<storage::Stored, ApiError> {
+    let body = axum::RequestExt::into_limited_body(request).into_data_stream();
+    state.storage.put(prefix, body).await.map_err(|e| {
+        if e.chain().any(|c| c.is::<http_body_util::LengthLimitError>()) {
+            ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "the file is over the upload limit")
+        } else {
+            e.into()
+        }
+    })
+}
+
+/// Removes the stored object `sha256` under `prefix` unless a row of that prefix's table still points at it (two
+/// rows may share bytes).
+async fn delete_unreferenced(state: &State, prefix: &str, sha256: &str) -> anyhow::Result<()> {
+    let query = match prefix {
+        storage::PACKAGES => "SELECT EXISTS (SELECT 1 FROM install_packages WHERE sha256 = $1)",
+        _ => "SELECT EXISTS (SELECT 1 FROM agent_builds WHERE sha256 = $1)",
+    };
+    let used: bool = sqlx::query_scalar(query).bind(sha256).fetch_one(&state.db).await?;
+    if !used {
+        state.storage.delete(prefix, sha256).await?;
+    }
+    Ok(())
+}
+
+/// Streams a stored file of `size` bytes. A single `Range: bytes=N-` or `bytes=N-M` gets `206` with that slice.
+// shortcut: no cap on simultaneous downloads; add a limit here when fleets grow.
+async fn stored_file(state: &State, prefix: &str, sha256: &str, size: u64, headers: &axum::http::HeaderMap) -> Result<Response, ApiError> {
+    use axum::http::header;
+    let requested = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).and_then(parse_range);
+    let range = match requested {
+        None => None,
+        Some((start, end)) => {
+            let end = end.unwrap_or(u64::MAX).min(size.saturating_sub(1));
+            if start >= size || end < start {
+                let mut refused = ApiError::new(StatusCode::RANGE_NOT_SATISFIABLE, "bad_range", format!("the file has {size} bytes")).into_response();
+                refused.headers_mut().insert(header::CONTENT_RANGE, format!("bytes */{size}").parse().expect("digits"));
+                return Ok(refused);
+            }
+            Some(start..end + 1)
+        }
+    };
+    let body = axum::body::Body::from_stream(state.storage.get(prefix, sha256, range.clone()).await?);
+    let response = Response::builder().header(header::CONTENT_TYPE, "application/octet-stream");
+    let response = match range {
+        None => response.status(StatusCode::OK).header(header::CONTENT_LENGTH, size),
+        Some(r) => response
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_LENGTH, r.end - r.start)
+            .header(header::CONTENT_RANGE, format!("bytes {}-{}/{size}", r.start, r.end - 1)),
+    };
+    Ok(response.body(body).map_err(anyhow::Error::from)?)
+}
+
+/// `bytes=N-` or `bytes=N-M` as (N, M); anything else (suffix or multiple ranges) is ignored and the whole file sent.
+fn parse_range(value: &str) -> Option<(u64, Option<u64>)> {
+    let (start, end) = value.strip_prefix("bytes=")?.split_once('-')?;
+    Some((start.trim().parse().ok()?, if end.trim().is_empty() { None } else { Some(end.trim().parse().ok()?) }))
 }
 
 #[cfg(test)]

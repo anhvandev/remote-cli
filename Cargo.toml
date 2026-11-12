@@ -5,7 +5,7 @@ members = ["crates/protocol", "crates/server", "crates/agent", "crates/cli", "cr
 [workspace.package]
 edition = "2021"
 license = "AGPL-3.0-only"
-version = "0.1.0"
+version = "0.2.0"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -20,6 +20,7 @@ crossterm = { version = "0.28", default-features = false, features = ["windows"]
 eframe = "0.31"
 futures = "0.3"
 mp4 = "0.14"
+object_store = { version = "0.12", default-features = false, features = ["aws"] }
 openh264 = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 prost = "0.13"
@@ -28,7 +29,7 @@ protoc-bin-vendored = "3"
 rcgen = { version = "0.13", features = ["x509-parser", "pem"] }
 hex = "0.4"
 keyring = { version = "3", default-features = false }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 ring = "0.17"
 rmcp = { version = "3.8", default-features = false }
 rpassword = "7"
