@@ -5,6 +5,10 @@ use std::{
     ffi::OsString,
     io::Write,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 pub mod agent;
@@ -561,11 +565,20 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    run_with_input(args, None, out).await
+    run_with_input(args, None, out, Arc::new(Mutex::new(std::io::stderr()))).await
 }
 
-/// `run` with the keystrokes for `rcli shell` taken from `input` instead of the terminal (None = stdin).
-pub async fn run_with_input<I, T>(args: I, input: Option<mpsc::UnboundedReceiver<Vec<u8>>>, out: &mut dyn Write) -> anyhow::Result<()>
+/// Where warnings go: stderr, or a buffer in tests.
+pub type Stderr = Arc<Mutex<dyn Write + Send>>;
+
+/// `run` with the keystrokes for `rcli shell` taken from `input` instead of the terminal (None = stdin), and
+/// warnings written to `err`.
+pub async fn run_with_input<I, T>(
+    args: I,
+    input: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
+    out: &mut dyn Write,
+    err: Stderr,
+) -> anyhow::Result<()>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
@@ -712,7 +725,7 @@ where
         };
     }
     let (base, connection) = api_target(&dir, &machine, cli.server, cli.token)?;
-    let api = Api { base, dir, connection, http: reqwest::Client::new() };
+    let api = Api { base, dir, connection, http: reqwest::Client::new(), stderr: err, warned: Default::default() };
     if admin_only(&cli.command) && api.connection.token.is_none() {
         anyhow::bail!("this command needs an Admin account: run `rcli login <name>` (or `rcli connect <Device ID>` for Device commands)");
     }
@@ -1230,6 +1243,9 @@ pub struct Api {
     dir: std::path::PathBuf,
     connection: Connection,
     http: reqwest::Client,
+    stderr: Stderr,
+    /// Shared by clones: one Api per process, so the Minimum Version warning prints at most once per process.
+    warned: Arc<AtomicBool>,
 }
 
 impl Api {
@@ -1239,6 +1255,8 @@ impl Api {
             dir: config::dir(),
             connection: Connection { token: Some(token), ..Default::default() },
             http: reqwest::Client::new(),
+            stderr: Arc::new(Mutex::new(std::io::stderr())),
+            warned: Default::default(),
         }
     }
 
@@ -1246,7 +1264,8 @@ impl Api {
     /// `rcli login` session and remembered Device Passwords in `dir` (what `rcli mcp` uses): no env vars and no flags.
     pub fn from_config(dir: &Path, machine: &Path) -> anyhow::Result<Self> {
         let (base, connection) = api_target(dir, machine, None, None)?;
-        Ok(Self { base, dir: dir.to_path_buf(), connection, http: reqwest::Client::new() })
+        let stderr: Stderr = Arc::new(Mutex::new(std::io::stderr()));
+        Ok(Self { base, dir: dir.to_path_buf(), connection, http: reqwest::Client::new(), stderr, warned: Default::default() })
     }
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> anyhow::Result<Value> {
@@ -1288,6 +1307,12 @@ impl Api {
 
     /// Turns an API error response into an error naming its code and message.
     async fn check(&self, resp: reqwest::Response) -> anyhow::Result<reqwest::Response> {
+        if let Some(minimum) = resp.headers().get("x-rcli-minimum-version").and_then(|v| v.to_str().ok()) {
+            let below = semver::Version::parse(minimum).is_ok_and(|m| semver::Version::parse(upgrade::RUNNING).is_ok_and(|r| r < m));
+            if below && !self.warned.swap(true, Ordering::Relaxed) {
+                let _ = writeln!(self.stderr.lock().unwrap(), "Server recommends rcli ≥ {minimum}, run: rcli update");
+            }
+        }
         let status = resp.status();
         if !status.is_success() {
             let body: Value = resp.json().await.unwrap_or(Value::Null);

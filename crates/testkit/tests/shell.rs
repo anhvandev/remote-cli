@@ -215,7 +215,7 @@ async fn rcli_shell_relays_keystrokes_and_exits_with_the_remote_code() {
         let argv: Vec<String> = ["rcli", "--server", &base, "--token", token].iter().chain(args).map(|s| s.to_string()).collect();
         async move {
             let mut out = Vec::new();
-            let result = rcli::run_with_input(argv, Some(rx), &mut out).await;
+            let result = rcli::run_with_input(argv, Some(rx), &mut out, std::sync::Arc::new(std::sync::Mutex::new(std::io::stderr()))).await;
             (result, String::from_utf8(out).unwrap())
         }
     };
