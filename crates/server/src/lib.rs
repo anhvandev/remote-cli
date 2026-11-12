@@ -50,7 +50,7 @@ pub struct Config {
     /// Reverse proxies in front of the Controller API (`RCLI_TRUSTED_PROXIES`): from these peers the Controller's
     /// IP is read from `X-Forwarded-For`, so the Device Password limiter and audit see the real client.
     pub trusted_proxies: Vec<std::net::IpAddr>,
-    /// The file store holding install packages (`RCLI_S3_*`).
+    /// The file store holding Agent builds and install packages (`RCLI_S3_*`).
     pub s3: storage::S3Config,
 }
 

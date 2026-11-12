@@ -621,9 +621,9 @@ async fn session(
                     }
                     Some(server_message::Msg::Update(update)) => {
                         if updating.get(&update.version).is_none_or(|t| t.is_finished()) {
-                            let api = status.map(|s| s.api_address()).unwrap_or_default();
+                            let api = status.map(|s| s.api_address()).filter(|a| !a.is_empty());
                             let job = UpdateJob {
-                                url: format!("{}/api/v1/agent-builds/{}?device={}", api.trim_end_matches('/'), target(), creds.device_id),
+                                url: api.map(|api| format!("{}/api/v1/agent-builds/{}?device={}", api.trim_end_matches('/'), target(), creds.device_id)),
                                 server_key: server_key.to_owned(),
                                 dir: agent.settings.dir().unwrap_or_else(std::env::temp_dir),
                                 key: creds.update_key.clone(),
@@ -1004,8 +1004,8 @@ fn clamp_u16(n: u32) -> u16 {
 /// What an update task needs, taken from the session that received the `AgentUpdate`.
 struct UpdateJob {
     update: AgentUpdate,
-    /// The build lookup endpoint on the API Address, naming this Device.
-    url: String,
+    /// The build lookup endpoint on the API Address, naming this Device; `None` while no API Address is known.
+    url: Option<String>,
     server_key: String,
     /// The Agent's data directory; the download goes to `updates/` in it.
     dir: std::path::PathBuf,
@@ -1043,7 +1043,12 @@ async fn download_and_install(job: &UpdateJob) -> anyhow::Result<()> {
     let update = &job.update;
     anyhow::ensure!(!job.key.is_empty(), "no update key pinned on this Agent");
     anyhow::ensure!(update.target == target(), "build is for {}, this Agent is {}", update.target, target());
-    let build = download::build(&job.url, &job.server_key, &job.dir, &job.key, &update.target).await?;
+    let url = job.url.as_deref().ok_or_else(|| anyhow::anyhow!("this Agent knows no API Address to download the build from"))?;
+    let build = download::fetch_build(url, &job.server_key, &job.dir, &job.key, &update.target).await?;
+    if (build.sha256.as_str(), build.size) != (update.sha256.as_str(), update.size) {
+        let _ = tokio::fs::remove_file(&build.path).await;
+        anyhow::bail!("the Server served a build ({} bytes, sha256 {}) other than the one rolled out", build.size, build.sha256);
+    }
     let (platform, version, path) = (job.platform.clone(), build.version, build.path.clone());
     let installed = tokio::task::spawn_blocking(move || platform.install_update(&version, &path)).await?;
     let _ = tokio::fs::remove_file(&build.path).await;

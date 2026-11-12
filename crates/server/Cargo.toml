@@ -12,6 +12,7 @@ chrono.workspace = true
 data-encoding.workspace = true
 futures.workspace = true
 hex.workspace = true
+http-body-util = "0.1"
 object_store.workspace = true
 prost.workspace = true
 rcgen.workspace = true

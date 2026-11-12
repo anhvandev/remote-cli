@@ -214,3 +214,18 @@ async fn a_partial_download_with_wrong_bytes_is_discarded() {
     assert_eq!(std::fs::read(&target).unwrap(), b"new rcli binary");
     assert!(!part.exists(), "the download is left behind");
 }
+
+/// A download already complete on disk is verified and installed without fetching it again (here the stored copy is
+/// corrupted, so a second download would fail; it is large enough that the response starts before that shows).
+#[tokio::test]
+async fn a_complete_download_on_disk_is_installed_without_fetching_it_again() {
+    let sys = TestSystem::start().await;
+    let build = vec![7u8; 4 << 20];
+    let (dir, part, target) = with_partial(&sys, "complete", &build, &build).await;
+    sys.corrupt_stored_file(&build, &vec![8u8; 4 << 20]).await;
+
+    sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap();
+
+    assert!(std::fs::read(&target).unwrap() == build, "the installed binary is not the build");
+    assert!(!part.exists(), "the download is left behind");
+}

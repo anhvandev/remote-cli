@@ -3,7 +3,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Response,
     routing::{get, post, put},
-    Json, RequestExt, Router,
+    Json, Router,
 };
 use rcli_protocol::update::MAX_BUILD_BYTES;
 use serde::Deserialize;
@@ -48,12 +48,11 @@ async fn current(
 /// Streams a stored build (or the requested `Range` of it) with its version, signature and sha256 headers.
 // shortcut: no cap on concurrent build downloads (a fleet-wide rollout starts them all at once); add one when fleets grow.
 pub(super) async fn build_file(state: &super::State, build: updates::Build, headers: &HeaderMap) -> Result<Response, ApiError> {
-    let (version, signature, sha256, size) = build;
-    let mut response = super::install::stored_file(state, storage::AGENT_BUILDS, &sha256, size as u64, headers).await?;
+    let mut response = super::stored_file(state, storage::AGENT_BUILDS, &build.sha256, build.size as u64, headers).await?;
     let h = response.headers_mut();
-    h.insert("x-rcli-version", version.parse().map_err(anyhow::Error::from)?);
-    h.insert("x-rcli-signature", hex::encode(signature).parse().expect("hex"));
-    h.insert("x-rcli-sha256", sha256.parse().expect("hex"));
+    h.insert("x-rcli-version", build.version.parse().map_err(anyhow::Error::from)?);
+    h.insert("x-rcli-signature", hex::encode(build.signature).parse().expect("hex"));
+    h.insert("x-rcli-sha256", build.sha256.parse().expect("hex"));
     Ok(response)
 }
 
@@ -111,7 +110,7 @@ async fn publish(
             "the Server has no update public key configured (RCLI_UPDATE_PUBLIC_KEY), so no Device could verify this build",
         )
     })?;
-    let stored = state.storage.put(storage::AGENT_BUILDS, request.into_limited_body().into_data_stream()).await?;
+    let stored = super::store(&state, storage::AGENT_BUILDS, request).await?;
     let accepted = if stored.size == 0 {
         Err(bad_request("empty build"))
     } else if !rcli_protocol::update::verify(&key, &version, &target, &stored.sha256, &signature) {
@@ -125,14 +124,7 @@ async fn publish(
     };
     if let Err(e) = accepted {
         // Refused, so the same version + target can be retried; the bytes stay only if another build row has them.
-        let used: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM agent_builds WHERE sha256 = $1)")
-            .bind(&stored.sha256)
-            .fetch_one(&state.db)
-            .await
-            .map_err(anyhow::Error::from)?;
-        if !used {
-            state.storage.delete(storage::AGENT_BUILDS, &stored.sha256).await?;
-        }
+        super::delete_unreferenced(&state, storage::AGENT_BUILDS, &stored.sha256).await?;
         return Err(e);
     }
     Ok((StatusCode::CREATED, Json(json!({ "version": version, "target": target, "size": stored.size }))))

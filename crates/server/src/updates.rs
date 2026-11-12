@@ -6,8 +6,15 @@ use uuid::Uuid;
 
 use crate::AppState;
 
-/// A stored build: version, signature, sha256 (hex) and size, as served by the download endpoints.
-pub type Build = (String, Vec<u8>, String, i64);
+/// A stored build, as served by the download endpoints.
+#[derive(sqlx::FromRow)]
+pub struct Build {
+    pub version: String,
+    pub signature: Vec<u8>,
+    /// Lowercase hex.
+    pub sha256: String,
+    pub size: i64,
+}
 
 #[derive(Debug)]
 pub enum UpdateError {

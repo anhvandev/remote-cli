@@ -27,7 +27,7 @@ pub async fn run(config: &Machine, path: &Path, socket: Option<PathBuf>, data_di
         Some(device) => format!("{url}?device={device}"),
         None => url,
     };
-    let build = rcli_agent::download::build(&url, &config.server_key, data_dir, &key, &target).await?;
+    let build = rcli_agent::download::fetch_build(&url, &config.server_key, data_dir, &key, &target).await?;
     let installed = install(path, &build.path);
     let _ = std::fs::remove_file(&build.path);
     Ok(Upgraded { version: build.version, target, path: path.to_owned(), restarted: installed? })

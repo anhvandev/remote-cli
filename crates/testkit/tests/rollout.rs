@@ -73,6 +73,20 @@ async fn a_build_not_signed_with_the_agents_pinned_key_is_rejected_and_reported(
     assert!(agent.platform.installed_updates().is_empty());
 }
 
+/// With no API Address the Agent cannot download a rolled-out build; it reports that instead of retrying forever.
+#[tokio::test]
+async fn an_agent_with_no_api_address_reports_the_update_failed() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("pc-1").await;
+    sys.wait_device(agent.device_id(), |d| d["agent_version"] == "0.1.0").await;
+    let key = temp_file("update.key", &sys.update_signing_key);
+    publish(&sys, &temp_file("rcli", b"new agent binary"), "0.2.0", &key).await.unwrap();
+
+    sys.rcli(&["rollout", "0.2.0", "--all"]).await.unwrap();
+    let d = sys.wait_device(agent.device_id(), |d| d["update"]["status"] == "failed").await;
+    assert!(d["update"]["error"].as_str().unwrap().contains("API Address"), "{d}");
+}
+
 /// Agents download rolled-out builds from the API Address, which a test Server has not learned.
 async fn serve_builds_to_agents(sys: &TestSystem) {
     sys.rcli(&["api-address", "set", &format!("http://{}", sys.server.http_addr)]).await.unwrap();

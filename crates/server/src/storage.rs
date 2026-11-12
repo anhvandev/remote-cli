@@ -27,6 +27,20 @@ pub struct S3Config {
     pub secret_key: String,
 }
 
+impl S3Config {
+    /// An S3 client for the bucket (it is not created here).
+    pub fn client(&self) -> anyhow::Result<AmazonS3> {
+        Ok(AmazonS3Builder::new()
+            .with_endpoint(&self.endpoint)
+            .with_bucket_name(&self.bucket)
+            .with_access_key_id(&self.access_key)
+            .with_secret_access_key(&self.secret_key)
+            .with_region("us-east-1")
+            .with_allow_http(true)
+            .build()?)
+    }
+}
+
 /// What `put` stored.
 pub struct Stored {
     /// Lowercase hex.
@@ -41,14 +55,7 @@ pub struct Storage {
 impl Storage {
     /// Connects to the store and creates its bucket if missing.
     pub async fn connect(config: &S3Config) -> anyhow::Result<Self> {
-        let s3 = AmazonS3Builder::new()
-            .with_endpoint(&config.endpoint)
-            .with_bucket_name(&config.bucket)
-            .with_access_key_id(&config.access_key)
-            .with_secret_access_key(&config.secret_key)
-            .with_region("us-east-1")
-            .with_allow_http(true)
-            .build()?;
+        let s3 = config.client()?;
         // object_store has no CreateBucket: sign a PUT of the bucket itself.
         let url = s3.signed_url(reqwest::Method::PUT, &Path::from(""), Duration::from_secs(60)).await?;
         let resp = reqwest::Client::new().put(url).send().await?;

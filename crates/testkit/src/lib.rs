@@ -159,15 +159,7 @@ impl TestSystem {
     pub async fn corrupt_stored_file(&self, original: &[u8], bytes: &[u8]) {
         use object_store::ObjectStore;
         use sha2::Digest;
-        let s3 = object_store::aws::AmazonS3Builder::new()
-            .with_endpoint(&self.config.s3.endpoint)
-            .with_bucket_name(&self.config.s3.bucket)
-            .with_access_key_id(&self.config.s3.access_key)
-            .with_secret_access_key(&self.config.s3.secret_key)
-            .with_region("us-east-1")
-            .with_allow_http(true)
-            .build()
-            .unwrap();
+        let s3 = self.config.s3.client().unwrap();
         let sha256 = hex::encode(sha2::Sha256::digest(original));
         let listed: Vec<_> = futures::TryStreamExt::try_collect(s3.list(None)).await.unwrap();
         let stored: Vec<_> = listed.into_iter().filter(|o| o.location.filename() == Some(sha256.as_str())).collect();
