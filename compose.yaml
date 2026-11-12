@@ -47,8 +47,6 @@ services:
       RCLI_AGENT_HOSTNAMES: ${RCLI_AGENT_HOSTNAMES:-localhost}
       # Seals the CA private key and TOTP secrets: 64 hex chars (`openssl rand -hex 32`). Keep a backup; losing it loses them.
       RCLI_MASTER_KEY: ${RCLI_MASTER_KEY:-}
-      # Public half of the key that signs Agent builds (`rcli rollout keygen`); Devices pin it at registration.
-      RCLI_UPDATE_PUBLIC_KEY: ${RCLI_UPDATE_PUBLIC_KEY:-}
       # The Dashboard forwards the Controller API: from its IP the Controller's IP is read from X-Forwarded-For (which
       # the TLS proxy in front of the Dashboard must append), so wrong Device Passwords are counted per real Controller.
       RCLI_TRUSTED_PROXIES: ${RCLI_TRUSTED_PROXIES:-172.31.250.10}

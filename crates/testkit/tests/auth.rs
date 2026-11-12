@@ -73,8 +73,6 @@ async fn admin_signs_in_with_rcli_and_operators_are_refused_admin_commands() {
     assert!(out.contains("alice") && out.contains("operator"), "{out}");
     let err = sys.rcli_in(&dir, &["user", "list"]).await.unwrap_err();
     assert!(err.to_string().contains("admin_required"), "{err}");
-    let err = sys.rcli_in(&dir, &["rollout", "0.2.0", "--all"]).await.unwrap_err();
-    assert!(err.to_string().contains("admin_required"), "{err}");
 }
 
 #[tokio::test]

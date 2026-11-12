@@ -35,8 +35,6 @@ pub fn router(state: State) -> Router {
     Router::new()
         .route("/api/v1/server-ca", get(|s: axum::extract::State<State>| async move { s.ca.cert_pem.clone() }))
         .route("/api/v1/server-key", get(server_key))
-        // Public. No rcli Controller reads it: `rcli install` pins the update key at registration over the Agent port.
-        .route("/api/v1/update-key", get(update_key))
         .merge(settings::routes())
         .merge(devices::routes())
         .merge(history::routes())
@@ -67,15 +65,6 @@ async fn server_key(
 fn remaining_secs(until: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chrono::Utc>) -> i64 {
     let ms = (until - now).num_milliseconds().max(0);
     (ms + 999) / 1000
-}
-
-/// The update-signing public key (hex); empty = no updates. `rcli install` pins it at registration instead.
-/// `mac` is its HMAC under the Server Key's secret, which the Controller already holds; an impostor rewriting
-/// `/api/v1/server-ca` and `/api/v1/update-key` over plain HTTP cannot forge it.
-async fn update_key(axum::extract::State(state): axum::extract::State<State>) -> Json<serde_json::Value> {
-    let key = state.config.update_public_key.as_deref().map(hex::encode).unwrap_or_default();
-    let mac = hex::encode(rcli_protocol::update::pin_mac(&crate::server_key::current(&state).await.secret, &key));
-    Json(json!({ "update_key": key, "mac": mac }))
 }
 
 /// Typed API error: `{"error": {"code": "...", "message": "..."}}`.

@@ -57,7 +57,6 @@ pub async fn register(state: &AppState, req: RegisterRequest) -> Result<Register
     Ok(RegisterResponse {
         device_id: device_number,
         cert_pem: issued.cert_pem,
-        update_key: state.config.update_public_key.clone().unwrap_or_default(),
         ca_pem: state.ca.cert_pem.clone(),
         device_password,
         api_address: state.settings.api_address().await,

@@ -1,124 +1,49 @@
-//! `rcli upgrade`: fetch the build rolled out for this OS/arch, verify it with the pinned update key, replace the
+//! `rcli upgrade`: fetch the Latest Build for this OS/arch, check it against the Server's sha256, replace the
 //! binary. The replacement path is a temp file here (the seam), never the running test binary.
 
 use std::path::PathBuf;
 
 use rcli_testkit::{temp_dir, TestSystem};
 
-fn temp_file(name: &str, bytes: &[u8]) -> String {
-    let path = temp_dir("builds").join(name);
-    std::fs::write(&path, bytes).unwrap();
-    path.to_str().unwrap().to_owned()
-}
-
-/// Publishes `build` as `version` for this machine's target, signed with `key`.
-async fn publish(sys: &TestSystem, build: &str, version: &str, key: &str) {
-    let target = rcli_agent::target();
-    sys.rcli(&["rollout", "publish", build, "--version", version, "--target", &target, "--key", key]).await.unwrap();
-}
-
-/// Publishes `build` and rolls it out to every Device, making it the fleet's build.
-async fn publish_to_fleet(sys: &TestSystem, build: &str, version: &str, key: &str) {
-    publish(sys, build, version, key).await;
-    sys.rcli(&["rollout", version, "--all"]).await.unwrap();
-}
-
 fn http_addr(sys: &TestSystem) -> String {
     format!("http://{}", sys.server.http_addr)
 }
 
-/// `rcli install` pins the update key the Device got at registration, machine-wide, so `rcli upgrade` checks builds
-/// against it with no further setup.
+/// An installed machine upgrades itself with no key or other setup: the Server's sha256 is the only check.
 #[tokio::test]
-async fn an_installed_machine_upgrades_itself_with_the_update_key_pinned_at_install() {
+async fn an_installed_machine_upgrades_itself() {
     let sys = TestSystem::start().await;
     sys.rcli(&["api-address", "set", &http_addr(&sys)]).await.unwrap();
     let dir = temp_dir("controller");
     sys.install(&dir).await.unwrap();
-    let build = temp_file("rcli", b"new rcli binary");
-    let key = temp_file("update.key", &sys.update_signing_key);
-    publish_to_fleet(&sys, &build, "9.9.9", &key).await;
+    sys.upload_build("9.9.9", &rcli_agent::target(), b"new rcli binary").await;
 
     let target = temp_dir("controller-target").join("rcli");
     std::fs::write(&target, b"old rcli binary").unwrap();
-    let out = sys
-        .rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()])
-        .await
-        .unwrap();
+    let out = sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap();
 
     assert!(out.contains("9.9.9"), "{out}");
     assert_eq!(std::fs::read(&target).unwrap(), b"new rcli binary");
 }
 
-/// An installed Device upgrades to the build rolled out to it, not the newest publish (the rollout is what the
-/// Server hands out).
+/// The Latest Build is the highest semver version, whatever the upload order: 1.10.0 beats 1.9.0, and a
+/// pre-release ranks below its release.
 #[tokio::test]
-async fn an_installed_device_upgrades_to_the_build_rolled_out_to_it() {
+async fn upgrade_fetches_the_latest_build() {
     let sys = TestSystem::start().await;
-    let dir = temp_dir("device");
+    let dir = temp_dir("latest");
     sys.controller_config(&dir, None).await;
-    let key = temp_file("update.key", &sys.update_signing_key);
-    publish(&sys, &temp_file("rolled", b"rolled-out build"), "1.0.0", &key).await;
-    sys.advance(60);
-    publish(&sys, &temp_file("newest", b"newest build"), "2.0.0", &key).await;
+    let target = rcli_agent::target();
+    for version in ["1.9.0", "1.10.0", "1.10.0-rc.1"] {
+        sys.upload_build(version, &target, format!("build {version}").as_bytes()).await;
+    }
 
-    let agent_dir = temp_dir("device-agent");
-    let agent = sys.start_agent_with_socket("lab-pc", &agent_dir).await;
-    sys.rcli(&["rollout", "1.0.0", "--device", agent.device_id()]).await.unwrap();
+    let path = temp_dir("latest-target").join("rcli");
+    std::fs::write(&path, b"installed build").unwrap();
+    let out = sys.rcli_in(&dir, &["upgrade", "--target", path.to_str().unwrap()]).await.unwrap();
 
-    let target = temp_dir("device-target").join("rcli");
-    std::fs::write(&target, b"installed build").unwrap();
-    let socket = agent_dir.join("agent.sock").to_str().unwrap().to_owned();
-    let out = sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap(), "--socket", &socket]).await.unwrap();
-
-    assert!(out.contains("1.0.0"), "{out}");
-    assert_eq!(std::fs::read(&target).unwrap(), b"rolled-out build");
-}
-
-#[tokio::test]
-async fn a_bad_signature_is_rejected_and_the_old_binary_is_kept() {
-    let sys = TestSystem::start().await;
-    let dir = temp_dir("bad-signature");
-    sys.controller_config(&dir, None).await;
-    // This machine pinned another update key than the one the build is signed with.
-    let path = rcli::config::machine_path(Some(&dir));
-    let mut machine = rcli::config::load_machine(&path).unwrap().unwrap();
-    machine.update_key = hex::encode(rcli_protocol::update::generate_key().unwrap().1);
-    rcli::config::save_machine(&path, &machine).unwrap();
-    let key = temp_file("update.key", &sys.update_signing_key);
-    publish_to_fleet(&sys, &temp_file("rcli", b"new rcli binary"), "6.6.6", &key).await;
-
-    let target = temp_dir("bad-signature-target").join("rcli");
-    std::fs::write(&target, b"old rcli binary").unwrap();
-    let err = sys
-        .rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()])
-        .await
-        .unwrap_err();
-
-    assert!(err.to_string().contains("bad signature"), "{err}");
-    assert_eq!(std::fs::read(&target).unwrap(), b"old rcli binary");
-}
-
-/// A Controller-only machine gets the fleet's build: the last one rolled out to every Device, not a newer publish
-/// or a canary rolled out to one Device.
-#[tokio::test]
-async fn upgrade_fetches_the_build_rolled_out_to_the_fleet() {
-    let sys = TestSystem::start().await;
-    let dir = temp_dir("fleet");
-    sys.controller_config(&dir, None).await;
-    let key = temp_file("update.key", &sys.update_signing_key);
-    publish_to_fleet(&sys, &temp_file("fleet", b"fleet build"), "1.0.0", &key).await;
-    sys.advance(60);
-    publish(&sys, &temp_file("canary", b"canary build"), "2.0.0", &key).await;
-    let agent = sys.start_agent_with_socket("canary-pc", &temp_dir("fleet-agent")).await;
-    sys.rcli(&["rollout", "2.0.0", "--device", agent.device_id()]).await.unwrap();
-
-    let target = temp_dir("fleet-target").join("rcli");
-    std::fs::write(&target, b"installed build").unwrap();
-    let out = sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap();
-
-    assert!(out.contains("1.0.0"), "{out}");
-    assert_eq!(std::fs::read(&target).unwrap(), b"fleet build");
+    assert!(out.contains("1.10.0"), "{out}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"build 1.10.0");
 }
 
 #[tokio::test]
@@ -138,12 +63,11 @@ async fn no_build_for_this_os_and_arch_is_a_clear_error() {
     assert_eq!(std::fs::read(&target).unwrap(), b"old rcli binary");
 }
 
-/// Which build a Device ID is on is not public: the lookup `rcli upgrade` makes needs the Server Key.
+/// The lookup `rcli upgrade` makes needs the Server Key.
 #[tokio::test]
 async fn the_build_lookup_needs_the_server_key() {
     let sys = TestSystem::start().await;
-    let key = temp_file("update.key", &sys.update_signing_key);
-    publish_to_fleet(&sys, &temp_file("fleet", b"fleet build"), "1.0.0", &key).await;
+    sys.upload_build("1.0.0", &rcli_agent::target(), b"fleet build").await;
     let path = format!("/api/v1/agent-builds/{}", rcli_agent::target());
 
     let (status, _) = sys.api.with_token(None).get_bytes(&path).await;
@@ -158,6 +82,7 @@ async fn the_build_lookup_needs_the_server_key() {
     assert_eq!(status, rcli_testkit::StatusCode::OK);
     // sha256("fleet build")
     assert_eq!(bytes.headers()["x-rcli-sha256"], "02c8643101b1e81c151c138aeb814cda1c6cbef317e64fb43d9172f1d9efd1ea");
+    assert!(!bytes.headers().contains_key("x-rcli-signature"));
     assert_eq!(bytes.content_length(), Some(11));
     assert_eq!(bytes.bytes().await.unwrap().as_ref(), b"fleet build");
     // A resumed download asks for the rest.
@@ -173,13 +98,12 @@ async fn the_build_lookup_needs_the_server_key() {
     assert_eq!(part.bytes().await.unwrap().as_ref(), b"build");
 }
 
-/// Publishes `build` to the fleet for a Controller set up in a new `name` dir, and leaves `part` as the partial
-/// download `rcli upgrade` finds in its data dir. Returns the dir, the `.part` path and the binary to replace.
+/// Uploads `build` for a Controller set up in a new `name` dir, and leaves `part` as the partial download
+/// `rcli upgrade` finds in its data dir. Returns the dir, the `.part` path and the binary to replace.
 async fn with_partial(sys: &TestSystem, name: &str, build: &[u8], part: &[u8]) -> (PathBuf, PathBuf, PathBuf) {
     let dir = temp_dir(name);
     sys.controller_config(&dir, None).await;
-    let key = temp_file("update.key", &sys.update_signing_key);
-    publish_to_fleet(sys, &temp_file(&format!("{name}-build"), build), "3.0.0", &key).await;
+    sys.upload_build("3.0.0", &rcli_agent::target(), build).await;
     let updates = dir.join("updates");
     std::fs::create_dir_all(&updates).unwrap();
     // The routine names the file after the build's sha256, so a resume never mixes two builds.
@@ -213,6 +137,19 @@ async fn a_partial_download_with_wrong_bytes_is_discarded() {
 
     assert_eq!(std::fs::read(&target).unwrap(), b"new rcli binary");
     assert!(!part.exists(), "the download is left behind");
+}
+
+/// A download that never hashes to the Server's sha256 fails and leaves the old binary: the wrong partial download
+/// resumes into a corrupted stored file, so neither the resume nor the fresh retry can match.
+#[tokio::test]
+async fn a_download_that_does_not_match_the_sha256_keeps_the_old_binary() {
+    let sys = TestSystem::start().await;
+    let (dir, _, target) = with_partial(&sys, "mismatch", b"new rcli binary", b"garbage!").await;
+    sys.corrupt_stored_file(b"new rcli binary", b"bad rcli binary").await;
+
+    sys.rcli_in(&dir, &["upgrade", "--target", target.to_str().unwrap()]).await.unwrap_err();
+
+    assert_eq!(std::fs::read(&target).unwrap(), b"old rcli binary");
 }
 
 /// A download already complete on disk is verified and installed without fetching it again (here the stored copy is

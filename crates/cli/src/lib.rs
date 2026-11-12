@@ -75,15 +75,12 @@ enum Command {
     },
     /// Revoke and forget the saved session.
     Logout,
-    /// Replace this `rcli` binary with the build the Server is rolling out for this OS/arch, after checking its
-    /// signature. As root on an installed Device it also restarts the Agent service.
+    /// Replace this `rcli` binary with the Server's Latest Build for this OS/arch, after checking its sha256.
+    /// As root on an installed Device it also restarts the Agent service.
     Upgrade {
         /// Binary to replace; default: the one running now. Hidden: a seam for tests.
         #[arg(long, hide = true)]
         target: Option<PathBuf>,
-        /// Local IPC socket of the running Agent; identifies this Device, so the build rolled out to it is fetched.
-        #[arg(long, env = "RCLI_AGENT_SOCKET")]
-        socket: Option<PathBuf>,
     },
     /// Remember a Device's Device Password, so later commands take just its Device ID.
     Connect {
@@ -117,19 +114,6 @@ enum Command {
     /// Install packages for the Connect guide's downloads (admin).
     #[command(subcommand)]
     Package(PackageCommand),
-    /// Signed Agent builds and rollouts (admin): `rollout keygen`, `rollout publish`, `rollout <version>`.
-    Rollout {
-        #[command(subcommand)]
-        command: Option<RolloutCommand>,
-        /// Version to roll out (to all Devices, or the ones under --device).
-        version: Option<String>,
-        /// Target every Device.
-        #[arg(long)]
-        all: bool,
-        /// Device id; repeat for several.
-        #[arg(long)]
-        device: Vec<String>,
-    },
     /// Control Lock: needed to send input Actions to a Device.
     #[command(subcommand)]
     Lock(LockCommand),
@@ -352,7 +336,6 @@ fn admin_only(command: &Command) -> bool {
             | Command::ServerAddress(_)
             | Command::ApiAddress(_)
             | Command::User(_)
-            | Command::Rollout { .. }
             | Command::Audit { .. }
             | Command::Device(DeviceCommand::Rename { .. } | DeviceCommand::Delete { .. } | DeviceCommand::Revoke { .. } | DeviceCommand::Merge { .. })
             | Command::Lock(LockCommand::ForceRelease { .. })
@@ -460,27 +443,6 @@ fn lock_text(lock: &Value) -> String {
         Some(h) => format!("held by {h} since {}, expires {}\n", str_of(&lock["acquired_at"]), str_of(&lock["expires_at"])),
         None => "free\n".into(),
     }
-}
-
-#[derive(Subcommand)]
-enum RolloutCommand {
-    /// Create an update signing key (offline, no server needed). Give the public key to the Server as RCLI_UPDATE_PUBLIC_KEY.
-    Keygen {
-        /// Where to write the private key (PKCS#8). Keep it off the Server.
-        key_file: String,
-    },
-    /// Sign an Agent build locally with KEY and upload it.
-    Publish {
-        file: String,
-        #[arg(long)]
-        version: String,
-        /// `<os>-<arch>` the build runs on, e.g. linux-x86_64, windows-x86_64, macos-aarch64.
-        #[arg(long)]
-        target: String,
-        /// Private key file from `rcli rollout keygen`.
-        #[arg(long)]
-        key: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -602,17 +564,6 @@ where
         Err(e) if !e.use_stderr() => return Ok(write!(out, "{e}")?), // --help / --version
         Err(e) => anyhow::bail!("{e}"),
     };
-    if let Command::Rollout { command: Some(RolloutCommand::Keygen { key_file }), .. } = &cli.command {
-        let (private, public) = rcli_protocol::update::generate_key()?;
-        write_private(key_file, &private)?;
-        let public = hex::encode(public);
-        if cli.json {
-            writeln!(out, "{}", serde_json::json!({ "public_key": public }))?;
-        } else {
-            writeln!(out, "public key {public}")?;
-        }
-        return Ok(());
-    }
     if let Command::Agent(command) = cli.command {
         return match command {
             AgentCommand::Run(run) => run.run().await,
@@ -705,10 +656,10 @@ where
             false => Ok(write!(out, "{text}")?),
         };
     }
-    if let Command::Upgrade { target, socket } = &cli.command {
+    if let Command::Upgrade { target } = &cli.command {
         let installed = config::installed(&machine)?;
         let path = target.clone().unwrap_or_else(|| std::env::current_exe().unwrap_or_default());
-        let done = upgrade::run(&installed, &path, socket.clone(), &dir).await?;
+        let done = upgrade::run(&installed, &path, &dir).await?;
         let text = format!(
             "upgraded {} to {} for {}{}\n",
             done.path.display(),
@@ -747,19 +698,12 @@ where
         Command::Devices => {
             let devices = api.call(reqwest::Method::GET, "/api/v1/devices", None).await?;
             let mut text = format!(
-                "{:<9}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
-                "ID", "NAME", "STATUS", "LAST SEEN", "AGENT", "UPDATE"
+                "{:<9}  {:<24}  {:<7}  {:<25}  {}\n",
+                "ID", "NAME", "STATUS", "LAST SEEN", "AGENT"
             );
             for d in devices.as_array().into_iter().flatten() {
-                let u = &d["update"];
-                let update = if u.is_null() {
-                    "-".to_owned()
-                } else {
-                    let error = u["error"].as_str().map(|e| format!(": {e}")).unwrap_or_default();
-                    format!("{} {}{error}", str_of(&u["version"]), str_of(&u["status"]))
-                };
                 text += &format!(
-                    "{:<9}  {:<24}  {:<7}  {:<25}  {:<10}  {}\n",
+                    "{:<9}  {:<24}  {:<7}  {:<25}  {}\n",
                     str_of(&d["device_id"]),
                     str_of(&d["name"]),
                     match d["wake_error"].as_str() {
@@ -768,7 +712,6 @@ where
                     },
                     d["last_seen_at"].as_str().unwrap_or("-"),
                     d["agent_version"].as_str().unwrap_or("-"),
-                    update,
                 );
             }
             (devices, text)
@@ -1020,32 +963,12 @@ where
         }
         Command::Mcp => return mcp::serve(api, tokio::io::stdin(), tokio::io::stdout()).await,
         Command::Agent(_) => unreachable!("handled before connecting"),
-        Command::Rollout { command: Some(RolloutCommand::Publish { file, version, target, key }), .. } => {
-            let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
-            std::io::copy(&mut std::fs::File::open(&file)?, &mut hasher)?;
-            let sha256 = hex::encode(sha2::Digest::finalize(hasher));
-            let signature = rcli_protocol::update::sign(&std::fs::read(&key)?, &version, &target, &sha256)?;
-            let url = format!("{}/api/v1/agent-builds/{version}/{target}", api.base.trim_end_matches('/'));
-            let req = api.http.put(url).query(&[("signature", hex::encode(signature))]).body(tokio::fs::File::open(&file).await?);
-            let published = api.send(req, None).await?;
-            (published, format!("published {version} for {target}\n"))
-        }
         Command::Package(PackageCommand::Publish { file, arch }) => {
             let kind = std::path::Path::new(&file).extension().and_then(|e| e.to_str()).unwrap_or_default().to_owned();
             let url = format!("{}/api/v1/packages/{kind}/{arch}", api.base.trim_end_matches('/'));
             let published = api.send(api.http.put(url).body(tokio::fs::File::open(&file).await?), None).await?;
             (published, format!("published the .{kind} for {arch}\n"))
         }
-        Command::Rollout { command: None, version: Some(version), all, device } => {
-            anyhow::ensure!(all || !device.is_empty(), "give --all or at least one --device");
-            let body = if all { serde_json::json!({ "all": true }) } else { serde_json::json!({ "devices": device }) };
-            let path = format!("/api/v1/agent-builds/{version}/rollout");
-            let r = api.call(reqwest::Method::POST, &path, Some(&body)).await?;
-            let text = format!("rolling out {version} to {} device(s)\n", r["devices"]);
-            (r, text)
-        }
-        Command::Rollout { command: Some(RolloutCommand::Keygen { .. }), .. } => unreachable!("handled before connecting"),
-        Command::Rollout { command: None, version: None, .. } => anyhow::bail!("give a version to roll out, or `rcli rollout keygen|publish`"),
     };
     if cli.json {
         writeln!(out, "{}", serde_json::to_string_pretty(&body)?)?;
@@ -1167,14 +1090,6 @@ impl std::fmt::Display for RemoteExit {
 }
 
 impl std::error::Error for RemoteExit {}
-
-fn write_private(path: &str, bytes: &[u8]) -> anyhow::Result<()> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    Ok(opts.open(path)?.write_all(bytes)?)
-}
 
 /// Human view of nested JSON: one `a.b[0].c: value` line per leaf, nulls and empties skipped.
 fn flatten(prefix: &str, v: &Value, out: &mut String) {

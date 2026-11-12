@@ -42,13 +42,6 @@ export default async function DevicesPage() {
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {d.agent_version ?? "—"}
-                  {d.update && (
-                    <>
-                      {" → "}
-                      {d.update.version} · {d.update.status}
-                      {d.update.error && <span className="text-destructive"> ({d.update.error})</span>}
-                    </>
-                  )}
                 </TableCell>
                 <TableCell className="whitespace-normal">
                   <div className="flex flex-wrap items-center gap-1.5">

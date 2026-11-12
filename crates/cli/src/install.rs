@@ -94,7 +94,6 @@ pub async fn register(
     let config = crate::config::Machine {
         server: opts.server.clone(),
         server_key: opts.key.clone(),
-        update_key: hex::encode(&creds.update_key),
         api_address,
     };
     crate::config::save_machine(machine, &config)?;
