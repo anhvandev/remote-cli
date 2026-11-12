@@ -3,11 +3,15 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import * as act from "../actions";
 import { Form } from "../form";
 import { card, cardHead, title } from "../../styles";
 import { groupRollouts } from "../data";
+
+// `<os>-<arch>` as the Agent reports it (std::env::consts::OS / ARCH).
+const TARGETS = ["linux-x86_64", "linux-aarch64", "windows-x86_64", "windows-aarch64", "macos-aarch64", "macos-x86_64"];
 
 export default async function UpdatesPage() {
   const devices = await api<Device[]>("/api/v1/devices");
@@ -23,7 +27,18 @@ export default async function UpdatesPage() {
           <Input type="file" name="build" aria-label="File build" required className="h-9 py-1.5" />
           <div className="flex flex-wrap gap-2">
             <Input name="version" aria-label="Phiên bản" placeholder="phiên bản" required className="h-8 w-32" />
-            <Input name="target" aria-label="Target" placeholder="vd. macos-aarch64" required className="h-8 w-44" />
+            <Select name="target" required>
+              <SelectTrigger aria-label="Hệ điều hành" size="sm" className="w-44">
+                <SelectValue placeholder="chọn hệ điều hành" />
+              </SelectTrigger>
+              <SelectContent>
+                {TARGETS.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {t}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <Input
             name="signature"
