@@ -134,14 +134,11 @@ pub async fn load_or_register(
     Ok(creds)
 }
 
-/// The Secret Store: DPAPI machine scope on Windows, the System Keychain for the root Agent on macOS,
-/// `systemd-creds` for the root service on Linux (the encrypted-file fallback when it is not available); otherwise
-/// the encrypted-file fallback.
+/// The Secret Store: DPAPI machine scope on Windows, `systemd-creds` for the root service on Linux (the
+/// encrypted-file fallback when it is not available); otherwise the encrypted-file store in the root-only state
+/// dir. Not the macOS System Keychain: its items trust only the ad-hoc build that wrote them, so every upgrade
+/// would lose the Device Password.
 pub fn secret_store(state_dir: &std::path::Path) -> Arc<dyn SecretStore> {
-    #[cfg(target_os = "macos")]
-    if crate::upgrade::is_root() {
-        return Arc::new(rcli_agent::secret_store::KeychainSecretStore::system());
-    }
     #[cfg(target_os = "linux")]
     if crate::upgrade::is_root() && rcli_agent::secret_store::systemd_creds_available() {
         return Arc::new(rcli_agent::secret_store::SystemdCredsSecretStore::new(state_dir));

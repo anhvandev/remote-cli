@@ -41,7 +41,6 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGColorSpace", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGImage", "CGSession", "CGWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSString"] }
 objc2-vision = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "VNObservation", "VNRecognizeTextRequest", "VNRequest", "VNRequestHandler", "VNTypes"] }
-security-framework = "3"
 sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "user"] }
 
 # The Linux adapter (`linux/`): X11 capture and RandR over x11rb and input over XTest (enigo); Wayland capture
