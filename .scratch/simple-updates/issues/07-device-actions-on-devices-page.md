@@ -4,9 +4,9 @@
 
 **Blocked by:** 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Every action from Admin › Device works from the Devices page `⋯` menu
-- [ ] Delete asks for confirmation, then the Device disappears from the list
-- [ ] The Admin › Device page and its nav link are gone
-- [ ] The device-admin Playwright e2e covers the menu, including delete
+- [x] Every action from Admin › Device works from the Devices page `⋯` menu
+- [x] Delete asks for confirmation, then the Device disappears from the list
+- [x] The Admin › Device page and its nav link are gone
+- [x] The device-admin Playwright e2e covers the menu, including delete

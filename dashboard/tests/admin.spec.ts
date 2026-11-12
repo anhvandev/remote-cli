@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { adminApi, devstack, newUser, signBuild, signIn } from "./devstack";
 
-// Devices `delta`, `echo`, `foxtrot` exist only for these tests (rcli-devstack); alpha/bravo/charlie stay untouched.
+// alpha/bravo/charlie stay untouched.
 
 /** Signs in a User and reaches a sub-page through the Quản lý root. */
 async function openAdmin(page: Page, sub: string) {
@@ -40,7 +40,6 @@ test("the Quản lý root links to each sub-page", async ({ page }) => {
   const main = page.getByRole("main");
   const pages: [string, string][] = [
     ["User", "/admin/users"],
-    ["Device", "/admin/devices"],
     ["Cập nhật Agent", "/admin/updates"],
   ];
   for (const [name, path] of pages) {
@@ -79,37 +78,12 @@ test("the fleet shows each Device's 9-digit Device ID", async ({ page }) => {
   expect(alpha.device_id).toMatch(/^\d{9}$/);
 });
 
-test("admin renames, revokes, deletes and merges Devices", async ({ page }) => {
-  await openAdmin(page, "Device");
-  const delta = rowIn(page, "Device", /^delta /);
-  await delta.getByLabel("Tên mới cho delta").fill("delta-2");
-  await delta.getByRole("button", { name: "Đổi tên" }).click();
-  const renamed = rowIn(page, "Device", /^delta-2 /);
-  await expect(renamed).toBeVisible();
-
-  page.once("dialog", (d) => d.accept());
-  await renamed.getByRole("button", { name: "Thu hồi" }).click();
-  await expect(renamed).toContainText("đã thu hồi");
-
-  page.once("dialog", (d) => d.accept());
-  await renamed.getByRole("button", { name: "Xoá" }).click();
-  await expect(renamed).toHaveCount(0);
-
-  const foxtrot = rowIn(page, "Device", /^foxtrot /);
-  await foxtrot.getByLabel("Gộp lịch sử từ Device vào foxtrot").selectOption({ label: "echo" });
-  page.once("dialog", (d) => d.accept());
-  await foxtrot.getByRole("button", { name: "Gộp" }).click();
-  await expect(rowIn(page, "Device", /^echo /)).toHaveCount(0);
-  await expect(rowIn(page, "Device", /^foxtrot /)).toBeVisible();
-});
-
 test("the overview shows three cards with counts from the Server", async ({ page }) => {
   await signIn(page, await newUser());
   await page.getByRole("link", { name: "Quản lý" }).click();
   const main = page.getByRole("main");
   const cards: [string, string][] = [
     ["User", "/admin/users"],
-    ["Device", "/admin/devices"],
     ["Cập nhật Agent", "/admin/updates"],
   ];
   for (const [name, path] of cards) {
@@ -127,11 +101,6 @@ test("the overview shows three cards with counts from the Server", async ({ page
     await expect(user).toContainText(`${admins} Admin · ${users.length - admins} Operator`);
     await expect(user).toContainText(`${users.filter((u: { disabled_at: string | null }) => u.disabled_at).length} User đã vô hiệu`);
 
-    const device = page.getByRole("region", { name: "Device" });
-    await expect(device).toContainText("6 Online"); // alpha, charlie, golf, india, juliet, kilo: no spec takes them Offline
-    const count = (s: string) => devices.filter((d: { status: string }) => d.status === s).length;
-    await expect(device).toContainText(`${count("Online")} Online · ${count("Offline")} Offline · ${count("Waking")} Waking`);
-    await expect(device).toContainText(`${devices.filter((d: { revoked_at: string | null }) => d.revoked_at).length} Device đã thu hồi`);
   }).toPass({ timeout: 20_000 });
 });
 
