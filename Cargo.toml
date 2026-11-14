@@ -5,7 +5,7 @@ members = ["crates/protocol", "crates/server", "crates/agent", "crates/cli", "cr
 [workspace.package]
 edition = "2021"
 license = "AGPL-3.0-only"
-version = "0.4.0"
+version = "0.4.1"
 
 [workspace.dependencies]
 anyhow = "1"
