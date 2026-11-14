@@ -50,7 +50,10 @@ async fn an_agent_lists_devices_takes_the_lock_acts_and_observes_with_marks() {
 
     let all = mcp.list_all_tools().await.unwrap();
     let observe = all.iter().find(|t| t.name == "observe").unwrap();
-    assert!(observe.input_schema["properties"]["until"]["description"].as_str().unwrap().contains("appears"), "{observe:?}");
+    let until = observe.input_schema["properties"]["until"]["description"].as_str().unwrap();
+    for word in ["appears", "\"value\"", "equals", "contains", "\"state\"", "has", "lacks", "no_accessibility_tree", "ambiguous_text"] {
+        assert!(until.contains(word), "{word} missing in {until}");
+    }
     let tools: Vec<String> = all.into_iter().map(|t| t.name.into_owned()).collect();
     for t in ["devices", "device", "lock_acquire", "lock_release", "lock_status", "act", "batch", "observe", "exec", "wake", "power"] {
         assert!(tools.contains(&t.to_owned()), "missing tool {t}: {tools:?}");

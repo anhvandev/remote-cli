@@ -145,11 +145,29 @@ enum Command {
         #[arg(long)]
         marks: bool,
         /// Wait Condition: observe once this text is on screen (fails with wait_timeout otherwise).
-        #[arg(long, conflicts_with = "until_disappears")]
+        #[arg(long, group = "until")]
         until_appears: Option<String>,
         /// Wait Condition: observe once this text is gone from the screen.
-        #[arg(long)]
+        #[arg(long, group = "until")]
         until_disappears: Option<String>,
+        /// Wait Condition: observe once the value of the Mark with this text matches --equals or --contains.
+        #[arg(long, group = "until")]
+        until_value: Option<String>,
+        /// Wait Condition: observe once the Mark with this text matches --has or --lacks.
+        #[arg(long, group = "until")]
+        until_state: Option<String>,
+        /// With --until-value: the whole value.
+        #[arg(long, requires = "until_value", conflicts_with = "contains")]
+        equals: Option<String>,
+        /// With --until-value: part of the value.
+        #[arg(long, requires = "until_value")]
+        contains: Option<String>,
+        /// With --until-state: a Mark State the Mark must have (e.g. checked).
+        #[arg(long, requires = "until_state", conflicts_with = "lacks")]
+        has: Option<String>,
+        /// With --until-state: a Mark State the Mark must lack (e.g. disabled).
+        #[arg(long, requires = "until_state")]
+        lacks: Option<String>,
         /// Wait Condition: only Marks with this role count.
         #[arg(long)]
         role: Option<String>,
@@ -978,15 +996,32 @@ where
             }
             (displays, text)
         }
-        Command::Shot { device, display, marks, until_appears, until_disappears, role, timeout_ms, out } => {
+        Command::Shot {
+            device,
+            display,
+            marks,
+            until_appears,
+            until_disappears,
+            until_value,
+            until_state,
+            equals,
+            contains,
+            has,
+            lacks,
+            role,
+            timeout_ms,
+            out,
+        } => {
             let mut body = json!({ "actions": [], "display": display_sel(display)?, "marks": marks });
-            let condition = match (until_appears, until_disappears) {
-                (Some(text), _) => Some(("appears", text)),
-                (_, Some(text)) => Some(("disappears", text)),
+            let condition = match (until_appears, until_disappears, until_value, until_state) {
+                (Some(text), ..) => Some(("appears", json!({ "text": text, "role": role }))),
+                (_, Some(text), ..) => Some(("disappears", json!({ "text": text, "role": role }))),
+                (_, _, Some(text), _) => Some(("value", json!({ "text": text, "role": role, "equals": equals, "contains": contains }))),
+                (.., Some(text)) => Some(("state", json!({ "text": text, "role": role, "has": has, "lacks": lacks }))),
                 _ => None,
             };
-            if let Some((condition, text)) = condition {
-                body["until"] = json!({ condition: { "text": text, "role": role }, "timeout_ms": timeout_ms });
+            if let Some((condition, target)) = condition {
+                body["until"] = json!({ condition: target, "timeout_ms": timeout_ms });
             }
             let obs = api.observe(&device, &body).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };

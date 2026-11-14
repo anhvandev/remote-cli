@@ -43,7 +43,7 @@ struct ActBody {
     until: Option<Until>,
 }
 
-/// `{"appears" | "disappears": {"text": "..", "role": ".."}, "timeout_ms": N}`.
+/// `{"appears" | "disappears" | "value" | "state": {"text": "..", "role": "..", ..}, "timeout_ms": N}`.
 #[derive(Deserialize)]
 struct Until {
     #[serde(flatten)]
@@ -56,6 +56,8 @@ struct Until {
 enum Condition {
     Appears(WaitTarget),
     Disappears(WaitTarget),
+    Value(ValueTarget),
+    State(StateTarget),
 }
 
 /// The Marks a Wait Condition is about: text matched as for text targets, optionally narrowed by role.
@@ -64,6 +66,26 @@ enum Condition {
 struct WaitTarget {
     text: String,
     role: Option<String>,
+}
+
+/// `{"text", "role"?, "equals" | "contains"}`; the Agent refuses anything but exactly one of the two.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ValueTarget {
+    text: String,
+    role: Option<String>,
+    equals: Option<String>,
+    contains: Option<String>,
+}
+
+/// `{"text", "role"?, "has" | "lacks": "<Mark State>"}`; the Agent refuses anything but exactly one of the two.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StateTarget {
+    text: String,
+    role: Option<String>,
+    has: Option<String>,
+    lacks: Option<String>,
 }
 
 impl Until {
@@ -76,11 +98,13 @@ impl From<Until> for proto::WaitCondition {
     fn from(u: Until) -> Self {
         use proto::wait_condition::Condition as C;
         let timeout_ms = u.timeout_ms();
-        let (t, condition) = match u.condition {
-            Condition::Appears(t) => (t, C::Appears(true)),
-            Condition::Disappears(t) => (t, C::Disappears(true)),
+        let (text, role, condition) = match u.condition {
+            Condition::Appears(t) => (t.text, t.role, C::Appears(true)),
+            Condition::Disappears(t) => (t.text, t.role, C::Disappears(true)),
+            Condition::Value(v) => (v.text, v.role, C::Value(proto::ValueCondition { equals: v.equals, contains: v.contains })),
+            Condition::State(s) => (s.text, s.role, C::State(proto::StateCondition { has: s.has, lacks: s.lacks })),
         };
-        Self { text: t.text, role: t.role, timeout_ms, condition: Some(condition) }
+        Self { text, role, timeout_ms, condition: Some(condition) }
     }
 }
 

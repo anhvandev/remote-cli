@@ -144,6 +144,13 @@ async fn without_an_accessibility_tree_marks_come_from_ocr() {
     let (status, obs) = sys.api.post_json(&format!("/api/v1/devices/{dev}/actions"), &body).await;
     assert_eq!(status, StatusCode::OK, "{obs}");
     assert_eq!(obs["marks"][0]["text"], "Welcome", "{obs}");
+
+    // OCR never reports values or Mark States, so such a wait fails at once.
+    let started = std::time::Instant::now();
+    let body = json!({ "actions": [], "until": {"value": {"text": "Password", "equals": "x"}, "timeout_ms": 10_000} });
+    let (status, body) = sys.api.post_json(&format!("/api/v1/devices/{dev}/actions"), &body).await;
+    assert_eq!((status, body["error"]["code"].clone()), (StatusCode::CONFLICT, json!("no_accessibility_tree")), "{body}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(3), "waited {:?}", started.elapsed());
 }
 
 #[tokio::test]
@@ -254,6 +261,11 @@ fn later(p: &FakePlatform, ms: u64, edit: impl FnOnce(&mut Vec<UiElement>) + Sen
     });
 }
 
+/// The tree element with exactly this text.
+fn named<'a>(tree: &'a mut [UiElement], text: &str) -> &'a mut UiElement {
+    tree.iter_mut().find(|e| e.text == text).unwrap()
+}
+
 fn texts(obs: &serde_json::Value) -> Vec<serde_json::Value> {
     obs["marks"].as_array().unwrap().iter().map(|m| m["text"].clone()).collect()
 }
@@ -299,6 +311,49 @@ async fn a_wait_condition_never_met_times_out_with_the_observation() {
 }
 
 #[tokio::test]
+async fn observe_waits_until_a_mark_state_or_value_changes() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent_on(save_dialog()).await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online").await;
+    let actions = format!("/api/v1/devices/{dev}/actions");
+    let p = &agent.platform;
+    let mark = |obs: &serde_json::Value, text: &str| obs["marks"].as_array().unwrap().iter().find(|m| m["text"] == text).unwrap().clone();
+    let wait = |until: serde_json::Value| json!({ "actions": [], "marks": true, "until": until });
+
+    p.update(|s| s.accessibility.as_mut().unwrap()[1].states.clear());
+    later(p, 500, move |tree| named(tree, "Remember me").states = vec!["checked".into()]);
+    let (status, obs) = sys.api.post_json(&actions, &wait(json!({"state": {"text": "remember me", "has": "checked"}}))).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
+    assert_eq!(mark(&obs, "Remember me")["states"], json!(["checked"]), "{obs}");
+
+    later(p, 500, move |tree| named(tree, "Save").states.clear());
+    let (status, obs) = sys.api.post_json(&actions, &wait(json!({"state": {"text": "Save", "role": "button", "lacks": "disabled"}}))).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
+    assert_eq!(mark(&obs, "Save").get("states"), None, "{obs}");
+
+    p.update(|s| s.accessibility.as_mut().unwrap()[2].value = None);
+    later(p, 500, move |tree| named(tree, "Name").value = Some("An".into()));
+    let (status, obs) = sys.api.post_json(&actions, &wait(json!({"value": {"text": "Name", "equals": "An"}}))).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
+    assert_eq!(mark(&obs, "Name")["value"], "An", "{obs}");
+
+    p.update(|s| s.accessibility.as_mut().unwrap()[2].value = None);
+    later(p, 500, move |tree| named(tree, "Name").value = Some("Nguyen An".into()));
+    let (status, obs) = sys.api.post_json(&actions, &wait(json!({"value": {"text": "Name", "contains": "An"}}))).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
+    assert_eq!(mark(&obs, "Name")["value"], "Nguyen An", "{obs}");
+
+    // A label "Name" beside the field: two Marks match until `role` narrows it to the field.
+    p.update(|s| s.accessibility.as_mut().unwrap().push(element("text", "Name", 330, 420, 100, 30)));
+    let (status, body) = sys.api.post_json(&actions, &wait(json!({"value": {"text": "Name", "contains": "An"}}))).await;
+    assert_eq!((status, body["error"]["code"].clone()), (StatusCode::BAD_REQUEST, json!("ambiguous_text")), "{body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("field \"Name\""), "{body}");
+    let (status, obs) = sys.api.post_json(&actions, &wait(json!({"value": {"text": "Name", "role": "field", "contains": "An"}}))).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
+}
+
+#[tokio::test]
 async fn cli_mark_table_shows_states_values_and_containers_and_json_the_full_value() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent_on(save_dialog()).await;
@@ -315,6 +370,13 @@ async fn cli_mark_table_shows_states_values_and_containers_and_json_the_full_val
     assert_eq!(words(row("3")), ["3", "0", "field", "220,300", "400x40", "1", "An", "Name"]);
     assert_eq!(words(row("4")), ["4", "0", "field", "220,360", "400x40", "1", "Password"]);
     assert!(row("7").contains("Ship the release no…  Notes"), "long value shortened: {out}");
+    // Wait Conditions on value and Mark State from `rcli shot`: met at once, or timed out.
+    let out_dir = dir.to_str().unwrap();
+    sys.rcli(&["shot", dev, "--until-state", "Remember me", "--has", "checked", "--out", out_dir]).await.unwrap();
+    sys.rcli(&["shot", dev, "--until-value", "Name", "--role", "field", "--equals", "An", "--out", out_dir]).await.unwrap();
+    sys.rcli(&["shot", dev, "--until-value", "Notes", "--contains", "release", "--out", out_dir]).await.unwrap();
+    let err = sys.rcli(&["shot", dev, "--until-state", "Save", "--lacks", "disabled", "--timeout-ms", "300", "--out", out_dir]).await.unwrap_err();
+    assert!(err.to_string().contains("wait_timeout"), "{err}");
 
     let json = sys.rcli(&["shot", dev, "--marks", "--json"]).await.unwrap();
     let obs: serde_json::Value = serde_json::from_str(&json).unwrap();
