@@ -48,7 +48,10 @@ async fn an_agent_lists_devices_takes_the_lock_acts_and_observes_with_marks() {
     sys.wait_device(dev, |d| d["status"] == "Online").await;
     let mcp = sys.mcp_as(&sys.admin_token).await;
 
-    let tools: Vec<String> = mcp.list_all_tools().await.unwrap().into_iter().map(|t| t.name.into_owned()).collect();
+    let all = mcp.list_all_tools().await.unwrap();
+    let observe = all.iter().find(|t| t.name == "observe").unwrap();
+    assert!(observe.input_schema["properties"]["until"]["description"].as_str().unwrap().contains("appears"), "{observe:?}");
+    let tools: Vec<String> = all.into_iter().map(|t| t.name.into_owned()).collect();
     for t in ["devices", "device", "lock_acquire", "lock_release", "lock_status", "act", "batch", "observe", "exec", "wake", "power"] {
         assert!(tools.contains(&t.to_owned()), "missing tool {t}: {tools:?}");
     }
@@ -74,6 +77,9 @@ async fn an_agent_lists_devices_takes_the_lock_acts_and_observes_with_marks() {
     let (obs, r) = ok(&mcp, "observe", json!({ "device": "lab-pc", "marks": true })).await;
     assert_eq!(images(&r).len(), 1);
     assert_eq!(obs["marks"][0]["text"], "OK", "{obs}");
+    // observe with a Wait Condition: "OK" never disappears, so the wait times out.
+    let r = call(&mcp, "observe", json!({ "device": "lab-pc", "until": {"disappears": {"text": "OK"}, "timeout_ms": 300} })).await;
+    assert!(r.is_error == Some(true) && text(&r).contains("wait_timeout"), "{r:?}");
     let mark = json!({ "type": "click", "mark": 1, "observation": obs["observation"] });
     let (_, r) = ok(&mcp, "batch", json!({ "device": "lab-pc", "actions": [mark, {"type": "wait", "ms": 10}], "observe": "none" })).await;
     assert!(images(&r).is_empty());

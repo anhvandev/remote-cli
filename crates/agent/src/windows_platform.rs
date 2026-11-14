@@ -16,11 +16,12 @@ use std::{
 use enigo::{Axis, Direction, Enigo, Keyboard, Mouse, Settings};
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use windows::{
+    core::BOOL,
     Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap},
     Media::Ocr::OcrEngine,
     Security::Cryptography::CryptographicBuffer,
     Win32::{
-        Foundation::{HANDLE, HWND, POINT, RECT},
+        Foundation::{HANDLE, HWND, LPARAM, POINT, RECT},
         Security::Authentication::Identity::SendSAS,
         System::{
             Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED},
@@ -39,11 +40,14 @@ use windows::{
             Accessibility::*,
             HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2},
             Input::KeyboardAndMouse::{
-                SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT,
+                IsWindowEnabled, SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK,
+                MOUSEINPUT,
             },
             WindowsAndMessaging::{
-                GetAncestor, GetForegroundWindow, GetSystemMetrics, GetWindowRect, WindowFromPoint, GA_ROOT, SM_CXVIRTUALSCREEN,
-                SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+                EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindow, GetWindowLongW, GetWindowRect,
+                GetWindowThreadProcessId, IsWindowVisible, WindowFromPoint, GA_ROOT, GWL_STYLE, GW_OWNER, SM_CXVIRTUALSCREEN,
+                SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, STATE_SYSTEM_CHECKED, STATE_SYSTEM_COLLAPSED,
+                STATE_SYSTEM_EXPANDED, STATE_SYSTEM_FOCUSED, STATE_SYSTEM_PROTECTED, STATE_SYSTEM_SELECTED, WS_POPUP,
             },
         },
     },
@@ -163,14 +167,17 @@ impl Platform for WindowsPlatform {
         Ok(())
     }
 
-    // shortcut: only the foreground window (or, if it is not on `display`, the window at the display's centre);
-    // other windows on the display are not walked. Walk all top-level windows if Marks miss things there.
+    // shortcut: the foreground window (or, if it is not on `display`, the window at the display's centre) plus its
+    // process's popups, menus and dialogs; other apps' windows are not walked. Walk them if Marks miss things there.
     fn accessibility(&self, display: u32) -> anyhow::Result<Option<Vec<UiElement>>> {
         switch_to_input_desktop()?;
         let d = self.display(display)?;
         com_init();
         unsafe {
-            let uia: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+            let uia: IUIAutomation2 = CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)?;
+            // A hung app makes UIA calls fail after these instead of stalling the request.
+            uia.SetConnectionTimeout(2000)?;
+            uia.SetTransactionTimeout(5000)?;
             let mut window = GetForegroundWindow();
             if window.is_invalid() || !overlaps(window_rect(window), &d) {
                 let centre = POINT { x: d.x + d.width as i32 / 2, y: d.y + d.height as i32 / 2 };
@@ -179,26 +186,24 @@ impl Platform for WindowsPlatform {
             if window.is_invalid() {
                 return Ok(Some(vec![]));
             }
-            let root = uia.ElementFromHandle(window)?;
+            // One cached request per window fetches the whole visible subtree with every property read below.
             let cache = uia.CreateCacheRequest()?;
-            for property in [UIA_ControlTypePropertyId, UIA_NamePropertyId, UIA_BoundingRectanglePropertyId] {
+            for property in CACHED {
                 cache.AddProperty(property)?;
             }
-            let visible = uia.CreatePropertyCondition(UIA_IsOffscreenPropertyId, &VARIANT::from(false))?;
-            let found = root.FindAllBuildCache(TreeScope_Subtree, &visible, &cache)?;
-            let mut elements = vec![];
-            for i in 0..found.Length()? {
-                let e = found.GetElement(i)?;
-                let Some(role) = role(e.CachedControlType()?) else { continue };
-                let text = e.CachedName()?.to_string();
-                if role == "text" && text.trim().is_empty() {
+            cache.SetTreeScope(TreeScope_Subtree)?;
+            cache.SetTreeFilter(&uia.CreatePropertyCondition(UIA_IsOffscreenPropertyId, &VARIANT::from(false))?)?;
+            let (mut elements, mut budget, mut read) = (vec![], UIA_MAX_NODES, false);
+            for w in scope(window, &d) {
+                // A window that timed out or closed adds no Marks; the others still do.
+                let Ok(root) = uia.ElementFromHandle(w).and_then(|e| e.BuildUpdatedCache(&cache)) else {
                     continue;
-                }
-                if let Some((x, y, width, height)) = clip(e.CachedBoundingRectangle()?, &d) {
-                    elements.push(UiElement { role: role.into(), text, x, y, width, height, ..Default::default() });
-                }
+                };
+                read = true;
+                walk(root, &d, &mut elements, &mut budget)?;
             }
-            Ok(Some(elements))
+            // No window answered: OCR Marks instead.
+            Ok(read.then_some(elements))
         }
     }
 
@@ -644,8 +649,173 @@ fn role(control_type: UIA_CONTROLTYPE_ID) -> Option<&'static str> {
         UIA_ListItemControlTypeId | UIA_TreeItemControlTypeId => "item",
         UIA_MenuItemControlTypeId => "menuitem",
         UIA_TabItemControlTypeId => "tab",
+        UIA_WindowControlTypeId => "window",
+        UIA_MenuControlTypeId | UIA_MenuBarControlTypeId => "menu",
+        UIA_ListControlTypeId | UIA_TreeControlTypeId => "list",
         _ => return None,
     })
+}
+
+/// Nodes read per Observation, across all windows in scope, as on the other OSes.
+const UIA_MAX_NODES: usize = 3000;
+
+/// Properties fetched in the one cached request per window.
+const CACHED: [UIA_PROPERTY_ID; 16] = [
+    UIA_ControlTypePropertyId,
+    UIA_NamePropertyId,
+    UIA_BoundingRectanglePropertyId,
+    UIA_IsEnabledPropertyId,
+    UIA_HasKeyboardFocusPropertyId,
+    UIA_IsPasswordPropertyId,
+    UIA_ValueValuePropertyId,
+    UIA_ToggleToggleStatePropertyId,
+    UIA_ExpandCollapseExpandCollapseStatePropertyId,
+    UIA_SelectionItemIsSelectedPropertyId,
+    UIA_IsRangeValuePatternAvailablePropertyId,
+    UIA_RangeValueValuePropertyId,
+    UIA_LegacyIAccessibleStatePropertyId,
+    UIA_LegacyIAccessibleValuePropertyId,
+    UIA_LegacyIAccessibleRolePropertyId,
+    UIA_WindowIsModalPropertyId,
+];
+
+/// The windows Marks are read from: `foreground` plus the visible popups, menus and dialogs of its process on `d`,
+/// modal dialogs first. The taskbar and desktop are never read.
+fn scope(foreground: HWND, d: &DisplayInfo) -> Vec<HWND> {
+    unsafe extern "system" fn collect(w: HWND, list: LPARAM) -> BOOL {
+        (*(list.0 as *mut Vec<HWND>)).push(w);
+        true.into()
+    }
+    let mut all = vec![];
+    unsafe {
+        let _ = EnumWindows(Some(collect), LPARAM(&mut all as *mut Vec<HWND> as isize));
+        let pid = |w| {
+            let mut pid = 0;
+            GetWindowThreadProcessId(w, Some(&mut pid));
+            pid
+        };
+        let owner = |w| GetWindow(w, GW_OWNER).unwrap_or_default();
+        // A modal dialog disables the window that owns it.
+        let modal = |w| {
+            let o = owner(w);
+            !o.is_invalid() && !IsWindowEnabled(o).as_bool()
+        };
+        let shell = |w| {
+            let mut class = [0u16; 32];
+            let n = GetClassNameW(w, &mut class).max(0) as usize;
+            ["Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman", "WorkerW"].contains(&String::from_utf16_lossy(&class[..n]).as_str())
+        };
+        let mut windows = vec![(foreground, modal(foreground))];
+        for w in all {
+            let popup = GetWindowLongW(w, GWL_STYLE) as u32 & WS_POPUP.0 != 0 || !owner(w).is_invalid();
+            if w != foreground
+                && popup
+                && pid(w) == pid(foreground)
+                && IsWindowVisible(w).as_bool()
+                && overlaps(window_rect(w), d)
+                && !shell(w)
+            {
+                windows.push((w, modal(w)));
+            }
+        }
+        modal_first(windows)
+    }
+}
+
+/// Items flagged modal first; otherwise the order is kept.
+fn modal_first<T>(mut windows: Vec<(T, bool)>) -> Vec<T> {
+    windows.sort_by_key(|(_, modal)| !modal);
+    windows.into_iter().map(|(w, _)| w).collect()
+}
+
+/// Appends a cached UIA subtree to `out` in pre-order, each element linked to the nearest container above it,
+/// until `budget` nodes have been visited.
+fn walk(root: IUIAutomationElement, d: &DisplayInfo, out: &mut Vec<UiElement>, budget: &mut usize) -> windows::core::Result<()> {
+    let mut stack = vec![(root, None)];
+    while let Some((e, container)) = stack.pop() {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+        let mut inner = container;
+        if let Some(element) = element(&e, d, container)? {
+            if ["window", "dialog", "menu", "list"].contains(&element.role.as_str()) {
+                inner = Some(out.len());
+            }
+            out.push(element);
+        }
+        // A leaf has no cached children array.
+        if let Ok(children) = unsafe { e.GetCachedChildren() } {
+            for i in (0..unsafe { children.Length()? }).rev() {
+                stack.push((unsafe { children.GetElement(i)? }, inner));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The Mark-worthy element `e` is, from its cached properties; `None` if it makes no Mark.
+fn element(e: &IUIAutomationElement, d: &DisplayInfo, parent: Option<usize>) -> windows::core::Result<Option<UiElement>> {
+    unsafe {
+        let Some(mut role) = role(e.CachedControlType()?) else {
+            return Ok(None);
+        };
+        let text = e.CachedName()?.to_string();
+        if role == "text" && text.trim().is_empty() {
+            return Ok(None);
+        }
+        let Some((x, y, width, height)) = clip(e.CachedBoundingRectangle()?, d) else {
+            return Ok(None);
+        };
+        let get = |p| e.GetCachedPropertyValue(p).unwrap_or_default();
+        let legacy = u32::try_from(&get(UIA_LegacyIAccessibleStatePropertyId)).unwrap_or(0);
+        let dialog_role = u32::try_from(&get(UIA_LegacyIAccessibleRolePropertyId)).is_ok_and(|r| r == ROLE_SYSTEM_DIALOG);
+        if role == "window" && (bool::try_from(&get(UIA_WindowIsModalPropertyId)).unwrap_or(false) || dialog_role) {
+            role = "dialog";
+        }
+        let password = e.CachedIsPassword()?.as_bool() || legacy & STATE_SYSTEM_PROTECTED != 0;
+        let value = if password {
+            None
+        } else {
+            let value = get(UIA_ValueValuePropertyId).to_string();
+            if !value.is_empty() {
+                Some(value)
+            } else if bool::try_from(&get(UIA_IsRangeValuePatternAvailablePropertyId)).unwrap_or(false) {
+                f64::try_from(&get(UIA_RangeValueValuePropertyId)).ok().map(|v| v.to_string())
+            } else {
+                Some(get(UIA_LegacyIAccessibleValuePropertyId).to_string()).filter(|v| !v.is_empty())
+            }
+        };
+        let states = states(
+            e.CachedIsEnabled()?.as_bool(),
+            e.CachedHasKeyboardFocus()?.as_bool(),
+            ToggleState(i32::try_from(&get(UIA_ToggleToggleStatePropertyId)).unwrap_or(ToggleState_Indeterminate.0)),
+            ExpandCollapseState(
+                i32::try_from(&get(UIA_ExpandCollapseExpandCollapseStatePropertyId)).unwrap_or(ExpandCollapseState_LeafNode.0),
+            ),
+            bool::try_from(&get(UIA_SelectionItemIsSelectedPropertyId)).unwrap_or(false),
+            legacy,
+        );
+        Ok(Some(UiElement { role: role.into(), text, x, y, width, height, states, value, password, parent }))
+    }
+}
+
+/// Mark States that differ from the default, from UIA properties or the LegacyIAccessible `legacy` state bits.
+fn states(enabled: bool, focused: bool, toggle: ToggleState, expand: ExpandCollapseState, selected: bool, legacy: u32) -> Vec<String> {
+    const STATE_SYSTEM_UNAVAILABLE: u32 = 0x1;
+    let has = |bit| legacy & bit != 0;
+    [
+        ("disabled", !enabled || has(STATE_SYSTEM_UNAVAILABLE)),
+        ("focused", focused || has(STATE_SYSTEM_FOCUSED)),
+        ("checked", toggle == ToggleState_On || has(STATE_SYSTEM_CHECKED)),
+        ("selected", selected || has(STATE_SYSTEM_SELECTED)),
+        ("expanded", expand == ExpandCollapseState_Expanded || has(STATE_SYSTEM_EXPANDED)),
+        ("collapsed", expand == ExpandCollapseState_Collapsed || has(STATE_SYSTEM_COLLAPSED)),
+    ]
+    .into_iter()
+    .filter(|&(_, on)| on)
+    .map(|(name, _)| name.to_string())
+    .collect()
 }
 
 /// Key names the Executor sends (`"a"`, `"enter"`, `"ctrl"` from `ctrl+shift+t`) as enigo keys.
@@ -722,5 +892,21 @@ mod tests {
         let d = DisplayInfo { index: 1, x: 1920, y: 0, width: 1280, height: 1024, scale: 1.0, primary: false };
         assert_eq!(clip(RECT { left: 1900, top: 10, right: 2000, bottom: 30 }, &d), Some((0, 10, 80, 20)));
         assert_eq!(clip(RECT { left: 0, top: 0, right: 100, bottom: 100 }, &d), None);
+    }
+
+    #[test]
+    fn uia_values_and_legacy_state_bits_become_mark_states() {
+        assert_eq!(states(false, false, ToggleState_On, ExpandCollapseState_LeafNode, false, 0), ["disabled", "checked"]);
+        assert!(states(true, false, ToggleState_Off, ExpandCollapseState_LeafNode, false, 0).is_empty());
+        let legacy = STATE_SYSTEM_FOCUSED | STATE_SYSTEM_SELECTED | STATE_SYSTEM_EXPANDED;
+        assert_eq!(
+            states(true, false, ToggleState_Indeterminate, ExpandCollapseState_LeafNode, false, legacy),
+            ["focused", "selected", "expanded"]
+        );
+    }
+
+    #[test]
+    fn modal_dialogs_come_first_then_the_rest_in_order() {
+        assert_eq!(modal_first(vec![("foreground", false), ("menu", false), ("dialog", true)]), ["dialog", "foreground", "menu"]);
     }
 }
