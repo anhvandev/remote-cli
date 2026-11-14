@@ -148,7 +148,7 @@ Mỗi Mark có `number`, `text` (nhãn), `role`, `display` và khung. Container 
 
 Bảng Mark của CLI có thêm cột `PARENT`, `STATES`, `VALUE` (value dài bị cắt, `--json` có đủ). Mark từ OCR (màn khoá, không có cây accessibility) không có ba field này.
 
-Trên macOS, Marks lấy từ cửa sổ đang focus cùng menu bar, menu đang mở và sheet của app đó; cửa sổ khác của app nằm phía sau không còn cho Mark. Thay đổi hành vi: ô nhập mà nhãn duy nhất là nội dung của nó (`AXValue`) giờ có `text` rỗng, nội dung nằm ở `value`, nên nhắm ô đó theo nội dung không còn khớp; nhắm theo số Mark thay thế.
+Trên macOS, Marks lấy từ cửa sổ đang focus cùng menu bar, menu đang mở và sheet của app đó; cửa sổ khác của app nằm phía sau không còn cho Mark. Thay đổi hành vi: ô nhập mà nhãn duy nhất là nội dung của nó (`AXValue`) giờ có `text` rỗng, nội dung nằm ở `value`, nên nhắm ô đó theo nội dung không còn khớp; nhắm theo số Mark thay thế. Chữ tĩnh (`AXStaticText`) vẫn lấy giá trị của nó làm `text`, vì nhãn của nó nằm ở đó.
 
 **Wait Condition**: chờ tới khi một chữ hiện ra hoặc biến mất rồi mới chụp, thay vì đoán thời gian chờ:
 
