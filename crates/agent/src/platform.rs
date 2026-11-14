@@ -87,6 +87,13 @@ pub struct UiElement {
     pub parent: Option<usize>,
 }
 
+impl UiElement {
+    /// Whether other elements sit in it: a window, dialog, menu or list.
+    pub fn is_container(&self) -> bool {
+        matches!(self.role.as_str(), "window" | "dialog" | "menu" | "list")
+    }
+}
+
 /// One input primitive. The Executor builds clicks, drags and key combinations from these.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Input {

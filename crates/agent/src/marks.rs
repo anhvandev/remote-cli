@@ -61,12 +61,22 @@ fn to_mark(frame: &Frame, display: u32, number: u32, parent: Option<u32>, e: UiE
     }
 }
 
+/// The Marks whose text is `text` (case-insensitive); if none is equal, those that contain it.
+fn matching<'a>(marks: &'a [Mark], text: &str) -> Vec<&'a Mark> {
+    let want = text.trim().to_lowercase();
+    let equal: Vec<&Mark> = marks.iter().filter(|m| m.text.trim().to_lowercase() == want).collect();
+    if equal.is_empty() { marks.iter().filter(|m| m.text.to_lowercase().contains(&want)).collect() } else { equal }
+}
+
+/// The Marks with `role`; all of them when it is `None`.
+pub fn with_role(marks: &[Mark], role: Option<&str>) -> Vec<Mark> {
+    marks.iter().filter(|m| role.is_none_or(|r| m.role == r)).cloned().collect()
+}
+
 /// The one Mark whose text is `text` (case-insensitive); if none is equal, the one that contains it.
 pub fn by_text<'a>(marks: &'a [Mark], text: &str) -> Result<&'a Mark, Error> {
     let err = |code: &str, message: String| Error { code: code.into(), message };
-    let want = text.trim().to_lowercase();
-    let equal: Vec<&Mark> = marks.iter().filter(|m| m.text.trim().to_lowercase() == want).collect();
-    let found = if equal.is_empty() { marks.iter().filter(|m| m.text.to_lowercase().contains(&want)).collect() } else { equal };
+    let found = matching(marks, text);
     match found[..] {
         [m] => Ok(m),
         [] => Err(err("text_not_found", format!("no Mark with text {text:?} on screen"))),
@@ -82,8 +92,7 @@ pub fn by_text<'a>(marks: &'a [Mark], text: &str) -> Result<&'a Mark, Error> {
 
 /// Whether some Mark (with `role`, if given) would match `text` as a text target: equal to it or containing it.
 pub fn present(marks: &[Mark], text: &str, role: Option<&str>) -> bool {
-    let want = text.trim().to_lowercase();
-    marks.iter().any(|m| role.is_none_or(|r| m.role == r) && m.text.to_lowercase().contains(&want))
+    !matching(&with_role(marks, role), text).is_empty()
 }
 
 /// Centre of a Mark, in image space.

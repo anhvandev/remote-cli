@@ -44,7 +44,7 @@ pub fn elements(d: &DisplayInfo) -> anyhow::Result<Option<Vec<UiElement>>> {
             }
             if let Some(mut element) = element(&bus, &dest, &node, &states, d) {
                 element.parent = parent;
-                if matches!(element.role.as_str(), "window" | "dialog" | "menu" | "list") {
+                if element.is_container() {
                     parent = Some(found.len());
                 }
                 found.push(element);

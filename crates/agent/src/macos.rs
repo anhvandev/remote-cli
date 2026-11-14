@@ -306,7 +306,7 @@ fn accessibility_tree(d: &DisplayInfo) -> Option<Vec<UiElement>> {
             let size = at(11).and_then(|v| ax_value::<CGSize>(&v, AXValueType::CGSize));
             if let Some((x, y, width, height)) = origin.zip(size).and_then(|(o, s)| to_pixels(d, o, s)) {
                 if e.role != "text" || !e.text.is_empty() {
-                    if matches!(e.role.as_str(), "window" | "dialog" | "menu" | "list") {
+                    if e.is_container() {
                         children_parent = Some(out.len());
                     }
                     (e.x, e.y, e.width, e.height, e.parent) = (x, y, width, height, parent);

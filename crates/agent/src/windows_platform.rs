@@ -739,7 +739,7 @@ fn walk(root: IUIAutomationElement, d: &DisplayInfo, out: &mut Vec<UiElement>, b
         *budget -= 1;
         let mut inner = container;
         if let Some(element) = element(&e, d, container)? {
-            if ["window", "dialog", "menu", "list"].contains(&element.role.as_str()) {
+            if element.is_container() {
                 inner = Some(out.len());
             }
             out.push(element);

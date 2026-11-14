@@ -68,7 +68,7 @@ impl Executor {
             return Ok(ActResult { images, error: timeout, ..Default::default() });
         }
         if let (None, Some(u)) = (&timeout, &req.until) {
-            timeout = wait_for(p, &wanted, u)?;
+            timeout = wait_until(p, &wanted, u)?;
         }
         let (images, marks) = self.observer.shot(p, &wanted, &req.controller, req.marks).map_err(|e| error("platform", e))?;
         if !req.marks {
@@ -103,7 +103,7 @@ impl Executor {
         }
         // A Wait Condition step watches the displays an Observation would show.
         if let Kind::WaitUntil(u) = kind {
-            if let Some(timeout) = wait_for(p, &self.observed(displays, req)?, u)? {
+            if let Some(timeout) = wait_until(p, &self.observed(displays, req)?, u)? {
                 return Err(timeout);
             }
         }
@@ -155,8 +155,10 @@ impl Executor {
             Kind::Scroll(s) => s.at.as_ref().map(|pt| pt.display),
             Kind::TypeText(_) | Kind::Key(_) | Kind::WaitMs(_) | Kind::WaitUntil(_) => None,
         });
-        let default = || self.last_display.or(displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0);
-        let display = find(displays, req.display.or(first_acted).unwrap_or_else(default))?.index;
+        let display = match first_acted.filter(|_| req.display.is_none()) {
+            Some(d) => find(displays, d)?.index,
+            None => self.observed(displays, req)?[0],
+        };
         let done = AtomicBool::new(false);
         std::thread::scope(|s| {
             let recorder = s.spawn(|| clip::record(p, display, &done));
@@ -254,8 +256,8 @@ impl Executor {
 }
 
 /// Re-detects Marks on `displays` (each reading settles the screen, so about every 100 ms) until two readings in
-/// a row meet `until`; false when its timeout passed first.
-fn wait_until(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Result<bool, Error> {
+/// a row meet `until`; the `wait_timeout` error when its timeout passed first.
+fn wait_until(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Result<Option<Error>, Error> {
     let condition = until.condition.as_ref().ok_or_else(|| error("invalid_action", "Wait Condition without a condition"))?;
     let on_mark = match condition {
         Condition::Value(v) if v.equals.is_some() == v.contains.is_some() => {
@@ -281,43 +283,35 @@ fn wait_until(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Resu
             let frame = observer::settle(p, d).map_err(|e| error("platform", e))?;
             all.extend(marks::detect(p, d, &frame, 1).map_err(|e| error("platform", e))?);
         }
-        let met = met(condition, &all, &until.text, until.role.as_deref())?;
-        if met && met_before {
-            return Ok(true);
+        let holds = condition_holds(condition, &all, &until.text, until.role.as_deref())?;
+        if holds && met_before {
+            return Ok(None);
         }
         if Instant::now() >= deadline {
-            return Ok(false);
+            let message = format!("Wait Condition on {:?} not met within {} ms", until.text, until.timeout_ms);
+            return Ok(Some(error("wait_timeout", message)));
         }
-        met_before = met;
+        met_before = holds;
     }
-}
-
-/// `wait_until`, with its timeout as the `wait_timeout` error.
-fn wait_for(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Result<Option<Error>, Error> {
-    let timeout = || error("wait_timeout", format!("Wait Condition on {:?} not met within {} ms", until.text, until.timeout_ms));
-    Ok((!wait_until(p, displays, until)?).then(timeout))
 }
 
 /// Whether one reading's Marks meet `condition` about the Marks matching `text` (and `role`). A value or Mark State
 /// is read from the one Mark matching as a text target would; `ambiguous_text` when several do.
-fn met(condition: &Condition, all: &[Mark], text: &str, role: Option<&str>) -> Result<bool, Error> {
-    let one = || {
-        let candidates: Vec<Mark> = all.iter().filter(|m| role.is_none_or(|r| m.role == r)).cloned().collect();
-        match marks::by_text(&candidates, text) {
-            Ok(m) => Ok(Some(m.clone())),
-            Err(e) if e.code == "text_not_found" => Ok(None),
-            Err(e) => Err(e),
-        }
+fn condition_holds(condition: &Condition, all: &[Mark], text: &str, role: Option<&str>) -> Result<bool, Error> {
+    let target_mark = || match marks::by_text(&marks::with_role(all, role), text) {
+        Ok(m) => Ok(Some(m.clone())),
+        Err(e) if e.code == "text_not_found" => Ok(None),
+        Err(e) => Err(e),
     };
     Ok(match condition {
         Condition::Appears(_) => marks::present(all, text, role),
         Condition::Disappears(_) => !marks::present(all, text, role),
-        Condition::Value(v) => one()?.is_some_and(|m| match (&v.equals, &v.contains) {
+        Condition::Value(v) => target_mark()?.is_some_and(|m| match (&v.equals, &v.contains) {
             (Some(want), _) => m.value == *want,
             (_, part) => m.value.contains(part.as_deref().unwrap_or_default()),
         }),
         // A Mark not on screen neither has nor lacks a state.
-        Condition::State(s) => one()?.is_some_and(|m| match (&s.has, &s.lacks) {
+        Condition::State(s) => target_mark()?.is_some_and(|m| match (&s.has, &s.lacks) {
             (Some(state), _) => m.states.contains(state),
             (_, state) => !m.states.iter().any(|s| Some(s) == state.as_ref()),
         }),
