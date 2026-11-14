@@ -2,10 +2,12 @@
 
 use std::{
     sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use rcli_protocol::agent::{action::Kind, Action, ActRequest, ActResult, Clip, Error, Mark, ObserveMode, Point};
+use rcli_protocol::agent::{
+    action::Kind, wait_condition::Condition, Action, ActRequest, ActResult, Clip, Error, Mark, ObserveMode, Point, WaitCondition,
+};
 
 use crate::{
     clip, coords, marks,
@@ -65,13 +67,20 @@ impl Executor {
             let images = self.observer.frames(p, f, &wanted, &req.controller).map_err(|e| error("platform", e))?;
             return Ok(ActResult { images, ..Default::default() });
         }
+        // A timed-out wait still returns the Observation, with the error.
+        let timeout = match &req.until {
+            Some(u) if !wait_until(p, &wanted, u)? => {
+                Some(error("wait_timeout", format!("Wait Condition on {:?} not met within {} ms", u.text, u.timeout_ms)))
+            }
+            _ => None,
+        };
         let (images, marks) = self.observer.shot(p, &wanted, &req.controller, req.marks).map_err(|e| error("platform", e))?;
         if !req.marks {
-            return Ok(ActResult { images, ..Default::default() });
+            return Ok(ActResult { images, error: timeout, ..Default::default() });
         }
         self.last_observation += 1;
         *self.marks.entry(&req.controller) = (self.last_observation, marks.clone());
-        Ok(ActResult { images, observation: self.last_observation, marks, ..Default::default() })
+        Ok(ActResult { images, observation: self.last_observation, marks, error: timeout, ..Default::default() })
     }
 
     /// One Action of a batch: its inputs, then its wait (recording frames meanwhile if asked).
@@ -230,6 +239,34 @@ impl Executor {
         };
         let (x, y) = marks::center(&mark);
         Ok(Point { display: mark.display, x, y, ..Default::default() })
+    }
+}
+
+/// Re-detects Marks on `displays` (each reading settles the screen, so about every 100 ms) until two readings in
+/// a row meet `until`; false when its timeout passed first.
+fn wait_until(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Result<bool, Error> {
+    let appears = match until.condition {
+        Some(Condition::Appears(_)) => true,
+        Some(Condition::Disappears(_)) => false,
+        None => return Err(error("invalid_action", "Wait Condition without a condition")),
+    };
+    let deadline = Instant::now() + Duration::from_millis(until.timeout_ms.into());
+    let mut met_before = false;
+    loop {
+        let mut found = false;
+        for &d in displays {
+            let frame = observer::settle(p, d).map_err(|e| error("platform", e))?;
+            let marks = marks::detect(p, d, &frame, 1).map_err(|e| error("platform", e))?;
+            found |= marks::present(&marks, &until.text, until.role.as_deref());
+        }
+        let met = found == appears;
+        if met && met_before {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        met_before = met;
     }
 }
 

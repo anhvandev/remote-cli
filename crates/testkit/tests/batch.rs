@@ -48,6 +48,9 @@ async fn a_batch_runs_in_order_with_waits_and_stops_at_the_failing_step() {
     let (status, body) = sys.api.post_json(&actions, &json!({ "actions": [{"type": "wait", "ms": 60_000}] })).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["code"], "invalid_action");
+    let observe = json!({ "actions": [], "until": {"appears": {"text": "Saved"}, "timeout_ms": 30_001} });
+    let (status, body) = sys.api.post_json(&actions, &observe).await;
+    assert_eq!((status, body["error"]["code"].clone()), (StatusCode::BAD_REQUEST, json!("invalid_action")), "{body}");
 }
 
 #[tokio::test]
