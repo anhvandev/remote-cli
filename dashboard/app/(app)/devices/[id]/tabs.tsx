@@ -14,22 +14,20 @@ export function Tabs({ device, headless }: { device: string; headless?: boolean 
   const active = useSelectedLayoutSegment() ?? "";
   const tabs = headless ? TABS.filter(([slug]) => slug !== "screen") : TABS;
   return (
-    <div className="mt-4 flex gap-1 border-b border-border">
+    <div className="flex overflow-x-auto border-b-2 border-ink">
       {tabs.map(([slug, name]) => (
         <Link
           key={slug}
           href={`/devices/${device}${slug ? `/${slug}` : ""}`}
           aria-current={active === slug ? "page" : undefined}
-          className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors ${
-            active === slug
-              ? "border-primary font-medium text-foreground"
-              : "border-transparent text-muted-foreground hover:text-foreground"
+          className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors duration-(--dur-micro) focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-ring ${
+            active === slug ? "bg-ink text-paper" : "text-muted-foreground hover:bg-muted hover:text-foreground"
           }`}
         >
           {name}
         </Link>
       ))}
-      {headless && <span className="px-3 py-2 text-sm text-muted-foreground">Device không có màn hình.</span>}
+      {headless && <span className="px-4 py-2 text-sm whitespace-nowrap text-muted-foreground">Device không có màn hình.</span>}
     </div>
   );
 }

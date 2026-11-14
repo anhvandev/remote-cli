@@ -10,13 +10,13 @@ const pct = (p?: number) => (p === undefined ? "—" : `${Math.round(p)}%`);
 function SessionBadge({ r }: { r: Resources }) {
   switch (r.session) {
     case "Active":
-      return <span className="rounded-full bg-secondary px-2 py-0.5 text-xs">Đã đăng nhập · {r.logged_in_user || "?"}</span>;
+      return <span className="bg-secondary px-2 py-0.5 text-xs font-medium">Đã đăng nhập · {r.logged_in_user || "?"}</span>;
     case "LockScreen":
-      return <span className="rounded-full bg-secondary px-2 py-0.5 text-xs">Màn khoá · {r.logged_in_user || "?"}</span>;
+      return <span className="bg-secondary px-2 py-0.5 text-xs font-medium">Màn khoá · {r.logged_in_user || "?"}</span>;
     case "LoginScreen":
-      return <span className="rounded-full border border-warn/35 bg-warn/10 px-2 py-0.5 text-xs text-warn">Màn đăng nhập</span>;
+      return <span className="bg-warn px-2 py-0.5 text-xs font-medium text-ink">Màn đăng nhập</span>;
     default:
-      return <span className="text-sm text-muted-foreground">—</span>;
+      return null;
   }
 }
 
@@ -24,11 +24,11 @@ function Meter({ value }: { value?: number }) {
   const w = value === undefined ? 0 : Math.min(100, Math.max(0, value));
   const tone = w >= 90 ? "bg-bad" : w >= 70 ? "bg-warn" : "bg-primary";
   return (
-    <span className="inline-flex items-center gap-2">
-      <span className="h-1.5 w-16 overflow-hidden rounded-full bg-border">
-        <span className={`block h-full rounded-full ${tone}`} style={{ width: `${w}%` }} />
+    <span className="grid gap-1.5">
+      <b className="text-2xl font-extrabold">{pct(value)}</b>
+      <span className="h-2 w-full max-w-40 bg-muted">
+        <span className={`block h-full ${tone}`} style={{ width: `${w}%` }} />
       </span>
-      <b className="text-base font-semibold tabular-nums">{pct(value)}</b>
     </span>
   );
 }
@@ -47,7 +47,7 @@ export default async function OverviewPage({ params }: { params: Promise<{ id: s
         </div>
         <div className="p-5">
           {r ? (
-            <div className="grid grid-cols-2 gap-x-4 gap-y-4">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-6">
               <Kpi label="CPU">
                 <Meter value={r.cpu_percent} />
               </Kpi>
@@ -55,16 +55,16 @@ export default async function OverviewPage({ params }: { params: Promise<{ id: s
                 <Meter value={r.gpu_percent} />
               </Kpi>
               <Kpi label="RAM">
-                <b className="text-base font-semibold tabular-nums">{r.ram_used_bytes === undefined ? "—" : gb(r.ram_used_bytes)}</b>
-                {inv && r.ram_used_bytes !== undefined && <span className="text-xs text-muted-foreground"> / {gb(inv.ram_bytes)}</span>}
+                <b className="text-2xl font-extrabold">{r.ram_used_bytes === undefined ? "—" : gb(r.ram_used_bytes)}</b>
+                {inv && r.ram_used_bytes !== undefined && <span className="text-sm text-muted-foreground"> / {gb(inv.ram_bytes)}</span>}
               </Kpi>
               <Kpi label="Disk đọc/ghi" wide>
-                <b className="font-mono text-sm font-medium">
+                <b className="text-base font-medium">
                   {rate(r.disk_read_bytes_per_sec)} / {rate(r.disk_write_bytes_per_sec)}
                 </b>
               </Kpi>
               <Kpi label="Mạng ↑/↓" wide>
-                <b className="font-mono text-sm font-medium">
+                <b className="text-base font-medium">
                   {rate(r.net_up_bytes_per_sec)} / {rate(r.net_down_bytes_per_sec)}
                 </b>
               </Kpi>
@@ -75,19 +75,19 @@ export default async function OverviewPage({ params }: { params: Promise<{ id: s
               ))}
               {r.uptime_secs !== undefined && (
                 <Kpi label="Uptime">
-                  <b className="text-base font-semibold tabular-nums">{uptime(r.uptime_secs)}</b>
+                  <b className="text-2xl font-extrabold">{uptime(r.uptime_secs)}</b>
                 </Kpi>
               )}
               {r.cpu_temp_celsius !== undefined && (
                 <Kpi label="CPU temp">
-                  <b className="text-base font-semibold tabular-nums">{Math.round(r.cpu_temp_celsius)}°C</b>
+                  <b className="text-2xl font-extrabold">{Math.round(r.cpu_temp_celsius)}°C</b>
                 </Kpi>
               )}
               {r.battery_percent !== undefined && (
                 <Kpi label="Pin">
-                  <b className="text-base font-semibold tabular-nums">
+                  <b className="text-2xl font-extrabold">
                     {pct(r.battery_percent)}
-                    {r.battery_charging ? " ⚡" : ""}
+                    {r.battery_charging && <span className="text-sm font-medium text-muted-foreground"> đang sạc</span>}
                   </b>
                 </Kpi>
               )}
@@ -137,7 +137,7 @@ export default async function OverviewPage({ params }: { params: Promise<{ id: s
 function Kpi({ label, children, wide }: { label: string; children: React.ReactNode; wide?: boolean }) {
   return (
     <div className={wide ? "col-span-2" : undefined}>
-      <div className="mb-1 text-xs text-muted-foreground">{label}</div>
+      <div className="mb-1 text-sm text-muted-foreground">{label}</div>
       {children}
     </div>
   );
@@ -145,9 +145,9 @@ function Kpi({ label, children, wide }: { label: string; children: React.ReactNo
 
 function Row({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   return (
-    <tr className="border-b border-border/60 last:border-0">
-      <td className="py-1.5 pr-3 align-top text-muted-foreground">{k}</td>
-      <td className={`py-1.5 text-right align-top break-words ${mono ? "font-mono text-xs" : ""}`}>{v || "—"}</td>
+    <tr className="border-b border-rule last:border-0">
+      <td className="py-2 pr-3 align-top text-muted-foreground">{k}</td>
+      <td className={`py-2 text-right align-top font-medium break-words ${mono ? "text-xs" : ""}`}>{v || "—"}</td>
     </tr>
   );
 }

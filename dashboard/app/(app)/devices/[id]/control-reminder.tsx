@@ -8,8 +8,8 @@ export function ControlReminder() {
   const release = useRelease();
   if (!holding) return null;
   return (
-    <p className="flex items-center gap-2 text-sm">
-      <span>Bạn đang giữ Control Lock ·</span>
+    <p className="flex items-center gap-3 bg-ink py-1 pr-1 pl-3 text-sm font-medium text-paper">
+      <span>Bạn đang giữ Control Lock</span>
       <Button size="sm" variant="secondary" onClick={() => release()}>
         Nhả
       </Button>

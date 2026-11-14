@@ -32,7 +32,7 @@ export function Form({
         {children}
       </fieldset>
       {state.message && (
-        <output role="status" className="basis-full font-mono text-xs break-all text-muted-foreground">
+        <output role="status" className="basis-full text-xs font-medium break-all">
           {state.message}
         </output>
       )}

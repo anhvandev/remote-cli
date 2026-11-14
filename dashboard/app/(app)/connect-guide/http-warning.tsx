@@ -12,7 +12,7 @@ export function HttpWarning({ claimedHttps }: { claimedHttps: boolean }) {
   }, [claimedHttps]);
   if (!insecure) return null;
   return (
-    <div role="alert" aria-label="Cảnh báo http" className="mb-5 rounded-xl border border-red-500/50 bg-red-500/10 px-5 py-3.5 text-sm text-red-700 dark:text-red-400">
+    <div role="alert" aria-label="Cảnh báo http" className="mb-5 border-2 border-destructive px-5 py-3.5 text-sm font-medium text-destructive">
       Dashboard đang chạy qua http: lệnh cài đặt một dòng và Server Key truyền không mã hoá, có thể bị giả mạo trên
       đường truyền. Hãy đặt TLS (https) trước Dashboard.
     </div>

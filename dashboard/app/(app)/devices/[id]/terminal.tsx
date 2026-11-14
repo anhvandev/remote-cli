@@ -40,7 +40,8 @@ export function Terminal({ device }: { device: string }) {
     setRunAs(undefined);
     setState("connecting");
     const [{ Terminal }, { FitAddon }] = await Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]);
-    const term = new Terminal({ fontSize: 13, theme: { background: "#000", foreground: "#c8f7c5" } });
+    const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const term = new Terminal({ fontSize: 13, theme: { background: token("--color-ink"), foreground: token("--color-paper") } });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(box.current!);
@@ -108,10 +109,10 @@ export function Terminal({ device }: { device: string }) {
   return (
     <Card aria-label="Terminal" role="region" className="gap-3">
       <CardHeader className="flex flex-row items-center justify-between gap-3">
-        <CardTitle className="text-sm font-medium text-muted-foreground">Terminal</CardTitle>
+        <CardTitle className="text-base">Terminal</CardTitle>
         <div className="flex items-center gap-3">
           {runAs && (
-            <span className="rounded-full border border-border bg-secondary px-2 py-0.5 text-xs text-muted-foreground">chạy dưới: {runAs}</span>
+            <span className="bg-secondary px-2 py-0.5 text-xs font-medium">chạy dưới: {runAs}</span>
           )}
           {state === "open" || state === "connecting" ? (
             <Button size="sm" variant="secondary" onClick={stop}>
@@ -121,7 +122,7 @@ export function Terminal({ device }: { device: string }) {
             <>
               <div className="flex items-center gap-1.5">
                 <Checkbox id="as-root" aria-label="as root" checked={asRoot} onCheckedChange={(v) => setAsRoot(v === true)} />
-                <Label htmlFor="as-root" className="text-xs font-normal text-muted-foreground">
+                <Label htmlFor="as-root" className="text-sm font-medium">
                   as root
                 </Label>
               </div>
@@ -136,7 +137,7 @@ export function Terminal({ device }: { device: string }) {
         {note && <p className="text-sm text-muted-foreground">{note}</p>}
         <div
           ref={box}
-          className="overflow-hidden rounded-lg bg-black"
+          className="overflow-hidden bg-ink"
           style={{ padding: state === "idle" && !note ? 0 : 8, minHeight: state === "idle" && !note ? 0 : 160 }}
         />
       </CardContent>

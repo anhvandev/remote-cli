@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { api, type History as HistoryData, type Resources } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { card, cardHead, title } from "../../styles";
 
 // Raw samples (720 points/hour) only for the short range; longer ranges read the 1-minute rollups.
 const RANGES = { "1h": [1, "5s"], "24h": [24, "1m"], "7d": [24 * 7, "1m"], "90d": [24 * 90, "1m"] } as const;
 type Range = keyof typeof RANGES;
 const MAX_POINTS = 300;
-const COLORS = ["#5b8cff", "#f0a35b", "#5bd08c", "#c4b5fd"];
+const COLORS = ["var(--color-signal)", "var(--color-ink)", "var(--color-ink-3)", "var(--color-amber)"];
 
 const GB = 1 << 30;
 const pct = (p: number) => `${Math.round(p)}%`;
@@ -32,20 +33,20 @@ export async function History({ path, range, ramBytes }: { path: string; range?:
   const span = h.samples.length > 1 ? [clock(h.samples[0].at), clock(h.samples[h.samples.length - 1].at)] : ["", ""];
 
   return (
-    <section className="rounded-xl border border-border bg-card" aria-label="Biểu đồ">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3.5">
-        <h3 className="text-sm font-medium text-muted-foreground">Biểu đồ</h3>
-        <span className="flex items-center gap-3 text-xs text-muted-foreground">
+    <section className={card} aria-label="Biểu đồ">
+      <div className={cardHead}>
+        <h3 className={title}>Biểu đồ</h3>
+        <span className="flex items-center gap-3 text-sm text-muted-foreground">
           {h.resolution === "5s" ? "mẫu 5 giây" : "trung bình mỗi phút"}
-          <span className="flex items-center gap-1 rounded-md border border-border p-0.5">
+          <span className="flex border-2 border-ink">
             {(Object.keys(RANGES) as Range[]).map((k) => (
               <Link
                 key={k}
                 href={`?range=${k}`}
                 aria-current={k === r ? "page" : undefined}
                 className={cn(
-                  "rounded px-2 py-0.5 transition-colors hover:text-foreground",
-                  k === r && "bg-secondary font-medium text-foreground",
+                  "px-3 py-1 font-medium text-foreground transition-colors duration-(--dur-micro) not-first:border-l-2 not-first:border-ink hover:bg-muted focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-ring",
+                  k === r && "bg-ink text-paper hover:bg-ink",
                 )}
               >
                 {k}
@@ -109,9 +110,9 @@ function Chart({ label, series, max, fmt, span }: { label: string; series: Serie
       .filter((p): p is { x: number; y: number } => p !== null);
   return (
     <figure aria-label={label} className="m-0">
-      <figcaption className="mb-1.5 flex items-center justify-between text-xs text-muted-foreground">
+      <figcaption className="mb-1.5 flex items-center justify-between text-sm text-muted-foreground">
         <span>{label}</span>
-        <span className="font-mono">
+        <span className="font-medium">
           {series.map((x, i) => {
             const last = x.values.findLast((v) => v !== undefined);
             return (
@@ -125,7 +126,7 @@ function Chart({ label, series, max, fmt, span }: { label: string; series: Serie
       </figcaption>
       <svg role="img" aria-label={label} viewBox={`0 0 ${W} ${H}`} width="100%" height={H} className="overflow-visible">
         {[0, 1, 2, 3].map((i) => (
-          <line key={i} x1={0} x2={W} y1={(i * H) / 3} y2={(i * H) / 3} stroke="currentColor" strokeOpacity={0.08} strokeWidth={1} />
+          <line key={i} x1={0} x2={W} y1={(i * H) / 3} y2={(i * H) / 3} stroke="currentColor" strokeOpacity={0.15} strokeWidth={1} />
         ))}
         {series.map((x, i) => {
           const pts = points(x.values);
@@ -137,13 +138,13 @@ function Chart({ label, series, max, fmt, span }: { label: string; series: Serie
           return (
             <g key={x.name}>
               <polygon fill={color} fillOpacity={0.12} points={area} />
-              <polyline fill="none" stroke={color} strokeWidth={1.75} strokeLinejoin="round" strokeLinecap="round" points={line} />
-              <circle cx={last.x} cy={last.y} r={2.5} fill={color} />
+              <polyline fill="none" stroke={color} strokeWidth={2} strokeLinejoin="miter" strokeLinecap="square" points={line} />
+              <rect x={last.x - 3} y={last.y - 3} width={6} height={6} fill={color} />
             </g>
           );
         })}
       </svg>
-      <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
+      <div className="mt-1 flex justify-between text-xs text-muted-foreground">
         <span>{span[0]}</span>
         <span>{span[1]}</span>
       </div>

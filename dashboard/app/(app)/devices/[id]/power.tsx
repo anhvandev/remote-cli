@@ -47,7 +47,7 @@ export function PowerButtons(props: { device: string; name: string; status: Devi
             key={a.action}
             size="sm"
             variant={a.action === "shutdown" ? "outline" : "secondary"}
-            className={a.action === "shutdown" ? "text-destructive hover:text-destructive" : undefined}
+            className={a.action === "shutdown" ? "border-destructive text-destructive hover:border-destructive hover:bg-destructive hover:text-destructive-foreground" : undefined}
             disabled={busy || (a.action !== "lock" && blocked)}
             title={a.action !== "lock" ? why : undefined}
             onClick={() => {
@@ -59,7 +59,7 @@ export function PowerButtons(props: { device: string; name: string; status: Devi
           </Button>
         ))}
       {(online && why) || msg ? (
-        <p className="basis-full text-xs text-muted-foreground">
+        <p className="basis-full text-sm text-muted-foreground">
           {msg && !msg.error && <>Đã gửi {msg.label}{msg.detail && ` ${msg.detail}`}.</>}
           {msg?.error && (
             <span role="alert">

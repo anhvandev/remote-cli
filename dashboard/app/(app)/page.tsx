@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { MonitorSmartphone } from "lucide-react";
 import { api, type Device, type DeviceStatus, type ServerSettings } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -34,14 +33,22 @@ export default async function FleetPage({
   return (
     <>
       <Refresh />
-      <h2 className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xl font-semibold tracking-tight">
-        Device
-        <span className="text-sm font-normal text-muted-foreground">
-          · {count("Online")} Online · {count("Offline")} Offline · {count("Waking")} Waking
+      {/* The board's head: the counts are the figures an operator reads first. The hidden " · " keeps the
+          heading's text "6 Online · 5 Offline · 0 Waking", which screen readers and the tests read. */}
+      <h2 className="mb-5 flex max-w-none flex-wrap items-end justify-between gap-x-10 gap-y-4 border-b-2 border-ink pb-4 text-3xl font-extrabold tracking-tight">
+        <span>Device</span>{" "}
+        <span className="flex flex-wrap gap-x-8 gap-y-2 tracking-normal">
+          {(["Online", "Offline", "Waking"] as const).map((s, i) => (
+            <span key={s} className="flex items-baseline gap-2">
+              {i > 0 && <span className="sr-only"> · </span>}
+              <span className={s === "Online" ? "text-primary" : undefined}>{count(s)}</span>{" "}
+              <span className="text-sm font-medium text-muted-foreground">{s}</span>
+            </span>
+          ))}
         </span>
       </h2>
       <FleetFilter />
-      <div className="overflow-hidden rounded-xl border border-border bg-card">
+      <div>
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
@@ -56,12 +63,12 @@ export default async function FleetPage({
             {shown.map((d) => (
               <TableRow key={d.id} className="relative cursor-pointer">
                 <TableCell>
-                  <Link href={`/devices/${d.id}`} className="font-medium after:absolute after:inset-0 after:content-['']">
+                  <Link href={`/devices/${d.id}`} className="font-extrabold after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
                     {d.name}
                   </Link>
-                  <span className="ml-2 font-mono text-xs text-muted-foreground">{d.device_id}</span>
+                  <span className="ml-3 text-xs text-muted-foreground">{d.device_id}</span>
                   {d.revoked_at && (
-                    <Badge variant="outline" className="ml-2 border-warn/40 text-warn">
+                    <Badge className="ml-2 bg-warn text-ink">
                       đã thu hồi
                     </Badge>
                   )}
@@ -72,7 +79,7 @@ export default async function FleetPage({
                 <TableCell className="text-muted-foreground">
                   {d.agent_version ?? "—"}
                   {d.needs_update && (
-                    <Badge variant="outline" className="ml-2 border-warn/40 text-warn">
+                    <Badge className="ml-2 bg-warn text-ink">
                       update needed · {d.agent_version} &lt; {settings.minimum_version}
                     </Badge>
                   )}
@@ -87,8 +94,7 @@ export default async function FleetPage({
           </TableBody>
         </Table>
         {(devices.length === 0 || shown.length === 0) && (
-          <div className="flex flex-col items-center gap-2 px-6 py-14 text-center text-sm text-muted-foreground">
-            <MonitorSmartphone className="size-6 opacity-60" />
+          <div className="flex flex-col items-start gap-2 border-b-2 border-ink px-3 py-10 text-sm text-muted-foreground">
             {devices.length === 0 ? "Chưa có Device nào." : "Không có Device nào khớp."}
           </div>
         )}

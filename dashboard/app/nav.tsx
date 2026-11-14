@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { Server } from "lucide-react";
 import { api, type User } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { signOut } from "./actions";
@@ -8,20 +7,15 @@ import { NavLinks } from "./nav-links";
 export async function Nav() {
   const me = await api<User>("/api/v1/me");
   return (
-    <nav className="flex w-full shrink-0 flex-col border-b border-border bg-card/60 px-3 py-3 md:h-screen md:w-60 md:border-r md:border-b-0 md:px-3 md:py-5 md:sticky md:top-0">
-      <Link href="/" className="mb-6 flex items-center gap-2 px-2 text-[15px] font-semibold tracking-tight">
-        <span className="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground">
-          <Server className="size-4" />
-        </span>
+    <nav className="flex w-full shrink-0 flex-col bg-ink px-3 py-3 text-paper md:sticky md:top-0 md:h-screen md:w-60 md:px-3 md:py-5">
+      <Link href="/" aria-label="Remote CLI, về danh sách Device" className="mb-6 px-2 text-lg font-extrabold tracking-tight">
         Remote CLI
       </Link>
       <NavLinks />
-      <div className="mt-4 flex items-center justify-between gap-2 border-t border-border pt-4 md:flex-col md:items-stretch">
-        <div className="min-w-0 truncate px-2 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">{me.name}</span>
-        </div>
+      <div className="mt-4 flex items-center justify-between gap-2 border-t-2 border-ink-rule pt-4 md:flex-col md:items-stretch">
+        <div className="min-w-0 truncate px-2 text-sm font-medium">{me.name}</div>
         <form action={signOut}>
-          <Button variant="ghost" size="sm" className="w-full justify-start text-muted-foreground md:mt-2">
+          <Button variant="ghost" size="sm" className="w-full justify-start px-2 font-medium text-paper-2 hover:bg-ink-2 hover:text-paper focus-visible:outline-paper md:mt-1">
             Đăng xuất
           </Button>
         </form>
