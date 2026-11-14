@@ -83,6 +83,7 @@ fn element(bus: &Connection, dest: &str, node: &OwnedObjectPath, states: &[u32],
         "menu item" => "menuitem",
         "combo box" => "combobox",
         "page tab" => "tab",
+        "slider" => "slider",
         "label" | "heading" | "static" | "text" => "text",
         "frame" | "window" => "window",
         // GTK message boxes are "alert" and file dialogs "file chooser".
@@ -106,7 +107,7 @@ fn element(bus: &Connection, dest: &str, node: &OwnedObjectPath, states: &[u32],
         return None;
     }
     // A password field's content is never read.
-    let value = if role == "field" && !password { field_value(bus, dest, node) } else { None };
+    let value = if matches!(role, "field" | "slider") && !password { field_value(bus, dest, node) } else { None };
     Some(UiElement {
         role: role.into(),
         text: name.trim().into(),
@@ -121,10 +122,10 @@ fn element(bus: &Connection, dest: &str, node: &OwnedObjectPath, states: &[u32],
     })
 }
 
-/// A field's content from its Text interface, else its numeric Value (spin buttons).
+/// A field's or slider's content from its Text interface, else (none or empty) its numeric Value (spin buttons, sliders).
 fn field_value(bus: &Connection, dest: &str, node: &OwnedObjectPath) -> Option<String> {
     if let Ok(text) = bus.call_method(Some(dest), node, Some("org.a11y.atspi.Text"), "GetText", &(0i32, MAX_VALUE_CHARS)) {
-        if let Ok(text) = text.body().deserialize::<String>() {
+        if let Some(text) = text.body().deserialize::<String>().ok().filter(|t| !t.is_empty()) {
             return Some(text);
         }
     }

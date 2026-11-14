@@ -640,7 +640,8 @@ fn clip(r: RECT, d: &DisplayInfo) -> Option<(u32, u32, u32, u32)> {
 fn role(control_type: UIA_CONTROLTYPE_ID) -> Option<&'static str> {
     Some(match control_type {
         UIA_ButtonControlTypeId | UIA_SplitButtonControlTypeId => "button",
-        UIA_EditControlTypeId | UIA_DocumentControlTypeId => "field",
+        UIA_EditControlTypeId | UIA_DocumentControlTypeId | UIA_SpinnerControlTypeId => "field",
+        UIA_SliderControlTypeId => "slider",
         UIA_HyperlinkControlTypeId => "link",
         UIA_TextControlTypeId => "text",
         UIA_CheckBoxControlTypeId => "checkbox",
@@ -903,6 +904,11 @@ mod tests {
             states(true, false, ToggleState_Indeterminate, ExpandCollapseState_LeafNode, false, legacy),
             ["focused", "selected", "expanded"]
         );
+    }
+
+    #[test]
+    fn sliders_and_spinners_make_marks_that_carry_a_value() {
+        assert_eq!((role(UIA_SliderControlTypeId), role(UIA_SpinnerControlTypeId)), (Some("slider"), Some("field")));
     }
 
     #[test]
