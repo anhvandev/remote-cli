@@ -245,7 +245,20 @@ message WaitCondition {
   oneof condition {
     bool appears = 4;
     bool disappears = 5;
+    // The one matching Mark's value / Mark States; need an accessibility tree. Exactly one field of each is set.
+    ValueCondition value = 6;
+    StateCondition state = 7;
   }
+}
+
+message ValueCondition {
+  optional string equals = 1;
+  optional string contains = 2;
+}
+
+message StateCondition {
+  optional string has = 1;
+  optional string lacks = 2;
 }
 
 enum ObserveMode {

@@ -46,14 +46,17 @@ const ACTION: &str = "An Action: {\"type\":\"move|click|double_click|right_click
 {\"type\":\"type\",\"text\":\"..\",\"secret\":false,\"into\":TARGET?} | {\"type\":\"key\",\"keys\":\"ctrl+c\"} | \
 {\"type\":\"wait\",\"ms\":500,\"until\":UNTIL?}. TARGET = \"x\",\"y\" (image pixels) with optional \"display\" \
 (default 0), or \"mark\":N,\"observation\":ID, or \"text\":\"visible text\". UNTIL = a Wait Condition, as observe's \
-until: {\"appears\":{\"text\":\"Saved\",\"role\":\"button\"?},\"timeout_ms\":5000} or {\"disappears\":{...}}; the wait \
-step lasts until it holds (after ms). On timeout the batch stops there and fails with wait_timeout, its step and the \
+until: {\"appears\":{\"text\":\"Saved\",\"role\":\"button\"?},\"timeout_ms\":5000} or {\"disappears\":{...}}, \
+{\"value\":{...}}, {\"state\":{...}} (see observe's until); the wait step lasts until it holds (after ms). On timeout the batch stops there and fails with wait_timeout, its step and the \
 Observation. All waits and timeouts of one call add up to at most 30000 ms.";
 
 const UNTIL: &str = "Wait Condition: {\"appears\":{\"text\":\"Saved\",\"role\":\"button\"?},\"timeout_ms\":5000} or \
-{\"disappears\":{...}}. Re-reads the Marks (OCR at lock/login screens) until two readings in a row agree, then \
-observes (with observe \"shot\"). Text matches like text targets (case-insensitive, exact or contained). timeout_ms \
-defaults to 5000, at most 30000; on timeout the call fails with wait_timeout.";
+{\"disappears\":{...}}, or on one Mark's value / Mark State: {\"value\":{\"text\":\"Name\",\"role\"?,\"equals\":\"An\"}} \
+(or \"contains\") and {\"state\":{\"text\":\"Remember me\",\"role\"?,\"has\":\"checked\"}} (or \"lacks\":\"disabled\"). \
+Re-reads the Marks (OCR at lock/login screens) until two readings in a row agree, then observes (with observe \
+\"shot\"). Text matches like text targets (case-insensitive, exact before contained); value and state fail at once \
+with no_accessibility_tree when the screen has no tree (OCR) and with ambiguous_text when several Marks match (add \
+role). timeout_ms defaults to 5000, at most 30000; on timeout the call fails with wait_timeout.";
 
 fn tools() -> Vec<Tool> {
     let device = json!({ "type": "string", "description": "Device id or name" });

@@ -41,6 +41,21 @@ async fn a_wait_step_waits_until_its_condition_holds_and_a_timeout_stops_the_bat
     assert_eq!(body["error"]["marks"][0]["text"], "Saved", "{body}");
     assert_eq!(body["error"]["images"][0]["display"], 0, "{body}");
     assert!(!agent.platform.inputs().contains(&Input::Text("late".into())), "a later step ran");
+
+    // A Mark State condition in a wait step: the box gets ticked a little later.
+    let unticked = UiElement { role: "checkbox".into(), text: "Remember me".into(), x: 300, y: 300, width: 300, height: 30, ..Default::default() };
+    agent.platform.update(|s| s.accessibility = Some(vec![unticked]));
+    let p = agent.platform.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        p.update(|s| s.accessibility.as_mut().unwrap()[0].states = vec!["checked".into()]);
+    });
+    let batch = json!({ "marks": true, "actions": [
+        {"type": "wait", "until": {"state": {"text": "remember me", "has": "checked"}}},
+    ]});
+    let (status, obs) = sys.api.post_json(&actions, &batch).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
+    assert_eq!(obs["marks"][0]["states"], json!(["checked"]), "{obs}");
 }
 
 #[tokio::test]

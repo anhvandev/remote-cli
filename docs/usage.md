@@ -165,6 +165,21 @@ target bằng chữ: không phân biệt hoa thường, bằng hoặc chứa. `t
 `wait_timeout`, và trong object `error` vẫn có `images` (cùng `observation`, `marks` nếu xin Marks) của lần đọc cuối.
 Chờ không cần Control Lock.
 
+Cũng chờ được theo value hoặc Mark State của một Mark (Mark tìm theo chữ, thêm `--role` nếu cần):
+
+```bash
+rcli shot demo-pc --until-value "Name" --equals "An"            # value của ô Name đúng bằng "An"
+rcli shot demo-pc --until-value "Status" --contains "xong"      # value chứa "xong"
+rcli shot demo-pc --until-state "Remember me" --has checked     # checkbox đã được tick
+rcli shot demo-pc --until-state "Save" --role button --lacks disabled   # nút Save đã bật
+```
+
+API: `"until": {"value": {"text": "Name", "role": "field", "equals": "An"}}` (hoặc `"contains"`), và
+`"until": {"state": {"text": "Remember me", "has": "checked"}}` (hoặc `"lacks"`), cùng `timeout_ms` như trên. So value thì phân
+biệt hoa thường. Hai điều kiện này cần accessibility tree: màn chỉ đọc được bằng OCR (màn khoá, màn đăng nhập) thì lỗi
+ngay `no_accessibility_tree`. Chữ khớp nhiều Mark thì lỗi ngay `ambiguous_text` kèm danh sách Mark khớp; thêm `role` để
+chỉ còn một.
+
 **Điều khiển** cần giữ Control Lock:
 
 ```bash
@@ -213,6 +228,7 @@ Bước nào lỗi thì batch dừng và báo `step` (đếm từ 0). Tổng th�
 - `stale_mark`: số Mark từ Observation cũ, chụp lại với `--marks`.
 - `ambiguous_text` / `text_not_found`: chữ khớp nhiều chỗ hoặc không khớp chỗ nào.
 - `wait_timeout`: Wait Condition không thoả trong `timeout_ms`; lỗi kèm Observation của lần đọc cuối.
+- `no_accessibility_tree`: Wait Condition theo value hoặc Mark State trên màn không có accessibility tree (chỉ có OCR).
 - `agent_too_old`: Agent của Device cũ hơn 0.4.0, chưa hiểu Wait Condition (sẽ bỏ qua `until`). Nâng Agent rồi thử lại.
 
 **Control Lock** tự hết sau 10 phút không có Action (mọi request của người giữ, kể cả chỉ chụp, đều gia hạn). `rcli mcp` và Dashboard còn được nhả sau 60 s nếu mất kết nối; CLI thường thì không. Admin: `rcli lock force-release demo-pc` (có ghi audit).

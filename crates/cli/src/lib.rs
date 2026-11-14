@@ -345,15 +345,34 @@ enum ActCommand {
     },
 }
 
-/// A Wait Condition from flags: `--until-appears T` or `--until-disappears T`, optionally `--role`, `--timeout-ms`.
+/// A Wait Condition from flags: `--until-appears|--until-disappears|--until-value|--until-state T`, optionally
+/// `--role`, `--timeout-ms`.
 #[derive(clap::Args)]
 struct Until {
     /// Wait Condition: until this text is on screen (fails with wait_timeout otherwise).
-    #[arg(long, conflicts_with = "until_disappears")]
+    #[arg(long, group = "until")]
     until_appears: Option<String>,
     /// Wait Condition: until this text is gone from the screen.
-    #[arg(long)]
+    #[arg(long, group = "until")]
     until_disappears: Option<String>,
+    /// Wait Condition: until the value of the Mark with this text matches --equals or --contains.
+    #[arg(long, group = "until")]
+    until_value: Option<String>,
+    /// Wait Condition: until the Mark with this text matches --has or --lacks.
+    #[arg(long, group = "until")]
+    until_state: Option<String>,
+    /// With --until-value: the whole value.
+    #[arg(long, requires = "until_value", conflicts_with = "contains")]
+    equals: Option<String>,
+    /// With --until-value: part of the value.
+    #[arg(long, requires = "until_value")]
+    contains: Option<String>,
+    /// With --until-state: a Mark State the Mark must have (e.g. checked).
+    #[arg(long, requires = "until_state", conflicts_with = "lacks")]
+    has: Option<String>,
+    /// With --until-state: a Mark State the Mark must lack (e.g. disabled).
+    #[arg(long, requires = "until_state")]
+    lacks: Option<String>,
     /// Wait Condition: only Marks with this role count.
     #[arg(long)]
     role: Option<String>,
@@ -365,12 +384,15 @@ struct Until {
 impl Until {
     /// The API `until` object, or None without --until-*.
     fn json(self) -> Option<Value> {
-        let (condition, text) = match (self.until_appears, self.until_disappears) {
-            (Some(text), _) => ("appears", text),
-            (_, Some(text)) => ("disappears", text),
+        let role = self.role;
+        let (condition, target) = match (self.until_appears, self.until_disappears, self.until_value, self.until_state) {
+            (Some(text), ..) => ("appears", json!({ "text": text, "role": role })),
+            (_, Some(text), ..) => ("disappears", json!({ "text": text, "role": role })),
+            (_, _, Some(text), _) => ("value", json!({ "text": text, "role": role, "equals": self.equals, "contains": self.contains })),
+            (.., Some(text)) => ("state", json!({ "text": text, "role": role, "has": self.has, "lacks": self.lacks })),
             _ => return None,
         };
-        Some(json!({ condition: { "text": text, "role": self.role }, "timeout_ms": self.timeout_ms }))
+        Some(json!({ condition: target, "timeout_ms": self.timeout_ms }))
     }
 }
 

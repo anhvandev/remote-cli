@@ -256,21 +256,32 @@ impl Executor {
 /// Re-detects Marks on `displays` (each reading settles the screen, so about every 100 ms) until two readings in
 /// a row meet `until`; false when its timeout passed first.
 fn wait_until(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Result<bool, Error> {
-    let appears = match until.condition {
-        Some(Condition::Appears(_)) => true,
-        Some(Condition::Disappears(_)) => false,
-        None => return Err(error("invalid_action", "Wait Condition without a condition")),
+    let condition = until.condition.as_ref().ok_or_else(|| error("invalid_action", "Wait Condition without a condition"))?;
+    let on_mark = match condition {
+        Condition::Value(v) if v.equals.is_some() == v.contains.is_some() => {
+            return Err(error("invalid_action", "a value Wait Condition needs exactly one of equals or contains"))
+        }
+        Condition::State(s) if s.has.is_some() == s.lacks.is_some() => {
+            return Err(error("invalid_action", "a state Wait Condition needs exactly one of has or lacks"))
+        }
+        Condition::Value(_) | Condition::State(_) => true,
+        Condition::Appears(_) | Condition::Disappears(_) => false,
     };
+    // OCR Marks never carry values or Mark States, so such a wait could never be met.
+    for &d in displays.iter().filter(|_| on_mark) {
+        if p.accessibility(d).map_err(|e| error("platform", e))?.is_none() {
+            return Err(error("no_accessibility_tree", "the screen has no accessibility tree, so no values or Mark States"));
+        }
+    }
     let deadline = Instant::now() + Duration::from_millis(until.timeout_ms.into());
     let mut met_before = false;
     loop {
-        let mut found = false;
+        let mut all = vec![];
         for &d in displays {
             let frame = observer::settle(p, d).map_err(|e| error("platform", e))?;
-            let marks = marks::detect(p, d, &frame, 1).map_err(|e| error("platform", e))?;
-            found |= marks::present(&marks, &until.text, until.role.as_deref());
+            all.extend(marks::detect(p, d, &frame, 1).map_err(|e| error("platform", e))?);
         }
-        let met = found == appears;
+        let met = met(condition, &all, &until.text, until.role.as_deref())?;
         if met && met_before {
             return Ok(true);
         }
@@ -285,6 +296,32 @@ fn wait_until(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Resu
 fn wait_for(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Result<Option<Error>, Error> {
     let timeout = || error("wait_timeout", format!("Wait Condition on {:?} not met within {} ms", until.text, until.timeout_ms));
     Ok((!wait_until(p, displays, until)?).then(timeout))
+}
+
+/// Whether one reading's Marks meet `condition` about the Marks matching `text` (and `role`). A value or Mark State
+/// is read from the one Mark matching as a text target would; `ambiguous_text` when several do.
+fn met(condition: &Condition, all: &[Mark], text: &str, role: Option<&str>) -> Result<bool, Error> {
+    let one = || {
+        let candidates: Vec<Mark> = all.iter().filter(|m| role.is_none_or(|r| m.role == r)).cloned().collect();
+        match marks::by_text(&candidates, text) {
+            Ok(m) => Ok(Some(m.clone())),
+            Err(e) if e.code == "text_not_found" => Ok(None),
+            Err(e) => Err(e),
+        }
+    };
+    Ok(match condition {
+        Condition::Appears(_) => marks::present(all, text, role),
+        Condition::Disappears(_) => !marks::present(all, text, role),
+        Condition::Value(v) => one()?.is_some_and(|m| match (&v.equals, &v.contains) {
+            (Some(want), _) => m.value == *want,
+            (_, part) => m.value.contains(part.as_deref().unwrap_or_default()),
+        }),
+        // A Mark not on screen neither has nor lacks a state.
+        Condition::State(s) => one()?.is_some_and(|m| match (&s.has, &s.lacks) {
+            (Some(state), _) => m.states.contains(state),
+            (_, state) => !m.states.iter().any(|s| Some(s) == state.as_ref()),
+        }),
+    })
 }
 
 fn find(displays: &[DisplayInfo], index: u32) -> Result<&DisplayInfo, Error> {
