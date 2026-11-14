@@ -5233,7 +5233,7 @@ dependencies = [
 
 [[package]]
 name = "rcli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5261,7 +5261,7 @@ dependencies = [
 
 [[package]]
 name = "rcli-agent"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -5304,7 +5304,7 @@ dependencies = [
 
 [[package]]
 name = "rcli-protocol"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -5321,7 +5321,7 @@ dependencies = [
 
 [[package]]
 name = "rcli-server"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -5352,7 +5352,7 @@ dependencies = [
 
 [[package]]
 name = "rcli-testkit"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "axum",
