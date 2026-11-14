@@ -140,6 +140,14 @@ rcli shot demo-pc --marks                       # đánh số Marks lên ảnh +
 
 Ảnh không đổi so với lần trước thì nhận `unchanged` thay vì gửi lại.
 
+Mỗi Mark có `number`, `text` (nhãn), `role`, `display` và khung. Container (`window`, `dialog`, `menu`, `list`) cũng là Mark: có số, được vẽ lên ảnh và nhắm được theo số hoặc chữ. Thêm ba field, bỏ trống thì không có trong JSON:
+
+- `states`: các Mark State khác mặc định, trong `disabled`, `focused`, `checked`, `selected`, `expanded`, `collapsed`.
+- `value`: nội dung (chữ trong ô, giá trị slider), tách khỏi nhãn `text`. Ô mật khẩu không bao giờ có `value`. Nhắm theo chữ chỉ khớp `text`.
+- `parent`: số của Mark container gần nhất chứa nó, để phân biệt hai nút "OK" ở hai dialog.
+
+Bảng Mark của CLI có thêm cột `PARENT`, `STATES`, `VALUE` (value dài bị cắt, `--json` có đủ). Mark từ OCR (màn khoá, không có cây accessibility) không có ba field này.
+
 **Wait Condition**: chờ tới khi một chữ hiện ra hoặc biến mất rồi mới chụp, thay vì đoán thời gian chờ:
 
 ```bash

@@ -369,7 +369,19 @@ fn observation(result: proto::ActResult) -> Value {
         reply["marks"] = result
             .marks
             .iter()
-            .map(|m| json!({ "number": m.number, "text": m.text, "role": m.role, "display": m.display, "x": m.x, "y": m.y, "width": m.width, "height": m.height }))
+            .map(|m| {
+                let mut v = json!({ "number": m.number, "text": m.text, "role": m.role, "display": m.display, "x": m.x, "y": m.y, "width": m.width, "height": m.height });
+                if !m.states.is_empty() {
+                    v["states"] = json!(m.states);
+                }
+                if !m.value.is_empty() {
+                    v["value"] = json!(m.value);
+                }
+                if let Some(parent) = m.parent {
+                    v["parent"] = json!(parent);
+                }
+                v
+            })
             .collect();
     }
     if let Some(clip) = clip {

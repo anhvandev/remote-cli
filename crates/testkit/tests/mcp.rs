@@ -42,7 +42,7 @@ fn text(r: &CallToolResult) -> String {
 async fn an_agent_lists_devices_takes_the_lock_acts_and_observes_with_marks() {
     let sys = TestSystem::start().await;
     let p = FakePlatform::new("lab-pc");
-    p.update(|s| s.accessibility = Some(vec![UiElement { role: "button".into(), text: "OK".into(), x: 300, y: 600, width: 150, height: 60 }]));
+    p.update(|s| s.accessibility = Some(vec![UiElement { role: "button".into(), text: "OK".into(), x: 300, y: 600, width: 150, height: 60, ..Default::default() }]));
     let agent = sys.start_agent_on(p.clone()).await;
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;

@@ -15,18 +15,50 @@ pub fn detect(p: &dyn Platform, display: u32, frame: &Frame, first: u32) -> anyh
         Some(tree) => tree,
         None => p.recognize_text(frame)?,
     };
+    // Element index -> Mark number; elements without a box make no Mark.
+    let mut numbers = vec![None; elements.len()];
+    let mut next = first;
+    for (i, e) in elements.iter().enumerate() {
+        if e.width > 0 && e.height > 0 {
+            numbers[i] = Some(next);
+            next += 1;
+        }
+    }
+    // The nearest container above that made a Mark (bounded, in case an adapter reports a cycle).
+    let parent = |mut i: usize| {
+        for _ in 0..elements.len() {
+            i = elements.get(i)?.parent?;
+            if let Some(n) = numbers.get(i).copied().flatten() {
+                return Some(n);
+            }
+        }
+        None
+    };
+    let parents: Vec<Option<u32>> = (0..elements.len()).map(parent).collect();
     Ok(elements
         .into_iter()
-        .filter(|e| e.width > 0 && e.height > 0)
-        .zip(first..)
-        .map(|(e, number)| to_mark(frame, display, number, e))
+        .zip(numbers.into_iter().zip(parents))
+        .filter_map(|(e, (number, parent))| Some(to_mark(frame, display, number?, parent, e)))
         .collect())
 }
 
-fn to_mark(frame: &Frame, display: u32, number: u32, e: UiElement) -> Mark {
+fn to_mark(frame: &Frame, display: u32, number: u32, parent: Option<u32>, e: UiElement) -> Mark {
     let (x, y) = coords::to_image(frame.width, frame.height, e.x, e.y);
     let (x2, y2) = coords::to_image(frame.width, frame.height, e.x + e.width, e.y + e.height);
-    Mark { number, text: e.text, role: e.role, display, x, y, width: (x2 - x).max(1), height: (y2 - y).max(1) }
+    let value = if e.password { String::new() } else { e.value.unwrap_or_default() };
+    Mark {
+        number,
+        text: e.text,
+        role: e.role,
+        display,
+        x,
+        y,
+        width: (x2 - x).max(1),
+        height: (y2 - y).max(1),
+        states: e.states,
+        value,
+        parent,
+    }
 }
 
 /// The one Mark whose text is `text` (case-insensitive); if none is equal, the one that contains it.

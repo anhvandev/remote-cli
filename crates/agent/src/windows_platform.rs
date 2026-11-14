@@ -195,7 +195,7 @@ impl Platform for WindowsPlatform {
                     continue;
                 }
                 if let Some((x, y, width, height)) = clip(e.CachedBoundingRectangle()?, &d) {
-                    elements.push(UiElement { role: role.into(), text, x, y, width, height });
+                    elements.push(UiElement { role: role.into(), text, x, y, width, height, ..Default::default() });
                 }
             }
             Ok(Some(elements))
@@ -233,7 +233,7 @@ impl Platform for WindowsPlatform {
                 let px = |v: f32| (v * scale).round() as u32;
                 let (x, y) = (px(x1), px(y1));
                 let text = line.Text()?.to_string();
-                lines.push(UiElement { role: "text".into(), text, x, y, width: px(x2) - x, height: px(y2) - y });
+                lines.push(UiElement { role: "text".into(), text, x, y, width: px(x2) - x, height: px(y2) - y, ..Default::default() });
             }
         }
         Ok(lines)
