@@ -20,7 +20,7 @@ use webrtc::{
     },
 };
 
-use crate::{path_segment, Api};
+use crate::{path_segment, Api, ApiFailure};
 
 /// Longer than this to connect and the Server relays the media instead.
 const CONNECT_WITHIN: Duration = Duration::from_secs(5);
@@ -164,6 +164,10 @@ impl Api {
             if let Err(e) = media.fill(obs).await {
                 result = Err(e);
             }
+        }
+        // A timed-out wait's Observation rides in the error; a lost blob there just stays a `p2p` reference.
+        if let Some(failure) = result.as_mut().err().and_then(|e| e.downcast_mut::<ApiFailure>()) {
+            let _ = media.fill(&mut failure.body["error"]).await;
         }
         media.close().await;
         result

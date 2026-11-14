@@ -37,8 +37,16 @@ What a Device reports back after an Action or Action Batch so the Controller can
 _Avoid_: result, feedback, screenshot (when meaning the general concept)
 
 **Mark**:
-A numbered on-screen element (button, field, text) the Agent detects and labels in an Observation, so a Controller can target it by number or text instead of raw coordinates.
+A numbered on-screen element (button, field, text) or container (window, dialog, menu, list) the Agent detects and labels in an Observation, so a Controller can target it by number or text instead of raw coordinates. Each Mark carries its Mark States, its value (never for a password field) and the container it sits in.
 _Avoid_: element id, hotspot, target
+
+**Mark State**:
+A condition a Mark is in that differs from the default: disabled, focused, checked, selected, expanded or collapsed.
+_Avoid_: state (alone, it clashes with Device Status), flags, status
+
+**Wait Condition**:
+Something a Controller asks the Agent to wait for on screen before returning an Observation: text or a Mark appearing or disappearing, a Mark's value, or a Mark State.
+_Avoid_: assertion, expectation, verify, wait_for
 
 **Wake Relay**:
 An online Agent on the same LAN as an offline Device that sends the Wake-on-LAN packet on the Server's behalf.

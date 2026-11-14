@@ -144,6 +144,8 @@ enum Command {
         /// Number the detected Marks on the images and print the Mark table.
         #[arg(long)]
         marks: bool,
+        #[command(flatten)]
+        until: Until,
         /// Directory to save images in.
         #[arg(long, default_value = ".")]
         out: PathBuf,
@@ -334,6 +336,64 @@ enum ActCommand {
     },
     /// Press a key combination, e.g. ctrl+shift+t.
     Key { keys: String },
+    /// Wait this many milliseconds, then (with --until-*) until a Wait Condition holds.
+    Wait {
+        #[arg(long, default_value_t = 0)]
+        ms: u32,
+        #[command(flatten)]
+        until: Until,
+    },
+}
+
+/// A Wait Condition from flags: `--until-appears|--until-disappears|--until-value|--until-state T`, optionally
+/// `--role`, `--timeout-ms`.
+#[derive(clap::Args)]
+struct Until {
+    /// Wait Condition: until this text is on screen (fails with wait_timeout otherwise).
+    #[arg(long, group = "until")]
+    until_appears: Option<String>,
+    /// Wait Condition: until this text is gone from the screen.
+    #[arg(long, group = "until")]
+    until_disappears: Option<String>,
+    /// Wait Condition: until the value of the Mark with this text matches --equals or --contains.
+    #[arg(long, group = "until")]
+    until_value: Option<String>,
+    /// Wait Condition: until the Mark with this text matches --has or --lacks.
+    #[arg(long, group = "until")]
+    until_state: Option<String>,
+    /// With --until-value: the whole value.
+    #[arg(long, requires = "until_value", conflicts_with = "contains")]
+    equals: Option<String>,
+    /// With --until-value: part of the value.
+    #[arg(long, requires = "until_value")]
+    contains: Option<String>,
+    /// With --until-state: a Mark State the Mark must have (e.g. checked).
+    #[arg(long, requires = "until_state", conflicts_with = "lacks")]
+    has: Option<String>,
+    /// With --until-state: a Mark State the Mark must lack (e.g. disabled).
+    #[arg(long, requires = "until_state")]
+    lacks: Option<String>,
+    /// Wait Condition: only Marks with this role count.
+    #[arg(long)]
+    role: Option<String>,
+    /// Wait Condition: give up after this many milliseconds (default 5000, at most 30000).
+    #[arg(long)]
+    timeout_ms: Option<u32>,
+}
+
+impl Until {
+    /// The API `until` object, or None without --until-*.
+    fn json(self) -> Option<Value> {
+        let role = self.role;
+        let (condition, target) = match (self.until_appears, self.until_disappears, self.until_value, self.until_state) {
+            (Some(text), ..) => ("appears", json!({ "text": text, "role": role })),
+            (_, Some(text), ..) => ("disappears", json!({ "text": text, "role": role })),
+            (_, _, Some(text), _) => ("value", json!({ "text": text, "role": role, "equals": self.equals, "contains": self.contains })),
+            (.., Some(text)) => ("state", json!({ "text": text, "role": role, "has": self.has, "lacks": self.lacks })),
+            _ => return None,
+        };
+        Some(json!({ condition: target, "timeout_ms": self.timeout_ms }))
+    }
 }
 
 /// Server administration, which a password connection can never do (ADR 0004): these need a User session.
@@ -394,6 +454,7 @@ impl ActCommand {
             }
             ActCommand::Type { text, secret } => json!({ "type": "type", "text": text, "secret": secret }),
             ActCommand::Key { keys } => json!({ "type": "key", "keys": keys }),
+            ActCommand::Wait { ms, until } => json!({ "type": "wait", "ms": ms, "until": until.json() }),
         }
     }
 }
@@ -435,10 +496,24 @@ fn save_observation(obs: &Value, out: &Path, frames: bool) -> anyhow::Result<Str
         text += &format!("{label}: {}x{} {}\n", i["width"], i["height"], path.display());
     }
     if let Some(marks) = obs["marks"].as_array() {
-        text += &format!("observation {}\n{:<4}  {:<7}  {:<12}  {:<19}  {}\n", obs["observation"], "MARK", "DISPLAY", "ROLE", "BOX", "TEXT");
+        text += &format!(
+            "observation {}\n{:<4}  {:<7}  {:<12}  {:<19}  {:<6}  {:<17}  {:<20}  {}\n",
+            obs["observation"], "MARK", "DISPLAY", "ROLE", "BOX", "PARENT", "STATES", "VALUE", "TEXT"
+        );
         for m in marks {
             let bbox = format!("{},{} {}x{}", m["x"], m["y"], m["width"], m["height"]);
-            text += &format!("{:<4}  {:<7}  {:<12}  {bbox:<19}  {}\n", m["number"].to_string(), m["display"].to_string(), str_of(&m["role"]), str_of(&m["text"]));
+            let parent = m["parent"].as_u64().map(|p| p.to_string()).unwrap_or_default();
+            let states = m["states"].as_array().into_iter().flatten().map(str_of).collect::<Vec<_>>().join(",");
+            let value = str_of(&m["value"]);
+            // The full value is in --json.
+            let value = if value.chars().count() > 20 { value.chars().take(19).collect::<String>() + "…" } else { value.to_owned() };
+            text += &format!(
+                "{:<4}  {:<7}  {:<12}  {bbox:<19}  {parent:<6}  {states:<17}  {value:<20}  {}\n",
+                m["number"].to_string(),
+                m["display"].to_string(),
+                str_of(&m["role"]),
+                str_of(&m["text"])
+            );
         }
     }
     if text.is_empty() {
@@ -952,8 +1027,8 @@ where
             }
             (displays, text)
         }
-        Command::Shot { device, display, marks, out } => {
-            let body = json!({ "actions": [], "display": display_sel(display)?, "marks": marks });
+        Command::Shot { device, display, marks, until, out } => {
+            let body = json!({ "actions": [], "display": display_sel(display)?, "marks": marks, "until": until.json() });
             let obs = api.observe(&device, &body).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
             (obs, text)
@@ -1235,6 +1310,21 @@ fn prompt_line(prompt: &str) -> anyhow::Result<String> {
     Ok(line.trim().to_owned())
 }
 
+/// An API error response: its code and message as text, and its JSON body (a timed-out wait's carries the Observation).
+#[derive(Debug)]
+pub(crate) struct ApiFailure {
+    message: String,
+    pub(crate) body: Value,
+}
+
+impl std::fmt::Display for ApiFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiFailure {}
+
 /// Controller API client (base URL + how to authenticate).
 #[derive(Clone)]
 pub struct Api {
@@ -1315,7 +1405,8 @@ impl Api {
             let body: Value = resp.json().await.unwrap_or(Value::Null);
             let e = &body["error"];
             let step = e["step"].as_u64().map(|s| format!(" (step {s})")).unwrap_or_default();
-            anyhow::bail!("{} ({}): {}{step}", str_of(&e["code"]), status, str_of(&e["message"]));
+            let message = format!("{} ({}): {}{step}", str_of(&e["code"]), status, str_of(&e["message"]));
+            return Err(ApiFailure { message, body }.into());
         }
         Ok(resp)
     }

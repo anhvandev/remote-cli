@@ -68,14 +68,30 @@ pub struct Frame {
 }
 
 /// An on-screen element a Mark is made from. Box in real pixels of its display.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct UiElement {
     pub role: String,
+    /// Label or name only; the content is `value`.
     pub text: String,
     pub x: u32,
     pub y: u32,
     pub width: u32,
     pub height: u32,
+    /// Mark States that differ from the default: disabled, focused, checked, selected, expanded, collapsed.
+    pub states: Vec<String>,
+    pub value: Option<String>,
+    /// A password field: its `value` is never reported, whatever the adapter put there.
+    pub password: bool,
+    /// Index in the same list of the nearest container (window, dialog, menu, list) above this element.
+    pub parent: Option<usize>,
+}
+
+impl UiElement {
+    /// Whether other elements sit in it: a window, dialog, menu or list.
+    pub fn is_container(&self) -> bool {
+        matches!(self.role.as_str(), "window" | "dialog" | "menu" | "list")
+    }
 }
 
 /// One input primitive. The Executor builds clicks, drags and key combinations from these.
@@ -169,7 +185,8 @@ pub struct FakeState {
     animate: Duration,
     animating_until: Option<Instant>,
     captures: u64,
-    version: String,
+    /// The Agent version reported (defaults to this build's); set it before start for an older Agent.
+    pub version: String,
     installed: Vec<String>,
     control_indicator: bool,
     pub inventory: Inventory,

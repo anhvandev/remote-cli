@@ -403,7 +403,7 @@ fn ocr_lines(tsv: &str) -> Vec<UiElement> {
         if level != "5" || text.trim().is_empty() || conf.parse::<f32>().unwrap_or(-1.0) < 0.0 {
             continue;
         }
-        let word = UiElement { role: "text".into(), text: text.trim().into(), x: num(x), y: num(y), width: num(w), height: num(h) };
+        let word = UiElement { role: "text".into(), text: text.trim().into(), x: num(x), y: num(y), width: num(w), height: num(h), ..Default::default() };
         match lines.last_mut() {
             Some((key, l)) if *key == (block, par, line) => {
                 let (x2, y2) = ((l.x + l.width).max(word.x + word.width), (l.y + l.height).max(word.y + word.height));
@@ -457,7 +457,7 @@ mod tests {
                    5\t1\t1\t1\t1\t1\t10\t22\t40\t12\t96.5\tSign\n\
                    5\t1\t1\t1\t1\t2\t60\t20\t50\t15\t91\tin\n\
                    5\t1\t2\t1\t1\t1\t5\t80\t30\t10\t88\tHelp\n";
-        let el = |text: &str, x, y, width, height| UiElement { role: "text".into(), text: text.into(), x, y, width, height };
+        let el = |text: &str, x, y, width, height| UiElement { role: "text".into(), text: text.into(), x, y, width, height, ..Default::default() };
         assert_eq!(ocr_lines(tsv), vec![el("Sign in", 10, 20, 100, 15), el("Help", 5, 80, 30, 10)]);
     }
 }

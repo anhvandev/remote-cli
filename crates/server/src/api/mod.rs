@@ -126,6 +126,10 @@ pub fn agent_error(e: rcli_protocol::agent::Error) -> ApiError {
         "text_not_found" => (StatusCode::BAD_REQUEST, "text_not_found"),
         "invalid_offer" => (StatusCode::BAD_REQUEST, "invalid_offer"),
         "no_display" => (StatusCode::CONFLICT, "no_display"),
+        // A value or Mark State Wait Condition on a screen read by OCR (lock or login screen).
+        "no_accessibility_tree" => (StatusCode::CONFLICT, "no_accessibility_tree"),
+        // A Wait Condition did not hold in time; the reply still carries the Observation.
+        "wait_timeout" => (StatusCode::GATEWAY_TIMEOUT, "wait_timeout"),
         // The Device's root setting refused, or asked and nobody answered.
         "root_denied" => (StatusCode::FORBIDDEN, "root_denied"),
         // `password+accept` refused this Controller (rejected, timed out, or no session to ask in).

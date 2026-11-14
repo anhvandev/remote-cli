@@ -232,6 +232,33 @@ message ActRequest {
   // Open media channel (LiveOffer with `media`) of this Controller: large image/clip bytes go over it, not here.
   string media_session = 26;
   reserved 27; // was unlock: typed a stored unlock password (ADR 0005)
+  // After the Actions, re-detect Marks until this holds, then observe; error "wait_timeout" (with the
+  // Observation) when it did not hold within its timeout.
+  WaitCondition until = 11;
+}
+
+// Something to wait for on screen, about the Marks whose text matches `text` (as text targets do) and, if set, `role`.
+message WaitCondition {
+  string text = 1;
+  optional string role = 2;
+  uint32 timeout_ms = 3;
+  oneof condition {
+    bool appears = 4;
+    bool disappears = 5;
+    // The one matching Mark's value / Mark States; need an accessibility tree. Exactly one field of each is set.
+    ValueCondition value = 6;
+    StateCondition state = 7;
+  }
+}
+
+message ValueCondition {
+  optional string equals = 1;
+  optional string contains = 2;
+}
+
+message StateCondition {
+  optional string has = 1;
+  optional string lacks = 2;
 }
 
 enum ObserveMode {
@@ -270,6 +297,8 @@ message Action {
     string key = 8;
     // Action Batch: pause this long before the next Action.
     uint32 wait_ms = 80;
+    // Action Batch: re-detect Marks until this holds; error "wait_timeout" (with the Observation) otherwise.
+    WaitCondition wait_until = 81;
   }
 }
 
@@ -320,6 +349,12 @@ message Mark {
   uint32 y = 6;
   uint32 width = 7;
   uint32 height = 8;
+  // Mark States that differ from the default: disabled, focused, checked, selected, expanded, collapsed.
+  repeated string states = 9;
+  // Content, apart from the label `text`; empty when none or a password field.
+  string value = 10;
+  // Number of the nearest container Mark (window, dialog, menu, list) this one sits in.
+  optional uint32 parent = 11;
 }
 
 message Image {

@@ -2,10 +2,12 @@
 
 use std::{
     sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use rcli_protocol::agent::{action::Kind, Action, ActRequest, ActResult, Clip, Error, Mark, ObserveMode, Point};
+use rcli_protocol::agent::{
+    action::Kind, wait_condition::Condition, Action, ActRequest, ActResult, Clip, Error, Mark, ObserveMode, Point, WaitCondition,
+};
 
 use crate::{
     clip, coords, marks,
@@ -52,40 +54,58 @@ impl Executor {
         if let Some(f) = frames.as_mut() {
             f.record(p, Duration::ZERO).map_err(|e| error("platform", e))?;
         }
-        self.run_actions(p, &displays, req, frames.as_mut(), failed_step)?;
-        if req.observe() == ObserveMode::None {
+        // A timed-out wait (a batch step or `until`) still returns the Observation, with the error.
+        let mut timeout = match self.run_actions(p, &displays, req, frames.as_mut(), failed_step) {
+            Err(e) if e.code == "wait_timeout" => Some(e),
+            ran => ran.map(|()| None)?,
+        };
+        if req.observe() == ObserveMode::None && timeout.is_none() {
             return Ok(ActResult::default());
         }
-        let wanted: Vec<u32> = match (req.all_displays, req.display) {
-            (true, _) => displays.iter().map(|d| d.index).collect(),
-            (false, Some(d)) => vec![find(&displays, d)?.index],
-            (false, None) => vec![self.last_display.or(displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0)],
-        };
+        let wanted = self.observed(&displays, req)?;
         if let Some(f) = frames {
             let images = self.observer.frames(p, f, &wanted, &req.controller).map_err(|e| error("platform", e))?;
-            return Ok(ActResult { images, ..Default::default() });
+            return Ok(ActResult { images, error: timeout, ..Default::default() });
+        }
+        if let (None, Some(u)) = (&timeout, &req.until) {
+            timeout = wait_until(p, &wanted, u)?;
         }
         let (images, marks) = self.observer.shot(p, &wanted, &req.controller, req.marks).map_err(|e| error("platform", e))?;
         if !req.marks {
-            return Ok(ActResult { images, ..Default::default() });
+            return Ok(ActResult { images, error: timeout, ..Default::default() });
         }
         self.last_observation += 1;
         *self.marks.entry(&req.controller) = (self.last_observation, marks.clone());
-        Ok(ActResult { images, observation: self.last_observation, marks, ..Default::default() })
+        Ok(ActResult { images, observation: self.last_observation, marks, error: timeout, ..Default::default() })
+    }
+
+    /// The displays to observe: all, the requested one, else the one last acted on, else the primary one.
+    fn observed(&self, displays: &[DisplayInfo], req: &ActRequest) -> Result<Vec<u32>, Error> {
+        Ok(match (req.all_displays, req.display) {
+            (true, _) => displays.iter().map(|d| d.index).collect(),
+            (false, Some(d)) => vec![find(displays, d)?.index],
+            (false, None) => vec![self.last_display.or(displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0)],
+        })
     }
 
     /// One Action of a batch: its inputs, then its wait (recording frames meanwhile if asked).
     fn step(
         &mut self,
         p: &dyn Platform,
-        controller: &str,
+        req: &ActRequest,
         displays: &[DisplayInfo],
         frames: Option<&mut Frames>,
         action: &Action,
     ) -> Result<(), Error> {
         let kind = action.kind.as_ref().ok_or_else(|| error("invalid_action", "empty action"))?;
-        for input in self.inputs(p, controller, displays, kind)? {
+        for input in self.inputs(p, &req.controller, displays, kind)? {
             p.input(input).map_err(|e| error("platform", e))?;
+        }
+        // A Wait Condition step watches the displays an Observation would show.
+        if let Kind::WaitUntil(u) = kind {
+            if let Some(timeout) = wait_until(p, &self.observed(displays, req)?, u)? {
+                return Err(timeout);
+            }
         }
         let wait = match kind {
             Kind::WaitMs(ms) => Duration::from_millis((*ms).into()),
@@ -110,7 +130,7 @@ impl Executor {
         failed_step: &mut Option<u32>,
     ) -> Result<(), Error> {
         for (i, action) in req.actions.iter().enumerate() {
-            if let Err(e) = self.step(p, &req.controller, displays, frames.as_deref_mut(), action) {
+            if let Err(e) = self.step(p, req, displays, frames.as_deref_mut(), action) {
                 *failed_step = Some(i as u32);
                 return Err(e);
             }
@@ -133,10 +153,12 @@ impl Executor {
             Kind::Move(pt) | Kind::Click(pt) | Kind::DoubleClick(pt) | Kind::RightClick(pt) => Some(pt.display),
             Kind::Drag(d) => d.from.as_ref().map(|pt| pt.display),
             Kind::Scroll(s) => s.at.as_ref().map(|pt| pt.display),
-            Kind::TypeText(_) | Kind::Key(_) | Kind::WaitMs(_) => None,
+            Kind::TypeText(_) | Kind::Key(_) | Kind::WaitMs(_) | Kind::WaitUntil(_) => None,
         });
-        let default = || self.last_display.or(displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0);
-        let display = find(displays, req.display.or(first_acted).unwrap_or_else(default))?.index;
+        let display = match first_acted.filter(|_| req.display.is_none()) {
+            Some(d) => find(displays, d)?.index,
+            None => self.observed(displays, req)?[0],
+        };
         let done = AtomicBool::new(false);
         std::thread::scope(|s| {
             let recorder = s.spawn(|| clip::record(p, display, &done));
@@ -184,7 +206,7 @@ impl Executor {
                 inputs.extend(modifiers.iter().rev().map(|m| Input::KeyUp(m.to_string())));
                 inputs
             }
-            Kind::WaitMs(_) => vec![],
+            Kind::WaitMs(_) | Kind::WaitUntil(_) => vec![],
         })
     }
 
@@ -231,6 +253,70 @@ impl Executor {
         let (x, y) = marks::center(&mark);
         Ok(Point { display: mark.display, x, y, ..Default::default() })
     }
+}
+
+/// Re-detects Marks on `displays` (each reading settles the screen, so about every 100 ms) until two readings in
+/// a row meet `until`; the `wait_timeout` error when its timeout passed first (never before two readings).
+fn wait_until(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Result<Option<Error>, Error> {
+    let condition = until.condition.as_ref().ok_or_else(|| error("invalid_action", "Wait Condition without a condition"))?;
+    let on_mark = match condition {
+        Condition::Value(v) if v.equals.is_some() == v.contains.is_some() => {
+            return Err(error("invalid_action", "a value Wait Condition needs exactly one of equals or contains"))
+        }
+        Condition::State(s) if s.has.is_some() == s.lacks.is_some() => {
+            return Err(error("invalid_action", "a state Wait Condition needs exactly one of has or lacks"))
+        }
+        Condition::Value(_) | Condition::State(_) => true,
+        Condition::Appears(_) | Condition::Disappears(_) => false,
+    };
+    // OCR Marks never carry values or Mark States, so such a wait could never be met.
+    for &d in displays.iter().filter(|_| on_mark) {
+        if p.accessibility(d).map_err(|e| error("platform", e))?.is_none() {
+            return Err(error("no_accessibility_tree", "the screen has no accessibility tree, so no values or Mark States"));
+        }
+    }
+    let deadline = Instant::now() + Duration::from_millis(until.timeout_ms.into());
+    // Whether the previous reading met it; `None` before the first, so a timeout never comes before two readings.
+    let mut met_before = None;
+    loop {
+        let mut all = vec![];
+        for &d in displays {
+            let frame = observer::settle(p, d).map_err(|e| error("platform", e))?;
+            all.extend(marks::detect(p, d, &frame, 1).map_err(|e| error("platform", e))?);
+        }
+        let holds = condition_holds(condition, &all, &until.text, until.role.as_deref())?;
+        if holds && met_before == Some(true) {
+            return Ok(None);
+        }
+        if met_before.is_some() && Instant::now() >= deadline {
+            let message = format!("Wait Condition on {:?} not met within {} ms", until.text, until.timeout_ms);
+            return Ok(Some(error("wait_timeout", message)));
+        }
+        met_before = Some(holds);
+    }
+}
+
+/// Whether one reading's Marks meet `condition` about the Marks matching `text` (and `role`). A value or Mark State
+/// is read from the one Mark matching as a text target would; `ambiguous_text` when several do.
+fn condition_holds(condition: &Condition, all: &[Mark], text: &str, role: Option<&str>) -> Result<bool, Error> {
+    let target_mark = || match marks::by_text(&marks::with_role(all, role), text) {
+        Ok(m) => Ok(Some(m.clone())),
+        Err(e) if e.code == "text_not_found" => Ok(None),
+        Err(e) => Err(e),
+    };
+    Ok(match condition {
+        Condition::Appears(_) => marks::present(all, text, role),
+        Condition::Disappears(_) => !marks::present(all, text, role),
+        Condition::Value(v) => target_mark()?.is_some_and(|m| match (&v.equals, &v.contains) {
+            (Some(want), _) => m.value == *want,
+            (_, part) => m.value.contains(part.as_deref().unwrap_or_default()),
+        }),
+        // A Mark not on screen neither has nor lacks a state.
+        Condition::State(s) => target_mark()?.is_some_and(|m| match (&s.has, &s.lacks) {
+            (Some(state), _) => m.states.contains(state),
+            (_, state) => !m.states.iter().any(|s| Some(s) == state.as_ref()),
+        }),
+    })
 }
 
 fn find(displays: &[DisplayInfo], index: u32) -> Result<&DisplayInfo, Error> {

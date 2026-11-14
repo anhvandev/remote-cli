@@ -14,7 +14,7 @@ use std::{
 };
 
 use enigo::{Axis, Coordinate, Direction, Keyboard, Mouse};
-use objc2_application_services::{AXError, AXUIElement, AXValue, AXValueType};
+use objc2_application_services::{AXCopyMultipleAttributeOptions, AXError, AXUIElement, AXValue, AXValueType};
 use objc2_core_foundation::{CFArray, CFBoolean, CFData, CFNumber, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGDirectDisplayID, CGDisplayBounds,
@@ -157,8 +157,8 @@ fn key(name: &str) -> anyhow::Result<enigo::Key> {
     })
 }
 
-/// The Mark role for an AX role; `None` = not something to target.
-fn role(ax_role: &str) -> Option<&'static str> {
+/// The Mark role for an AX role and subrole; `None` = not something to target.
+fn role(ax_role: &str, subrole: &str) -> Option<&'static str> {
     Some(match ax_role {
         "AXButton" | "AXMenuButton" | "AXPopUpButton" | "AXDisclosureTriangle" => "button",
         "AXTextField" | "AXTextArea" | "AXSearchField" | "AXComboBox" => "field",
@@ -168,8 +168,55 @@ fn role(ax_role: &str) -> Option<&'static str> {
         "AXMenuItem" | "AXMenuBarItem" => "menuitem",
         "AXSlider" => "slider",
         "AXStaticText" => "text",
+        "AXWindow" if matches!(subrole, "AXDialog" | "AXSystemDialog") => "dialog",
+        "AXWindow" => "window",
+        "AXSheet" => "dialog",
+        "AXMenu" => "menu",
+        "AXList" => "list",
         _ => return None,
     })
+}
+
+/// One node's attributes from the batched read; strings are `None` when blank.
+#[derive(Default)]
+struct AxNode {
+    role: String,
+    subrole: String,
+    title: Option<String>,
+    description: Option<String>,
+    placeholder: Option<String>,
+    /// AXValue as text: a string, or a number such as a slider's or a checkbox's (1 = ticked).
+    value: Option<String>,
+    enabled: Option<bool>,
+    focused: Option<bool>,
+    selected: Option<bool>,
+    expanded: Option<bool>,
+}
+
+/// The element for a node, without box or parent; `None` = not something to target.
+fn describe(n: &AxNode) -> Option<UiElement> {
+    let role = role(&n.role, &n.subrole)?;
+    let password = n.subrole == "AXSecureTextField";
+    let label = [&n.title, &n.description, &n.placeholder].into_iter().find_map(|s| s.clone());
+    // Static text has no label but its value; a checkbox's or radio's value is its checked state.
+    let (text, value) = match role {
+        "text" => (label.or_else(|| n.value.clone()), None),
+        "checkbox" | "radio" => (label, None),
+        _ => (label, n.value.clone().filter(|_| !password)),
+    };
+    let checked = matches!(role, "checkbox" | "radio") && n.value.as_deref() == Some("1");
+    let states = [
+        ("disabled", n.enabled == Some(false)),
+        ("focused", n.focused == Some(true)),
+        ("checked", checked),
+        ("selected", n.selected == Some(true)),
+        ("expanded", n.expanded == Some(true)),
+        ("collapsed", n.expanded == Some(false)),
+    ]
+    .into_iter()
+    .filter_map(|(state, on)| on.then(|| state.to_string()))
+    .collect();
+    Some(UiElement { role: role.into(), text: text.unwrap_or_default(), states, value, password, ..Default::default() })
 }
 
 fn ax_attr(element: &AXUIElement, name: &str) -> Option<CFRetained<CFType>> {
@@ -178,19 +225,40 @@ fn ax_attr(element: &AXUIElement, name: &str) -> Option<CFRetained<CFType>> {
     (err == AXError::Success && !value.is_null()).then(|| unsafe { CFRetained::from_raw(NonNull::new_unchecked(value as *mut CFType)) })
 }
 
-fn ax_string(element: &AXUIElement, name: &str) -> Option<String> {
-    ax_attr(element, name)?.downcast_ref::<CFString>().map(|s| s.to_string()).filter(|s| !s.trim().is_empty())
+/// Attributes read per node, in one `AXUIElementCopyMultipleAttributeValues` call.
+const AX_ATTRS: [&str; 13] = [
+    "AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXPlaceholderValue", "AXValue", "AXEnabled", "AXFocused",
+    "AXSelected", "AXExpanded", "AXPosition", "AXSize", "AXChildren",
+];
+
+/// `names`' values of `element`, in order; a missing one is an AXError-typed AXValue, which no reader below accepts.
+fn ax_attrs(element: &AXUIElement, names: &CFArray<CFString>) -> Option<CFRetained<CFArray<CFType>>> {
+    let mut values: *const CFArray = std::ptr::null();
+    let err = unsafe {
+        element.copy_multiple_attribute_values(names.as_opaque(), AXCopyMultipleAttributeOptions(0), NonNull::from(&mut values))
+    };
+    (err == AXError::Success && !values.is_null())
+        .then(|| unsafe { CFRetained::cast_unchecked(CFRetained::from_raw(NonNull::new_unchecked(values as *mut CFArray))) })
 }
 
-fn ax_value<T: Default>(element: &AXUIElement, name: &str, kind: AXValueType) -> Option<T> {
-    let attr = ax_attr(element, name)?;
-    let value = attr.downcast_ref::<AXValue>()?;
+fn ax_string(v: &CFType) -> Option<String> {
+    v.downcast_ref::<CFString>().map(|s| s.to_string()).filter(|s| !s.trim().is_empty())
+}
+
+/// A string AXValue, or a number one (whole numbers without a decimal point).
+fn ax_text(v: &CFType) -> Option<String> {
+    let number = v.downcast_ref::<CFNumber>();
+    ax_string(v).or_else(|| number?.as_i64().map(|n| n.to_string()).or_else(|| number?.as_f64().map(|n| n.to_string())))
+}
+
+fn ax_value<T: Default>(v: &CFType, kind: AXValueType) -> Option<T> {
+    let value = v.downcast_ref::<AXValue>()?;
     let mut out = T::default();
     unsafe { value.value(kind, NonNull::from(&mut out).cast()) }.then_some(out)
 }
 
-// shortcut: only the focused app's tree (menu bar and windows); elements of windows behind it are left out, so a
-// Mark is never hidden under another window. Walk all on-screen apps if Controllers need the Dock or other windows.
+// Scope: the focused window (its sheets are its children) and the app's own children (menu bar, open menus), but no
+// other window of the app, so a Mark is never hidden under another window.
 const AX_MAX_NODES: usize = 3000;
 
 fn accessibility_tree(d: &DisplayInfo) -> Option<Vec<UiElement>> {
@@ -201,32 +269,54 @@ fn accessibility_tree(d: &DisplayInfo) -> Option<Vec<UiElement>> {
     let app = ax_attr(&system, "AXFocusedApplication")?.downcast::<AXUIElement>().ok()?;
     // A hung app must not stall the Observation.
     unsafe { app.set_messaging_timeout(0.5) };
-    let mut out = vec![];
-    let mut stack = vec![app];
+    let window = ax_attr(&app, "AXFocusedWindow").and_then(|w| w.downcast::<AXUIElement>().ok());
+    let names: Vec<_> = AX_ATTRS.iter().map(|n| CFString::from_str(n)).collect();
+    let names = CFArray::from_retained_objects(&names);
+    let mut out: Vec<UiElement> = vec![];
+    // Each element with the index in `out` of the nearest container above it.
+    let mut stack = vec![(app, None)];
     let mut visited = 0;
-    while let Some(element) = stack.pop() {
+    while let Some((element, parent)) = stack.pop() {
         visited += 1;
         if visited > AX_MAX_NODES {
             break;
         }
-        if let Some(role) = ax_string(&element, "AXRole").as_deref().and_then(role) {
-            let text = ["AXTitle", "AXDescription", "AXValue", "AXPlaceholderValue"]
-                .iter()
-                .find_map(|a| ax_string(&element, a))
-                .unwrap_or_default();
-            let origin = ax_value::<CGPoint>(&element, "AXPosition", AXValueType::CGPoint);
-            let size = ax_value::<CGSize>(&element, "AXSize", AXValueType::CGSize);
-            if let (Some(origin), Some(size)) = (origin, size) {
-                if let Some((x, y, width, height)) = to_pixels(d, origin, size) {
-                    if role != "text" || !text.is_empty() {
-                        out.push(UiElement { role: role.into(), text, x, y, width, height });
+        let Some(values) = ax_attrs(&element, &names) else { continue };
+        let at = |i: usize| values.get(i);
+        let string = |i| at(i).as_deref().and_then(ax_string);
+        let boolean = |i| at(i).and_then(|v| v.downcast_ref::<CFBoolean>().map(|b| b.as_bool()));
+        let node = AxNode {
+            role: string(0).unwrap_or_default(),
+            subrole: string(1).unwrap_or_default(),
+            title: string(2),
+            description: string(3),
+            placeholder: string(4),
+            value: at(5).as_deref().and_then(ax_text),
+            enabled: boolean(6),
+            focused: boolean(7),
+            selected: boolean(8),
+            expanded: boolean(9),
+        };
+        if node.role == "AXWindow" && window.as_deref() != Some(&*element) {
+            continue;
+        }
+        let mut children_parent = parent;
+        if let Some(mut e) = describe(&node) {
+            let origin = at(10).and_then(|v| ax_value::<CGPoint>(&v, AXValueType::CGPoint));
+            let size = at(11).and_then(|v| ax_value::<CGSize>(&v, AXValueType::CGSize));
+            if let Some((x, y, width, height)) = origin.zip(size).and_then(|(o, s)| to_pixels(d, o, s)) {
+                if e.role != "text" || !e.text.is_empty() {
+                    if e.is_container() {
+                        children_parent = Some(out.len());
                     }
+                    (e.x, e.y, e.width, e.height, e.parent) = (x, y, width, height, parent);
+                    out.push(e);
                 }
             }
         }
-        if let Some(children) = ax_attr(&element, "AXChildren").and_then(|c| c.downcast::<CFArray>().ok()) {
+        if let Some(children) = at(12).and_then(|c| c.downcast::<CFArray>().ok()) {
             let children: CFRetained<CFArray<AXUIElement>> = unsafe { CFRetained::cast_unchecked(children) };
-            stack.extend(children.iter());
+            stack.extend(children.iter().map(|c| (c, children_parent)));
         }
     }
     Some(out)
@@ -436,7 +526,7 @@ impl Platform for MacPlatform {
             for observation in request.results().unwrap_or_default().iter() {
                 let Some(best) = observation.topCandidates(1).firstObject() else { continue };
                 let (x, y, width, height) = vision_box(unsafe { observation.boundingBox() }, frame.width, frame.height);
-                out.push(UiElement { role: "text".into(), text: best.string().to_string(), x, y, width, height });
+                out.push(UiElement { role: "text".into(), text: best.string().to_string(), x, y, width, height, ..Default::default() });
             }
             Ok(out)
         })
@@ -725,6 +815,31 @@ mod tests {
     fn real_pixels_map_to_global_points_on_a_retina_secondary_display() {
         assert_eq!(to_point(&retina_right_of_main(), 0, 0), (1440.0, -100.0));
         assert_eq!(to_point(&retina_right_of_main(), 101, 2880 / 2), (1490.5, 620.0));
+    }
+
+    #[test]
+    fn ax_attributes_become_label_value_and_mark_states() {
+        let node = |role: &str, subrole: &str| AxNode { role: role.into(), subrole: subrole.into(), ..Default::default() };
+        let checkbox = AxNode { title: Some("Wrap".into()), value: Some("1".into()), enabled: Some(false), ..node("AXCheckBox", "") };
+        let e = describe(&checkbox).unwrap();
+        assert_eq!((e.role.as_str(), e.text.as_str(), e.value, e.states), ("checkbox", "Wrap", None, vec!["disabled".into(), "checked".into()]));
+        // A field whose only label was its value: empty text, value kept apart.
+        let field = AxNode { value: Some("An".into()), focused: Some(true), ..node("AXTextField", "") };
+        let e = describe(&field).unwrap();
+        assert_eq!((e.text.as_str(), e.value.as_deref(), e.states), ("", Some("An"), vec!["focused".into()]));
+        let secret = AxNode { description: Some("Password".into()), value: Some("hunter2".into()), ..node("AXTextField", "AXSecureTextField") };
+        let e = describe(&secret).unwrap();
+        assert_eq!((e.text.as_str(), e.value, e.password), ("Password", None, true));
+        // Static text: its value is its label.
+        let e = describe(&AxNode { value: Some("Saved".into()), ..node("AXStaticText", "") }).unwrap();
+        assert_eq!((e.text.as_str(), e.value), ("Saved", None));
+        let e = describe(&AxNode { expanded: Some(false), ..node("AXComboBox", "") }).unwrap();
+        assert_eq!(e.states, vec!["collapsed".to_string()]);
+        let roles: Vec<_> = [("AXWindow", "AXStandardWindow"), ("AXWindow", "AXDialog"), ("AXSheet", ""), ("AXMenu", ""), ("AXList", ""), ("AXGroup", "")]
+            .iter()
+            .map(|(r, s)| describe(&node(r, s)).map(|e| e.role))
+            .collect();
+        assert_eq!(roles, [Some("window"), Some("dialog"), Some("dialog"), Some("menu"), Some("list"), None].map(|r| r.map(String::from)));
     }
 
     #[test]

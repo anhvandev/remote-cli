@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{agent_error, bad_request, devices::resolve_for, ApiError, Caller};
-use crate::{audit, auth::User, control_lock, metrics};
+use crate::{agent_link, audit, auth::User, control_lock, metrics};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -39,12 +39,99 @@ struct ActBody {
     /// The caller's open media channel (`POST .../media`): large images and clips go over it peer-to-peer.
     #[serde(default)]
     media_session: String,
+    /// Wait Condition: wait (after the Actions) until it holds, then observe.
+    until: Option<Until>,
+}
+
+/// `{"appears" | "disappears" | "value" | "state": {"text": "..", "role": "..", ..}, "timeout_ms": N}`.
+#[derive(Deserialize)]
+struct Until {
+    #[serde(flatten)]
+    condition: Condition,
+    timeout_ms: Option<u32>,
+    /// Keys left after the one condition: a second condition or an unknown key, refused by `check`.
+    #[serde(flatten)]
+    rest: serde_json::Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Condition {
+    Appears(WaitTarget),
+    Disappears(WaitTarget),
+    Value(ValueTarget),
+    State(StateTarget),
+}
+
+/// The Marks a Wait Condition is about: text matched as for text targets, optionally narrowed by role.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WaitTarget {
+    text: String,
+    role: Option<String>,
+}
+
+/// `{"text", "role"?, "equals" | "contains"}`; `Until::check` refuses anything but exactly one of the two.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ValueTarget {
+    text: String,
+    role: Option<String>,
+    equals: Option<String>,
+    contains: Option<String>,
+}
+
+/// `{"text", "role"?, "has" | "lacks": "<Mark State>"}`; `Until::check` refuses anything but exactly one of the two.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StateTarget {
+    text: String,
+    role: Option<String>,
+    has: Option<String>,
+    lacks: Option<String>,
+}
+
+impl Until {
+    fn timeout_ms(&self) -> u32 {
+        self.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS)
+    }
+
+    /// `invalid_action` unless it names exactly one condition, and a value or state exactly one test.
+    fn check(&self) -> Result<(), ApiError> {
+        if let Some(key) = self.rest.keys().next() {
+            return Err(invalid(format!("a Wait Condition names one condition and timeout_ms, not also {key:?}")));
+        }
+        match &self.condition {
+            Condition::Value(v) if v.equals.is_some() == v.contains.is_some() => {
+                Err(invalid("a value Wait Condition needs exactly one of equals or contains"))
+            }
+            Condition::State(s) if s.has.is_some() == s.lacks.is_some() => {
+                Err(invalid("a state Wait Condition needs exactly one of has or lacks"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+impl From<Until> for proto::WaitCondition {
+    fn from(u: Until) -> Self {
+        use proto::wait_condition::Condition as C;
+        let timeout_ms = u.timeout_ms();
+        let (text, role, condition) = match u.condition {
+            Condition::Appears(t) => (t.text, t.role, C::Appears(true)),
+            Condition::Disappears(t) => (t.text, t.role, C::Disappears(true)),
+            Condition::Value(v) => (v.text, v.role, C::Value(proto::ValueCondition { equals: v.equals, contains: v.contains })),
+            Condition::State(s) => (s.text, s.role, C::State(proto::StateCondition { has: s.has, lacks: s.lacks })),
+        };
+        Self { text, role, timeout_ms, condition: Some(condition) }
+    }
 }
 
 /// Upper bound of `max_frames`.
 const MAX_FRAMES: u32 = 30;
-/// Upper bound of all waits in one batch, so the Agent answers well within its request timeout.
-const MAX_TOTAL_WAIT_MS: u64 = 5_000;
+/// Upper bound of all waits in one request (fixed waits and Wait Condition timeouts); the Agent request timeout grows by them.
+const MAX_TOTAL_WAIT_MS: u64 = 30_000;
+const DEFAULT_WAIT_TIMEOUT_MS: u32 = 5_000;
 
 #[derive(Deserialize, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -119,9 +206,11 @@ enum Action {
     Key {
         keys: String,
     },
-    /// Action Batch pause, in milliseconds.
+    /// Action Batch pause, in milliseconds, then (if given) until a Wait Condition holds.
     Wait {
+        #[serde(default)]
         ms: u32,
+        until: Option<Until>,
     },
 }
 
@@ -137,11 +226,15 @@ impl From<Point> for proto::Point {
 }
 
 impl Action {
-    /// The protocol Actions this one becomes (typing into a target is a click, then the text).
+    /// The protocol Actions this one becomes (typing into a target is a click, then the text; a wait with a
+    /// Wait Condition is the fixed wait, then the Wait Condition).
     fn into_proto(self) -> Vec<proto::Action> {
         let kind = match self {
             Action::Type { text, into: Some(at) } => {
                 return [Kind::Click(at.into()), Kind::TypeText(text)].map(|k| proto::Action { kind: Some(k) }).to_vec()
+            }
+            Action::Wait { ms, until: Some(u) } => {
+                return [Kind::WaitMs(ms), Kind::WaitUntil(u.into())].map(|k| proto::Action { kind: Some(k) }).to_vec()
             }
             Action::Move(p) => Kind::Move(p.into()),
             Action::Click(p) => Kind::Click(p.into()),
@@ -151,7 +244,7 @@ impl Action {
             Action::Scroll { at, dx, dy } => Kind::Scroll(proto::Scroll { at: Some(at.into()), dx, dy }),
             Action::Type { text, into: None } => Kind::TypeText(text),
             Action::Key { keys } => Kind::Key(keys),
-            Action::Wait { ms } => Kind::WaitMs(ms),
+            Action::Wait { ms, until: None } => Kind::WaitMs(ms),
         };
         vec![proto::Action { kind: Some(kind) }]
     }
@@ -159,6 +252,36 @@ impl Action {
 
 fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "invalid_action", message)
+}
+
+/// The first Agent version with Wait Conditions; older Agents ignore them and answer at once, as if they were met.
+const WAIT_CONDITIONS_SINCE: &str = "0.4.0";
+
+impl ActBody {
+    fn has_wait_condition(&self) -> bool {
+        self.until.is_some() || self.actions.iter().any(|a| matches!(a, Action::Wait { until: Some(_), .. }))
+    }
+}
+
+/// `agent_too_old` unless the Device's reported Agent version is semver and at least `WAIT_CONDITIONS_SINCE`
+/// (a missing or non-semver version may be an Agent that would ignore the wait).
+async fn refuse_agents_without_wait_conditions(state: &super::State, device: uuid::Uuid) -> Result<(), ApiError> {
+    let version: Option<String> = sqlx::query_scalar("SELECT agent_version FROM devices WHERE id = $1")
+        .bind(device)
+        .fetch_one(&state.db)
+        .await
+        .map_err(anyhow::Error::from)?;
+    let supported = version
+        .as_deref()
+        .is_some_and(|v| semver::Version::parse(v).is_ok() && !crate::updates::below(Some(v), WAIT_CONDITIONS_SINCE));
+    if !supported {
+        let message = format!(
+            "the Device's Agent is {}; Wait Conditions need Agent {WAIT_CONDITIONS_SINCE} or later",
+            version.as_deref().unwrap_or("of unknown version")
+        );
+        return Err(ApiError::new(StatusCode::CONFLICT, "agent_too_old", message));
+    }
+    Ok(())
 }
 
 async fn act(
@@ -171,7 +294,9 @@ async fn act(
     let Json(mut params) = body.map_err(|e| bad_request(e.body_text()))?;
     let body: ActBody = serde_json::from_value(params.clone())
         .map_err(|e| bad_request(e.to_string()))?;
-    let waits: u64 = body.actions.iter().map(|a| if let Action::Wait { ms } = a { u64::from(*ms) } else { 0 }).sum();
+    let until_ms = |u: &Option<Until>| u.as_ref().map_or(0, |u| u64::from(u.timeout_ms()));
+    let steps: u64 = body.actions.iter().map(|a| if let Action::Wait { ms, until } = a { u64::from(*ms) + until_ms(until) } else { 0 }).sum();
+    let waits = steps + until_ms(&body.until);
     if waits > MAX_TOTAL_WAIT_MS {
         return Err(invalid(format!("waits add up to {waits} ms; at most {MAX_TOTAL_WAIT_MS} ms per request")));
     }
@@ -179,13 +304,23 @@ async fn act(
     if !(1..=MAX_FRAMES).contains(&max_frames) {
         return Err(invalid(format!("max_frames must be 1 to {MAX_FRAMES}")));
     }
+    if body.until.is_some() && body.observe != Observe::Shot {
+        return Err(invalid("until needs observe \"shot\""));
+    }
+    let step_untils = body.actions.iter().filter_map(|a| if let Action::Wait { until, .. } = a { until.as_ref() } else { None });
+    for until in body.until.iter().chain(step_untils) {
+        until.check()?;
+    }
+    if body.has_wait_condition() {
+        refuse_agents_without_wait_conditions(&state, device).await?;
+    }
     // Every request from the holder, observe-only included, restarts the idle timer.
     control_lock::touch(&state, device, &user).await?;
     if !body.actions.is_empty() {
         control_lock::check(&state, device, &user).await?;
     }
     mask_secrets(&state, device, &mut params);
-    let result = forward(&state, device, &user, body, max_frames).await;
+    let result = forward(&state, device, &user, body, max_frames, std::time::Duration::from_millis(waits)).await;
     let actions = params["actions"].as_array().cloned().unwrap_or_default();
     if actions.is_empty() {
         let outcome = json!({ "error": result.as_ref().err().map(|e| e.code) });
@@ -221,7 +356,14 @@ fn mask_secrets(state: &super::State, device: uuid::Uuid, params: &mut Value) {
     }
 }
 
-async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: ActBody, max_frames: u32) -> Result<Json<Value>, ApiError> {
+async fn forward(
+    state: &super::State,
+    device: uuid::Uuid,
+    user: &User,
+    body: ActBody,
+    max_frames: u32,
+    waits: std::time::Duration,
+) -> Result<Json<Value>, ApiError> {
     // One API Action can expand to several protocol Actions (type into); map failures back to the API step.
     let (mut step_of, mut actions) = (vec![], vec![]);
     for (step, action) in body.actions.into_iter().enumerate() {
@@ -249,24 +391,41 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
         max_frames,
         marks: body.marks,
         media_session: body.media_session,
+        until: body.until.map(Into::into),
     };
-    send(state, device, req, &step_of).await
+    send(state, device, req, &step_of, waits).await
 }
 
 /// Sends `req` (its request_id is filled in) and returns the Observation JSON.
-/// `step_of[i]` = the API step of protocol Action `i`, reported as `step` on failure.
-async fn send(state: &super::State, device: uuid::Uuid, req: proto::ActRequest, step_of: &[u32]) -> Result<Json<Value>, ApiError> {
+/// `step_of[i]` = the API step of protocol Action `i`, reported as `step` on failure. `waits` lengthens the timeout.
+async fn send(
+    state: &super::State,
+    device: uuid::Uuid,
+    req: proto::ActRequest,
+    step_of: &[u32],
+    waits: std::time::Duration,
+) -> Result<Json<Value>, ApiError> {
     let req = |request_id| server_message::Msg::Act(proto::ActRequest { request_id, ..req });
-    let agent_message::Msg::ActResult(result) = state.agents.request_admitted(device, req).await? else {
+    let timeout = agent_link::REQUEST_TIMEOUT + agent_link::PROMPT_BUDGET + waits;
+    let agent_message::Msg::ActResult(mut result) = state.agents.request_within(device, timeout, req).await? else {
         return Err(anyhow::anyhow!("unexpected reply to ActRequest").into());
     };
-    if let Some(e) = result.error {
-        let err = agent_error(e);
-        return Err(match result.failed_step.and_then(|s| step_of.get(s as usize)) {
-            Some(step) => err.with("step", *step),
-            None => err,
-        });
+    if let Some(e) = result.error.take() {
+        let mut err = agent_error(e);
+        if let Some(step) = result.failed_step.and_then(|s| step_of.get(s as usize)) {
+            err = err.with("step", *step);
+        }
+        // A timed-out Wait Condition still shows the screen as it was.
+        if err.code == "wait_timeout" {
+            err.details.extend(observation(result).as_object().cloned().unwrap_or_default());
+        }
+        return Err(err);
     }
+    Ok(Json(observation(result)))
+}
+
+/// The Observation JSON of an Agent's ActResult.
+fn observation(result: proto::ActResult) -> Value {
     let b64 = |data: &[u8]| base64::engine::general_purpose::STANDARD.encode(data);
     // Relayed, never stored (spec: no media in the audit log).
     // Bytes sent peer-to-peer are only referenced (`p2p`); the client puts them back into `data`.
@@ -297,13 +456,25 @@ async fn send(state: &super::State, device: uuid::Uuid, req: proto::ActRequest, 
         reply["marks"] = result
             .marks
             .iter()
-            .map(|m| json!({ "number": m.number, "text": m.text, "role": m.role, "display": m.display, "x": m.x, "y": m.y, "width": m.width, "height": m.height }))
+            .map(|m| {
+                let mut v = json!({ "number": m.number, "text": m.text, "role": m.role, "display": m.display, "x": m.x, "y": m.y, "width": m.width, "height": m.height });
+                if !m.states.is_empty() {
+                    v["states"] = json!(m.states);
+                }
+                if !m.value.is_empty() {
+                    v["value"] = json!(m.value);
+                }
+                if let Some(parent) = m.parent {
+                    v["parent"] = json!(parent);
+                }
+                v
+            })
             .collect();
     }
     if let Some(clip) = clip {
         reply["clip"] = clip;
     }
-    Ok(Json(reply))
+    reply
 }
 
 async fn displays(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {

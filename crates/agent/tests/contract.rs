@@ -23,7 +23,7 @@ fn scripted_operator(fake: &FakePlatform) -> impl FnMut(Step) + '_ {
 /// A FakePlatform scripted with an accessibility tree and on-screen text.
 fn fake() -> FakePlatform {
     let fake = FakePlatform::new("lab-pc");
-    let clock = UiElement { role: "text".into(), text: "09:41".into(), x: 10, y: 10, width: 80, height: 20 };
+    let clock = UiElement { role: "text".into(), text: "09:41".into(), x: 10, y: 10, width: 80, height: 20, ..Default::default() };
     fake.update(|s| {
         s.accessibility = Some(vec![UiElement { role: "button".into(), ..clock.clone() }]);
         s.screen_text = vec![clock];

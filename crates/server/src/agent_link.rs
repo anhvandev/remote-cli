@@ -27,7 +27,7 @@ use tokio_rustls::TlsAcceptor;
 use crate::{control_lock, metrics, pki, registration, registry, updates, AppState};
 
 /// How long a request to an Agent (e.g. the process list) may take.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a person at the Device has to answer one prompt (accept the connection, or root); the Agent rejects
 /// after that. A request that may show one waits this much longer for its reply.
 pub const PROMPT_BUDGET: Duration = Duration::from_secs(30);

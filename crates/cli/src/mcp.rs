@@ -14,7 +14,7 @@ use rmcp::{
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{config, path_segment, Api};
+use crate::{config, path_segment, Api, ApiFailure};
 
 /// Serves MCP on `read`/`write` (stdin/stdout for `rcli mcp`) until the client disconnects.
 pub async fn serve<R, W>(api: Api, read: R, write: W) -> anyhow::Result<()>
@@ -44,8 +44,19 @@ Release the lock when done.";
 const ACTION: &str = "An Action: {\"type\":\"move|click|double_click|right_click\", TARGET} | \
 {\"type\":\"drag\", TARGET, \"to\":TARGET} | {\"type\":\"scroll\", TARGET, \"dx\":0, \"dy\":3} | \
 {\"type\":\"type\",\"text\":\"..\",\"secret\":false,\"into\":TARGET?} | {\"type\":\"key\",\"keys\":\"ctrl+c\"} | \
-{\"type\":\"wait\",\"ms\":500}. TARGET = \"x\",\"y\" (image pixels) with optional \"display\" (default 0), or \
-\"mark\":N,\"observation\":ID, or \"text\":\"visible text\".";
+{\"type\":\"wait\",\"ms\":500,\"until\":UNTIL?}. TARGET = \"x\",\"y\" (image pixels) with optional \"display\" \
+(default 0), or \"mark\":N,\"observation\":ID, or \"text\":\"visible text\". UNTIL = a Wait Condition, as observe's \
+until: {\"appears\":{\"text\":\"Saved\",\"role\":\"button\"?},\"timeout_ms\":5000} or {\"disappears\":{...}}, \
+{\"value\":{...}}, {\"state\":{...}} (see observe's until); the wait step lasts until it holds (after ms). On timeout the batch stops there and fails with wait_timeout, its step and the \
+Observation. All waits and timeouts of one call add up to at most 30000 ms.";
+
+const UNTIL: &str = "Wait Condition: {\"appears\":{\"text\":\"Saved\",\"role\":\"button\"?},\"timeout_ms\":5000} or \
+{\"disappears\":{...}}, or on one Mark's value / Mark State: {\"value\":{\"text\":\"Name\",\"role\"?,\"equals\":\"An\"}} \
+(or \"contains\") and {\"state\":{\"text\":\"Remember me\",\"role\"?,\"has\":\"checked\"}} (or \"lacks\":\"disabled\"). \
+Re-reads the Marks (OCR at lock/login screens) until two readings in a row agree, then observes (with observe \
+\"shot\"). Text matches like text targets (case-insensitive, exact before contained); value and state fail at once \
+with no_accessibility_tree when the screen has no tree (OCR) and with ambiguous_text when several Marks match (add \
+role). timeout_ms defaults to 5000, at most 30000; on timeout the call fails with wait_timeout.";
 
 fn tools() -> Vec<Tool> {
     let device = json!({ "type": "string", "description": "Device id or name" });
@@ -54,7 +65,11 @@ fn tools() -> Vec<Tool> {
             "observe": { "type": "string", "enum": modes.split(' ').collect::<Vec<_>>(),
                 "description": "shot = one settled screenshot (default); frames = screenshots of each change; clip = short MP4; none" },
             "display": { "description": "Display index to observe, or \"all\"; default: the display last acted on" },
-            "marks": { "type": "boolean", "description": "Number the detected UI elements (Marks) and return their table" },
+            "marks": { "type": "boolean", "description": "Number the detected UI elements (Marks) and return their table. \
+                A Mark: number, text (label), role, display, box; containers (window, dialog, menu, list) are Marks too. \
+                Optional, omitted when empty: states (only non-default: disabled, focused, checked, selected, expanded, \
+                collapsed), value (the content apart from the label; never for a password field), parent (number of \
+                the container Mark it sits in)" },
             "max_frames": { "type": "integer", "minimum": 1, "maximum": 30, "description": "frames: at most this many per display (default 10)" },
         })
     };
@@ -69,7 +84,12 @@ fn tools() -> Vec<Tool> {
         ("lock_acquire", "Take a Device's Control Lock (needed for act/batch). Fails if someone else holds it.", devices_only.clone(), vec!["device"]),
         ("lock_release", "Release a Device's Control Lock.", devices_only.clone(), vec!["device"]),
         ("lock_status", "Who holds a Device's Control Lock and until when.", devices_only.clone(), vec!["device"]),
-        ("observe", "Look at a Device's screen without acting (no lock needed).", with(devices_only.clone(), observe("shot frames clip")), vec!["device"]),
+        (
+            "observe",
+            "Look at a Device's screen without acting (no lock needed), optionally once a Wait Condition holds.",
+            with(json!({ "device": device, "until": { "type": "object", "description": UNTIL } }), observe("shot frames clip")),
+            vec!["device"],
+        ),
         (
             "act",
             "Send one mouse/keyboard Action (needs the Control Lock) and observe the result.",
@@ -131,6 +151,19 @@ fn observation(mut obs: Value) -> CallToolResult {
     result
 }
 
+/// `observation` of a call's result; a timed-out wait is a tool error that still carries its Observation.
+fn observed(result: anyhow::Result<Value>) -> anyhow::Result<CallToolResult> {
+    let e = match result {
+        Ok(obs) => return Ok(observation(obs)),
+        Err(e) => e,
+    };
+    let Some(failure) = e.downcast_ref::<ApiFailure>().filter(|f| f.body["error"]["code"] == "wait_timeout") else { return Err(e) };
+    let mut result = observation(failure.body["error"].clone());
+    result.is_error = Some(true);
+    result.content.insert(0, ContentBlock::text(format!("{e:#}")));
+    Ok(result)
+}
+
 impl Mcp {
     async fn call(&self, tool: &str, args: &Value) -> anyhow::Result<CallToolResult> {
         use reqwest::Method;
@@ -140,7 +173,7 @@ impl Mcp {
             anyhow::bail!("`device` is required");
         }
         let act = |actions: Value| {
-            let mut body = pick(args, &["observe", "display", "marks", "max_frames"]);
+            let mut body = pick(args, &["observe", "display", "marks", "max_frames", "until"]);
             body.insert("actions".into(), actions);
             Value::Object(body)
         };
@@ -164,9 +197,9 @@ impl Mcp {
                 self.watches.lock().unwrap().remove(&id);
                 structured(lock)
             }
-            "observe" => observation(self.api.observe(name, &act(json!([]))).await?),
-            "act" => observation(self.api.observe(name, &act(json!([args["action"]]))).await?),
-            "batch" => observation(self.api.observe(name, &act(args["actions"].clone())).await?),
+            "observe" => observed(self.api.observe(name, &act(json!([]))).await)?,
+            "act" => observed(self.api.observe(name, &act(json!([args["action"]]))).await)?,
+            "batch" => observed(self.api.observe(name, &act(args["actions"].clone())).await)?,
             "exec" => {
                 let mut body = pick(args, &["command", "as", "timeout_secs"]);
                 // `rcli root on <Device ID>` sets exec's default too.
