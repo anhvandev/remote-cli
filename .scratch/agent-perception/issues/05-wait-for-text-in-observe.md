@@ -17,13 +17,17 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] A Controller without the Control Lock observes with `until: appears "Saved"`. The test adds that text to FakePlatform's tree during the wait, and the Observation comes back showing it.
-- [ ] `disappears` is met when the test removes the text.
-- [ ] A condition never met returns `wait_timeout` with an Observation, after about `timeout_ms`.
-- [ ] With no accessibility tree, `appears` is met from OCR text.
-- [ ] A `timeout_ms` above 30000 is refused as invalid.
-- [ ] The MCP `observe` tool and `rcli shot` accept the Wait Condition.
-- [ ] `docs/usage.md` describes Wait Conditions.
+- [x] A Controller without the Control Lock observes with `until: appears "Saved"`. The test adds that text to FakePlatform's tree during the wait, and the Observation comes back showing it.
+- [x] `disappears` is met when the test removes the text.
+- [x] A condition never met returns `wait_timeout` with an Observation, after about `timeout_ms`.
+- [x] With no accessibility tree, `appears` is met from OCR text.
+- [x] A `timeout_ms` above 30000 is refused as invalid.
+- [x] The MCP `observe` tool and `rcli shot` accept the Wait Condition.
+- [x] `docs/usage.md` describes Wait Conditions.
 - [ ] Checklist on one real Device, with the result appended under `## Comments`: at the lock screen, typing the password with a `secret` type Action and then waiting for a desktop text succeeds.
+
+## Comments
+
+- 2026-11-14: Code and tests done on `agent-perception`. Open: the real-Device lock-screen checklist item (needs a human on a real Device).

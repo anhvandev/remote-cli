@@ -9,10 +9,14 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 - [ ] Checklist on a real Linux Device (X11 or Wayland), with results appended under `## Comments`:
   - [ ] a ticked checkbox shows `checked`, and a disabled button shows `disabled`;
   - [ ] a text field shows its value, and a password field does not;
   - [ ] the buttons of a dialog name the dialog as `parent`;
   - [ ] Marks still cover every visible app.
+
+## Comments
+
+- 2026-11-14: Adapter code done on `agent-perception` (compiles for this OS; not run on a real Device). Open: the real-Device checklist above, results to be appended here.

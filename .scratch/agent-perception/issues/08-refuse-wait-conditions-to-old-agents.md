@@ -8,8 +8,12 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] An Agent started through the new testkit option reports the older version in the Device JSON.
-- [ ] A Wait Condition sent to it is refused with `agent_too_old`, and the message names the version needed.
-- [ ] A plain observe and a batch without a Wait Condition still succeed on it.
+- [x] An Agent started through the new testkit option reports the older version in the Device JSON.
+- [x] A Wait Condition sent to it is refused with `agent_too_old`, and the message names the version needed.
+- [x] A plain observe and a batch without a Wait Condition still succeed on it.
+
+## Comments
+
+- 2026-11-14: Implemented on `agent-perception`; review fixes in a293522.

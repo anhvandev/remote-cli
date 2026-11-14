@@ -14,9 +14,9 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] A password field never reports a value.
+- [x] A password field never reports a value.
 - [ ] A tree larger than 3000 nodes, or an app that does not answer, still returns an Observation within the timeouts.
 - [ ] Checklist on a real Windows Device, with results appended under `## Comments`:
   - [ ] a ticked checkbox shows `checked`, and a disabled button shows `disabled`;
@@ -25,3 +25,7 @@
   - [ ] a right-click context menu and an open dropdown get Marks;
   - [ ] a modal dialog of the foreground app gets Marks;
   - [ ] the lock screen still falls back to OCR Marks.
+
+## Comments
+
+- 2026-11-14: Adapter code done on `agent-perception` (compiles for this OS; not run on a real Device). Open: the real-Device checklist above, results to be appended here.

@@ -12,15 +12,19 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] With a scripted tree holding a ticked checkbox, a disabled button, a filled field, a password field and a dialog containing buttons, the actions API with `marks: true` returns:
+- [x] With a scripted tree holding a ticked checkbox, a disabled button, a filled field, a password field and a dialog containing buttons, the actions API with `marks: true` returns:
   - the right `states`, `value` and `parent`;
   - empty fields omitted;
   - no value on the password field.
-- [ ] The dialog container is a numbered Mark on the annotated image and can be targeted by text.
-- [ ] The MCP `observe` result carries the same fields, and the tool schemas describe them.
-- [ ] The CLI Mark table shows Mark State, value (shortened when long) and container columns. `--json` carries the full value.
-- [ ] OCR Marks (no tree) are unchanged.
-- [ ] `docs/usage.md` describes Mark States, values and containers.
-- [ ] Tests extend the existing Marks test file.
+- [x] The dialog container is a numbered Mark on the annotated image and can be targeted by text.
+- [x] The MCP `observe` result carries the same fields, and the tool schemas describe them.
+- [x] The CLI Mark table shows Mark State, value (shortened when long) and container columns. `--json` carries the full value.
+- [x] OCR Marks (no tree) are unchanged.
+- [x] `docs/usage.md` describes Mark States, values and containers.
+- [x] Tests extend the existing Marks test file.
+
+## Comments
+
+- 2026-11-14: Implemented on `agent-perception`; review fixes in a293522.

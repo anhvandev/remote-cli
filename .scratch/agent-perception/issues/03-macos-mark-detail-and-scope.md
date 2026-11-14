@@ -10,7 +10,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 - [ ] Checklist on a real macOS Device, with results appended under `## Comments`:
   - [ ] a ticked checkbox shows `checked`, and a disabled button shows `disabled`;
@@ -18,4 +18,8 @@
   - [ ] the buttons of a sheet or dialog name it as `parent`;
   - [ ] an open menu gets Marks;
   - [ ] a second window of the same app, behind the focused one, adds no Marks.
-- [ ] `docs/usage.md` notes the behaviour change: a field whose only label was its value now has an empty `text`.
+- [x] `docs/usage.md` notes the behaviour change: a field whose only label was its value now has an empty `text`.
+
+## Comments
+
+- 2026-11-14: Adapter code done on `agent-perception` (compiles for this OS; not run on a real Device). Open: the real-Device checklist above, results to be appended here.

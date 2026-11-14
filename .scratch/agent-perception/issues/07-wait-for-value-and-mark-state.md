@@ -12,10 +12,14 @@
 
 **Blocked by:** 01, 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `state has checked` is met when the test ticks the checkbox in FakePlatform's tree during the wait.
-- [ ] `state lacks disabled` is met when the test enables the button.
-- [ ] `value equals "An"` and `value contains "An"` are met when the field's value changes.
-- [ ] With no accessibility tree, a `value` condition fails at once with `no_accessibility_tree`.
-- [ ] Two Marks matching the text fail with `ambiguous_text`. Adding `role` narrows the match to one.
+- [x] `state has checked` is met when the test ticks the checkbox in FakePlatform's tree during the wait.
+- [x] `state lacks disabled` is met when the test enables the button.
+- [x] `value equals "An"` and `value contains "An"` are met when the field's value changes.
+- [x] With no accessibility tree, a `value` condition fails at once with `no_accessibility_tree`.
+- [x] Two Marks matching the text fail with `ambiguous_text`. Adding `role` narrows the match to one.
+
+## Comments
+
+- 2026-11-14: Implemented on `agent-perception`; review fixes in a293522.

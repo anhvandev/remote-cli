@@ -11,10 +11,14 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] A batch "click → wait until text appears → observe" succeeds when the test shows the text after the click.
-- [ ] A step that times out stops the batch, and later steps do not run. The answer has `wait_timeout`, `failed_step` pointing at the wait, and an Observation.
-- [ ] A batch whose fixed waits and timeouts add up to more than 30 s is refused, extending the existing over-limit check.
-- [ ] The audit entry for the batch shows the Wait Condition.
-- [ ] `rcli batch` and the MCP `batch` tool accept the step.
+- [x] A batch "click → wait until text appears → observe" succeeds when the test shows the text after the click.
+- [x] A step that times out stops the batch, and later steps do not run. The answer has `wait_timeout`, `failed_step` pointing at the wait, and an Observation.
+- [x] A batch whose fixed waits and timeouts add up to more than 30 s is refused, extending the existing over-limit check.
+- [x] The audit entry for the batch shows the Wait Condition.
+- [x] `rcli batch` and the MCP `batch` tool accept the step.
+
+## Comments
+
+- 2026-11-14: Implemented on `agent-perception`; review fixes in a293522.
