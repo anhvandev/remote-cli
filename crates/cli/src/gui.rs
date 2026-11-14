@@ -13,7 +13,18 @@ use serde_json::{json, Value};
 /// Opens the GUI window. `socket` overrides the Agent's IPC socket (`RCLI_AGENT_SOCKET`).
 pub fn run(socket: Option<PathBuf>) -> anyhow::Result<()> {
     let socket = socket.unwrap_or_else(ipc::default_socket);
-    eframe::run_native("rcli", eframe::NativeOptions::default(), Box::new(move |_| Ok(Box::new(App::new(socket)))))
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([560.0, 760.0]).with_min_inner_size([420.0, 360.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "rcli",
+        options,
+        Box::new(move |cc| {
+            look::install(&cc.egui_ctx);
+            Ok(Box::new(App::new(socket)))
+        }),
+    )
         .map_err(|e| anyhow::anyhow!("cannot open the GUI: {e}"))?;
     Ok(())
 }
@@ -279,171 +290,242 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.info = fetch(&self.rt, &self.socket);
         self.prompts = self.ipc(&Request::Prompts);
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("rcli");
-            for line in self.note.lines() {
-                ui.label(line);
-            }
-            if let Some(error) = self.info["error"].as_str() {
-                ui.label(format!("Agent unreachable: {error}"));
-                #[cfg(any(target_os = "macos", windows))]
-                {
-                    ui.separator();
-                    ui.label("Install the Agent on this Device (the Dashboard's Connect page shows both values)");
-                    ui.horizontal(|ui| {
-                        ui.label("Server Address:");
-                        ui.text_edit_singleline(&mut self.install_server);
+        let unreachable = self.info["error"].is_string();
+        let connected = self.info["connected"] == true;
+
+        // The ink plate: the wordmark, and the connection as a square signal.
+        egui::TopBottomPanel::top("head")
+            .frame(egui::Frame::new().fill(look::INK).inner_margin(egui::Margin::symmetric(20, 14)))
+            .show_separator_line(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("rcli").font(look::bold(20.0)).color(look::PAPER_3));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let state = if unreachable {
+                            "Agent unreachable"
+                        } else if connected {
+                            "connected"
+                        } else {
+                            "disconnected"
+                        };
+                        ui.label(egui::RichText::new(state).color(look::PAPER_3));
+                        look::signal(ui, connected && !unreachable, look::PAPER_2);
                     });
-                    ui.horizontal(|ui| {
-                        ui.label("Server Key:");
-                        ui.text_edit_singleline(&mut self.install_key);
-                    });
-                    if ui.button("Install").clicked() {
-                        self.install();
-                    }
-                }
-            } else {
-                ui.label(format!("Device ID: {}", self.info["device_id"].as_str().unwrap_or("-")));
-                ui.label(format!("Connection: {}", if self.info["connected"] == true { "connected" } else { "disconnected" }));
-                ui.label(format!("Server: {}", self.info["server"].as_str().unwrap_or("-")));
-                if ui.button("Reveal Server Key").clicked() {
-                    self.reveal_secrets();
-                }
-                if let Some(secrets) = &self.secrets {
-                    ui.label(format!("Server Key: {}", secrets["server_key"].as_str().unwrap_or("-")));
-                }
-                ui.separator();
-                ui.label("Device Settings");
-                match self.loaded.clone() {
-                    Some(settings) => {
-                        ui.label(format!("Terminal user: {}", settings.terminal_user));
-                        ui.label(format!("Root: {}", settings.root.name()));
-                        ui.label(format!("Accept: {}", settings.accept.name()));
-                        ui.horizontal(|ui| {
-                            ui.label("Terminal user:");
-                            ui.text_edit_singleline(&mut self.edited.terminal_user);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Root:");
-                            for level in [RootAccess::Never, RootAccess::Ask, RootAccess::Always] {
-                                ui.selectable_value(&mut self.edited.root, level, level.name());
+                });
+            });
+
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(look::PAPER).inner_margin(egui::Margin::same(20))).show(
+            ctx,
+            |ui| {
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    if !self.note.is_empty() {
+                        egui::Frame::new().fill(look::PAPER_2).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            for line in self.note.lines() {
+                                ui.label(line);
                             }
                         });
-                        ui.horizontal(|ui| {
-                            ui.label("Accept:");
-                            for mode in [AcceptMode::Password, AcceptMode::PasswordAccept] {
-                                ui.selectable_value(&mut self.edited.accept, mode, mode.name());
-                            }
-                        });
-                        // Only the fields the person changed are sent (see `Change::between`).
-                        if ui.button("Apply Device Settings").clicked() {
-                            self.set_settings();
-                        }
-                        if ui.button("Reload Device Settings").clicked() {
-                            self.load_settings();
-                        }
                     }
-                    None => {
-                        // The Agent hides Settings from an unelevated `info` reply, so they are read through the same
-                        // OS authorization prompt as Reveal. Apply stays unavailable until that reply fills the editors.
-                        ui.label("Root only: loading asks for permission the way Reveal does (polkit, UAC or macOS authorization).");
-                        if ui.button("Load Device Settings").clicked() {
-                            self.load_settings();
-                        }
-                    }
-                }
-                ui.separator();
-                ui.label("Device Password");
-                ui.horizontal(|ui| {
-                    if ui.button("Reveal").clicked() {
-                        self.reveal();
-                    }
-                    if ui.add_enabled(self.shown.is_some(), egui::Button::new("Copy")).clicked() {
-                        if let Some(p) = self.shown.clone() {
-                            ctx.copy_text(p);
-                            self.note = "the Device Password was copied".into();
-                        }
-                    }
-                });
-                if let Some(shown) = &self.shown {
-                    ui.label(format!("Device Password: {shown}"));
-                }
-                ui.horizontal(|ui| {
-                    ui.label("New password:");
-                    ui.text_edit_singleline(&mut self.password);
-                    if ui.button("Change").clicked() {
-                        self.change();
-                    }
-                });
-                ui.separator();
-                ui.label("Waiting for you");
-                let waiting: Vec<Value> = self.prompts.as_array().cloned().unwrap_or_default();
-                if waiting.is_empty() {
-                    ui.label("nothing is waiting");
-                }
-                for p in waiting {
-                    let id = p["id"].as_u64().unwrap_or_default();
-                    let who = p["who"].as_str().unwrap_or_default();
-                    let what = match p["kind"].as_str() {
-                        Some("root") => format!("{who} asks for root access"),
-                        _ => format!("{who} wants to connect"),
-                    };
-                    ui.horizontal(|ui| {
-                        ui.label(what);
-                        if ui.button("Accept").clicked() {
-                            self.answer_prompt(id, true);
-                        }
-                        if ui.button("Reject").clicked() {
-                            self.answer_prompt(id, false);
-                        }
-                    });
-                }
-                ui.separator();
-                ui.label("Being controlled by");
-                let controllers = self.info["controllers"].as_array().cloned().unwrap_or_default();
-                if controllers.is_empty() {
-                    ui.label("no Controller is connected");
-                }
-                for controller in &controllers {
-                    let who = controller.as_str().unwrap_or_default().to_owned();
-                    ui.horizontal(|ui| {
-                        ui.label(&who);
-                        if ui.button("Disconnect").clicked() {
-                            let reply = self.ipc(&Request::Disconnect { who: who.clone() });
-                            self.note = reply["message"].as_str().unwrap_or_default().to_owned();
-                        }
-                        if ui.button("Grant root to this session").clicked() {
-                            self.grant_root(&who);
-                        }
-                    });
-                }
-            }
-            #[cfg(target_os = "macos")]
-            {
-                ui.separator();
-                ui.label("macOS permissions (Live View and remote input need them, also at the lock and login screens)");
-                let (screen, ax) = rcli_agent::macos::grants();
-                let mark = |granted: bool| if granted { "allowed" } else { "not allowed yet" };
-                ui.label(format!("Screen Recording: {}", mark(screen)));
-                ui.label(format!("Accessibility: {}", mark(ax)));
-                if !(screen && ax) {
-                    ui.label("Click Allow, switch rcli on in each list System Settings opens, then reopen rcli.");
-                    ui.horizontal(|ui| {
-                        if ui.button("Allow").clicked() {
-                            rcli_agent::macos::request_grants();
-                        }
-                        for (label, pane) in
-                            [("Open Screen Recording", "Privacy_ScreenCapture"), ("Open Accessibility", "Privacy_Accessibility")]
+                    if let Some(error) = self.info["error"].as_str() {
+                        look::section(ui, "Agent unreachable");
+                        ui.label(egui::RichText::new(error).color(look::ERROR));
+                        #[cfg(any(target_os = "macos", windows))]
                         {
-                            if ui.button(label).clicked() {
-                                let url = format!("x-apple.systempreferences:com.apple.preference.security?{pane}");
-                                let _ = std::process::Command::new("open").arg(url).spawn();
+                            look::section(ui, "Install the Agent");
+                            look::muted(ui, "Install the Agent on this Device (the Dashboard's Connect page shows both values)");
+                            egui::Grid::new("install").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+                                look::muted(ui, "Server Address");
+                                ui.text_edit_singleline(&mut self.install_server);
+                                ui.end_row();
+                                look::muted(ui, "Server Key");
+                                ui.text_edit_singleline(&mut self.install_key);
+                                ui.end_row();
+                            });
+                            if look::primary(ui, "Install").clicked() {
+                                self.install();
                             }
                         }
-                    });
-                }
-            }
-        });
+                    } else {
+                        // The Device ID is what a Controller types to connect: set it like a platform number.
+                        look::muted(ui, "Device ID");
+                        ui.label(egui::RichText::new(self.info["device_id"].as_str().unwrap_or("-")).font(look::bold(30.0)));
+                        egui::Grid::new("facts").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+                            look::muted(ui, "Server");
+                            ui.label(self.info["server"].as_str().unwrap_or("-"));
+                            ui.end_row();
+                            if let Some(secrets) = &self.secrets {
+                                look::muted(ui, "Server Key");
+                                ui.label(secrets["server_key"].as_str().unwrap_or("-"));
+                                ui.end_row();
+                            }
+                        });
+                        if ui.button("Reveal Server Key").clicked() {
+                            self.reveal_secrets();
+                        }
+
+                        look::section(ui, "Device Settings");
+                        match self.loaded.clone() {
+                            Some(settings) => {
+                                egui::Grid::new("settings").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+                                    look::muted(ui, "Terminal user");
+                                    ui.vertical(|ui| {
+                                        ui.text_edit_singleline(&mut self.edited.terminal_user);
+                                        look::small(ui, &format!("now: {}", settings.terminal_user));
+                                    });
+                                    ui.end_row();
+                                    look::muted(ui, "Root");
+                                    ui.vertical(|ui| {
+                                        look::choices(ui, |ui| {
+                                            for level in [RootAccess::Never, RootAccess::Ask, RootAccess::Always] {
+                                                look::choice(ui, &mut self.edited.root, level, level.name());
+                                            }
+                                        });
+                                        look::small(ui, &format!("now: {}", settings.root.name()));
+                                    });
+                                    ui.end_row();
+                                    look::muted(ui, "Accept");
+                                    ui.vertical(|ui| {
+                                        look::choices(ui, |ui| {
+                                            for mode in [AcceptMode::Password, AcceptMode::PasswordAccept] {
+                                                look::choice(ui, &mut self.edited.accept, mode, mode.name());
+                                            }
+                                        });
+                                        look::small(ui, &format!("now: {}", settings.accept.name()));
+                                    });
+                                    ui.end_row();
+                                });
+                                ui.horizontal(|ui| {
+                                    // Only the fields the person changed are sent (see `Change::between`).
+                                    if look::primary(ui, "Apply Device Settings").clicked() {
+                                        self.set_settings();
+                                    }
+                                    if ui.button("Reload Device Settings").clicked() {
+                                        self.load_settings();
+                                    }
+                                });
+                            }
+                            None => {
+                                // The Agent hides Settings from an unelevated `info` reply, so they are read through the
+                                // same OS authorization prompt as Reveal. Apply stays unavailable until that reply fills
+                                // the editors.
+                                look::muted(
+                                    ui,
+                                    "Root only: loading asks for permission the way Reveal does (polkit, UAC or macOS authorization).",
+                                );
+                                if ui.button("Load Device Settings").clicked() {
+                                    self.load_settings();
+                                }
+                            }
+                        }
+
+                        look::section(ui, "Device Password");
+                        if let Some(shown) = &self.shown {
+                            ui.label(egui::RichText::new(shown).font(look::bold(18.0)));
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Reveal").clicked() {
+                                self.reveal();
+                            }
+                            if ui.add_enabled(self.shown.is_some(), egui::Button::new("Copy")).clicked() {
+                                if let Some(p) = self.shown.clone() {
+                                    ctx.copy_text(p);
+                                    self.note = "the Device Password was copied".into();
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            look::muted(ui, "New password");
+                            ui.text_edit_singleline(&mut self.password);
+                            if look::primary(ui, "Change").clicked() {
+                                self.change();
+                            }
+                        });
+
+                        look::section(ui, "Waiting for you");
+                        let waiting: Vec<Value> = self.prompts.as_array().cloned().unwrap_or_default();
+                        if waiting.is_empty() {
+                            look::muted(ui, "nothing is waiting");
+                        }
+                        for p in waiting {
+                            let id = p["id"].as_u64().unwrap_or_default();
+                            let who = p["who"].as_str().unwrap_or_default();
+                            let what = match p["kind"].as_str() {
+                                Some("root") => format!("{who} asks for root access"),
+                                _ => format!("{who} wants to connect"),
+                            };
+                            // A request waiting on the person is the one amber plate in the window.
+                            egui::Frame::new().fill(look::AMBER).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.label(egui::RichText::new(what).font(look::bold(15.0)).color(look::INK));
+                                ui.horizontal(|ui| {
+                                    if look::primary(ui, "Accept").clicked() {
+                                        self.answer_prompt(id, true);
+                                    }
+                                    if ui.button("Reject").clicked() {
+                                        self.answer_prompt(id, false);
+                                    }
+                                });
+                            });
+                        }
+
+                        look::section(ui, "Being controlled by");
+                        let controllers = self.info["controllers"].as_array().cloned().unwrap_or_default();
+                        if controllers.is_empty() {
+                            look::muted(ui, "no Controller is connected");
+                        }
+                        for (i, controller) in controllers.iter().enumerate() {
+                            let who = controller.as_str().unwrap_or_default().to_owned();
+                            if i > 0 {
+                                look::rule(ui, look::RULE, 1.0);
+                            }
+                            ui.label(egui::RichText::new(&who).font(look::bold(15.0)));
+                            ui.horizontal(|ui| {
+                                if ui.button("Disconnect").clicked() {
+                                    let reply = self.ipc(&Request::Disconnect { who: who.clone() });
+                                    self.note = reply["message"].as_str().unwrap_or_default().to_owned();
+                                }
+                                if ui.button("Grant root to this session").clicked() {
+                                    self.grant_root(&who);
+                                }
+                            });
+                        }
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        look::section(ui, "macOS permissions");
+                        look::muted(ui, "Live View and remote input need them, also at the lock and login screens.");
+                        let (screen, ax) = rcli_agent::macos::grants();
+                        let mark = |granted: bool| if granted { "allowed" } else { "not allowed yet" };
+                        egui::Grid::new("grants").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+                            for (name, granted) in [("Screen Recording", screen), ("Accessibility", ax)] {
+                                look::muted(ui, name);
+                                ui.horizontal(|ui| {
+                                    look::signal(ui, granted, look::INK);
+                                    ui.label(mark(granted));
+                                });
+                                ui.end_row();
+                            }
+                        });
+                        if !(screen && ax) {
+                            ui.label("Click Allow, switch rcli on in each list System Settings opens, then reopen rcli.");
+                            ui.horizontal(|ui| {
+                                if look::primary(ui, "Allow").clicked() {
+                                    rcli_agent::macos::request_grants();
+                                }
+                                for (label, pane) in
+                                    [("Open Screen Recording", "Privacy_ScreenCapture"), ("Open Accessibility", "Privacy_Accessibility")]
+                                {
+                                    if ui.button(label).clicked() {
+                                        let url = format!("x-apple.systempreferences:com.apple.preference.security?{pane}");
+                                        let _ = std::process::Command::new("open").arg(url).spawn();
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
+            },
+        );
         ctx.request_repaint_after(std::time::Duration::from_secs(2));
     }
 }
@@ -782,6 +864,166 @@ impl rcli_agent::platform::Platform for WindowPlatform {
     fn ask_accept(&self, requester: &str, timeout: Duration) -> anyhow::Result<bool> {
         (self.open)();
         Ok(self.prompts.ask(ipc::PromptKind::Accept, requester, timeout))
+    }
+}
+
+/// The window's look: the Dashboard's Wayfind system (see `crates/cli/design.md`), mapped onto egui.
+mod look {
+    use eframe::egui::{
+        self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Response, RichText, Stroke, TextStyle,
+        Theme, Ui,
+    };
+    use std::sync::Arc;
+
+    // The Dashboard's OKLCH tokens (dashboard/app/tokens.css), converted to sRGB.
+    pub const PAPER: Color32 = Color32::from_rgb(237, 240, 244);
+    pub const PAPER_2: Color32 = Color32::from_rgb(221, 226, 231);
+    pub const PAPER_3: Color32 = Color32::from_rgb(251, 254, 255);
+    pub const INK: Color32 = Color32::from_rgb(10, 13, 19);
+    pub const INK_2: Color32 = Color32::from_rgb(40, 43, 50);
+    pub const INK_3: Color32 = Color32::from_rgb(86, 91, 100);
+    pub const RULE: Color32 = Color32::from_rgb(185, 190, 197);
+    pub const SIGNAL: Color32 = Color32::from_rgb(32, 85, 225);
+    pub const SIGNAL_INK: Color32 = Color32::from_rgb(252, 254, 255);
+    pub const AMBER: Color32 = Color32::from_rgb(244, 181, 34);
+    pub const ERROR: Color32 = Color32::from_rgb(190, 35, 35);
+
+    const BOLD: &str = "bold";
+    /// Border widths: 2px on surfaces and controls, 1px between rows.
+    const BAR: f32 = 2.0;
+    const HAIR: f32 = 1.0;
+
+    pub fn bold(size: f32) -> FontId {
+        FontId::new(size, FontFamily::Name(BOLD.into()))
+    }
+
+    /// Chivo Mono (OFL, `assets/fonts`), light theme only, square corners, 2px ink borders.
+    pub fn install(ctx: &egui::Context) {
+        let mut fonts = FontDefinitions::default();
+        fonts.font_data.insert(
+            "chivo".into(),
+            Arc::new(FontData::from_static(include_bytes!("../assets/fonts/ChivoMono-Regular.ttf"))),
+        );
+        fonts.font_data.insert(
+            "chivo-bold".into(),
+            Arc::new(FontData::from_static(include_bytes!("../assets/fonts/ChivoMono-ExtraBold.ttf"))),
+        );
+        // egui's own fonts stay behind Chivo for glyphs it lacks.
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().insert(0, "chivo".into());
+        }
+        let fallback = fonts.families[&FontFamily::Proportional].clone();
+        fonts.families.insert(FontFamily::Name(BOLD.into()), [vec!["chivo-bold".to_owned()], fallback].concat());
+        ctx.set_fonts(fonts);
+
+        ctx.set_theme(Theme::Light);
+        let mut style = (*ctx.style_of(Theme::Light)).clone();
+        style.text_styles = [
+            (TextStyle::Heading, bold(20.0)),
+            (TextStyle::Body, FontId::proportional(15.0)),
+            (TextStyle::Button, bold(14.0)),
+            (TextStyle::Small, FontId::proportional(12.0)),
+            (TextStyle::Monospace, FontId::monospace(14.0)),
+        ]
+        .into();
+        style.spacing.button_padding = egui::vec2(12.0, 6.0);
+        style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+        style.spacing.interact_size.y = 32.0;
+
+        let v = &mut style.visuals;
+        v.panel_fill = PAPER;
+        v.window_fill = PAPER_3;
+        v.window_stroke = Stroke::new(BAR, INK);
+        v.window_corner_radius = CornerRadius::ZERO;
+        v.menu_corner_radius = CornerRadius::ZERO;
+        v.extreme_bg_color = PAPER_3;
+        v.faint_bg_color = PAPER_2;
+        v.code_bg_color = PAPER_2;
+        v.hyperlink_color = SIGNAL;
+        v.warn_fg_color = INK;
+        v.error_fg_color = ERROR;
+        // Text selection is amber under ink text; a focused field gets a 2px cobalt edge.
+        v.selection.bg_fill = AMBER;
+        v.selection.stroke = Stroke::new(BAR, SIGNAL);
+        let ink = Stroke::new(BAR, INK);
+        let w = &mut v.widgets;
+        w.noninteractive.bg_fill = PAPER;
+        w.noninteractive.weak_bg_fill = PAPER;
+        w.noninteractive.bg_stroke = Stroke::new(HAIR, RULE);
+        w.noninteractive.fg_stroke = Stroke::new(HAIR, INK);
+        // A plain button is the outlined one; hover and press invert it to ink.
+        w.inactive.weak_bg_fill = PAPER;
+        w.inactive.bg_fill = PAPER_2;
+        w.inactive.bg_stroke = ink;
+        w.inactive.fg_stroke = Stroke::new(HAIR, INK);
+        for state in [&mut w.hovered, &mut w.active, &mut w.open] {
+            state.weak_bg_fill = INK;
+            state.bg_fill = INK_2;
+            state.bg_stroke = ink;
+            state.fg_stroke = Stroke::new(HAIR, PAPER_3);
+            state.expansion = 0.0;
+        }
+        for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+            state.corner_radius = CornerRadius::ZERO;
+        }
+        ctx.set_style_of(Theme::Light, style);
+    }
+
+    /// The one filled button of its group: cobalt.
+    pub fn primary(ui: &mut Ui, text: &str) -> Response {
+        ui.add(egui::Button::new(RichText::new(text).color(SIGNAL_INK)).fill(SIGNAL).stroke(Stroke::new(BAR, SIGNAL)))
+    }
+
+    /// One cell of a choice set; the chosen cell fills ink with paper text.
+    pub fn choice<T: PartialEq>(ui: &mut Ui, current: &mut T, value: T, text: &str) {
+        let chosen = *current == value;
+        let button = if chosen {
+            egui::Button::new(RichText::new(text).color(PAPER_3)).fill(INK)
+        } else {
+            egui::Button::new(text)
+        };
+        if ui.add(button).clicked() {
+            *current = value;
+        }
+    }
+
+    /// Choice cells joined edge to edge.
+    pub fn choices(ui: &mut Ui, cells: impl FnOnce(&mut Ui)) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            cells(ui);
+        });
+    }
+
+    /// A section head over a 2px ink rule.
+    pub fn section(ui: &mut Ui, title: &str) {
+        ui.add_space(20.0);
+        ui.label(RichText::new(title).font(bold(17.0)));
+        rule(ui, INK, BAR);
+        ui.add_space(4.0);
+    }
+
+    pub fn rule(ui: &mut Ui, color: Color32, width: f32) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), width), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 0.0, color);
+    }
+
+    pub fn muted(ui: &mut Ui, text: &str) {
+        ui.label(RichText::new(text).color(INK_3));
+    }
+
+    pub fn small(ui: &mut Ui, text: &str) {
+        ui.label(RichText::new(text).small().color(INK_3));
+    }
+
+    /// A status square: filled cobalt when on, hollow in `rim` when off.
+    pub fn signal(ui: &mut Ui, on: bool, rim: Color32) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+        if on {
+            ui.painter().rect_filled(rect, 0.0, SIGNAL);
+        } else {
+            ui.painter().rect_stroke(rect, 0.0, Stroke::new(BAR, rim), egui::StrokeKind::Inside);
+        }
     }
 }
 
