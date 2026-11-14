@@ -256,7 +256,7 @@ impl Executor {
 }
 
 /// Re-detects Marks on `displays` (each reading settles the screen, so about every 100 ms) until two readings in
-/// a row meet `until`; the `wait_timeout` error when its timeout passed first.
+/// a row meet `until`; the `wait_timeout` error when its timeout passed first (never before two readings).
 fn wait_until(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Result<Option<Error>, Error> {
     let condition = until.condition.as_ref().ok_or_else(|| error("invalid_action", "Wait Condition without a condition"))?;
     let on_mark = match condition {
@@ -276,7 +276,8 @@ fn wait_until(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Resu
         }
     }
     let deadline = Instant::now() + Duration::from_millis(until.timeout_ms.into());
-    let mut met_before = false;
+    // Whether the previous reading met it; `None` before the first, so a timeout never comes before two readings.
+    let mut met_before = None;
     loop {
         let mut all = vec![];
         for &d in displays {
@@ -284,14 +285,14 @@ fn wait_until(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Resu
             all.extend(marks::detect(p, d, &frame, 1).map_err(|e| error("platform", e))?);
         }
         let holds = condition_holds(condition, &all, &until.text, until.role.as_deref())?;
-        if holds && met_before {
+        if holds && met_before == Some(true) {
             return Ok(None);
         }
-        if Instant::now() >= deadline {
+        if met_before.is_some() && Instant::now() >= deadline {
             let message = format!("Wait Condition on {:?} not met within {} ms", until.text, until.timeout_ms);
             return Ok(Some(error("wait_timeout", message)));
         }
-        met_before = holds;
+        met_before = Some(holds);
     }
 }
 

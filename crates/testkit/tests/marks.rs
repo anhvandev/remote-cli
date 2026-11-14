@@ -289,6 +289,11 @@ async fn observe_waits_until_text_appears_or_disappears_without_the_control_lock
     let (status, obs) = sys.api.post_json(&actions, &body).await;
     assert_eq!(status, StatusCode::OK, "{obs}");
     assert!(!texts(&obs).contains(&json!("Saved")), "{obs}");
+
+    // Two readings are always taken, so a condition already met is met even with no time to wait.
+    let body = json!({ "actions": [], "until": {"appears": {"text": "OK"}, "timeout_ms": 0} });
+    let (status, obs) = sys.api.post_json(&actions, &body).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
 }
 
 #[tokio::test]
