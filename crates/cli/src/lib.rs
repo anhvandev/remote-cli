@@ -1310,6 +1310,21 @@ fn prompt_line(prompt: &str) -> anyhow::Result<String> {
     Ok(line.trim().to_owned())
 }
 
+/// An API error response: its code and message as text, and its JSON body (a timed-out wait's carries the Observation).
+#[derive(Debug)]
+pub(crate) struct ApiFailure {
+    message: String,
+    pub(crate) body: Value,
+}
+
+impl std::fmt::Display for ApiFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiFailure {}
+
 /// Controller API client (base URL + how to authenticate).
 #[derive(Clone)]
 pub struct Api {
@@ -1390,7 +1405,8 @@ impl Api {
             let body: Value = resp.json().await.unwrap_or(Value::Null);
             let e = &body["error"];
             let step = e["step"].as_u64().map(|s| format!(" (step {s})")).unwrap_or_default();
-            anyhow::bail!("{} ({}): {}{step}", str_of(&e["code"]), status, str_of(&e["message"]));
+            let message = format!("{} ({}): {}{step}", str_of(&e["code"]), status, str_of(&e["message"]));
+            return Err(ApiFailure { message, body }.into());
         }
         Ok(resp)
     }

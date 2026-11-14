@@ -83,8 +83,14 @@ async fn an_agent_lists_devices_takes_the_lock_acts_and_observes_with_marks() {
     assert_eq!(images(&r).len(), 1);
     assert_eq!(obs["marks"][0]["text"], "OK", "{obs}");
     // observe with a Wait Condition: "OK" never disappears, so the wait times out.
-    let r = call(&mcp, "observe", json!({ "device": "lab-pc", "until": {"disappears": {"text": "OK"}, "timeout_ms": 300} })).await;
+    // (An image without Marks first, so the annotated one below is not `unchanged`.)
+    ok(&mcp, "observe", json!({ "device": "lab-pc" })).await;
+    let until = json!({"disappears": {"text": "OK"}, "timeout_ms": 300});
+    let r = call(&mcp, "observe", json!({ "device": "lab-pc", "marks": true, "until": until })).await;
     assert!(r.is_error == Some(true) && text(&r).contains("wait_timeout"), "{r:?}");
+    // The timed-out call still returns the Observation: its image and its Marks, which can be targeted.
+    let obs = r.structured_content.clone().unwrap_or_default();
+    assert!(images(&r).len() == 1 && obs["marks"][0]["text"] == "OK", "{r:?}");
     let mark = json!({ "type": "click", "mark": 1, "observation": obs["observation"] });
     let wait = json!({"type": "wait", "ms": 10, "until": {"appears": {"text": "ok", "role": "button"}}});
     let (_, r) = ok(&mcp, "batch", json!({ "device": "lab-pc", "actions": [mark, wait], "observe": "none" })).await;

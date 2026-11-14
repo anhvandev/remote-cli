@@ -14,7 +14,7 @@ use rmcp::{
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{config, path_segment, Api};
+use crate::{config, path_segment, Api, ApiFailure};
 
 /// Serves MCP on `read`/`write` (stdin/stdout for `rcli mcp`) until the client disconnects.
 pub async fn serve<R, W>(api: Api, read: R, write: W) -> anyhow::Result<()>
@@ -151,6 +151,19 @@ fn observation(mut obs: Value) -> CallToolResult {
     result
 }
 
+/// `observation` of a call's result; a timed-out wait is a tool error that still carries its Observation.
+fn observed(result: anyhow::Result<Value>) -> anyhow::Result<CallToolResult> {
+    let e = match result {
+        Ok(obs) => return Ok(observation(obs)),
+        Err(e) => e,
+    };
+    let Some(failure) = e.downcast_ref::<ApiFailure>().filter(|f| f.body["error"]["code"] == "wait_timeout") else { return Err(e) };
+    let mut result = observation(failure.body["error"].clone());
+    result.is_error = Some(true);
+    result.content.insert(0, ContentBlock::text(format!("{e:#}")));
+    Ok(result)
+}
+
 impl Mcp {
     async fn call(&self, tool: &str, args: &Value) -> anyhow::Result<CallToolResult> {
         use reqwest::Method;
@@ -184,9 +197,9 @@ impl Mcp {
                 self.watches.lock().unwrap().remove(&id);
                 structured(lock)
             }
-            "observe" => observation(self.api.observe(name, &act(json!([]))).await?),
-            "act" => observation(self.api.observe(name, &act(json!([args["action"]]))).await?),
-            "batch" => observation(self.api.observe(name, &act(args["actions"].clone())).await?),
+            "observe" => observed(self.api.observe(name, &act(json!([]))).await)?,
+            "act" => observed(self.api.observe(name, &act(json!([args["action"]]))).await)?,
+            "batch" => observed(self.api.observe(name, &act(args["actions"].clone())).await)?,
             "exec" => {
                 let mut body = pick(args, &["command", "as", "timeout_secs"]);
                 // `rcli root on <Device ID>` sets exec's default too.
