@@ -244,17 +244,21 @@ impl ActBody {
     }
 }
 
-/// `agent_too_old` when the Device's reported Agent version is below `WAIT_CONDITIONS_SINCE`.
+/// `agent_too_old` unless the Device's reported Agent version is semver and at least `WAIT_CONDITIONS_SINCE`
+/// (a missing or non-semver version may be an Agent that would ignore the wait).
 async fn refuse_agents_without_wait_conditions(state: &super::State, device: uuid::Uuid) -> Result<(), ApiError> {
     let version: Option<String> = sqlx::query_scalar("SELECT agent_version FROM devices WHERE id = $1")
         .bind(device)
         .fetch_one(&state.db)
         .await
         .map_err(anyhow::Error::from)?;
-    if crate::updates::below(version.as_deref(), WAIT_CONDITIONS_SINCE) {
+    let supported = version
+        .as_deref()
+        .is_some_and(|v| semver::Version::parse(v).is_ok() && !crate::updates::below(Some(v), WAIT_CONDITIONS_SINCE));
+    if !supported {
         let message = format!(
             "the Device's Agent is {}; Wait Conditions need Agent {WAIT_CONDITIONS_SINCE} or later",
-            version.unwrap_or_default()
+            version.as_deref().unwrap_or("of unknown version")
         );
         return Err(ApiError::new(StatusCode::CONFLICT, "agent_too_old", message));
     }

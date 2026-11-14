@@ -384,6 +384,16 @@ async fn the_server_refuses_wait_conditions_to_an_agent_too_old_for_them() {
     let batch = json!({ "actions": [{"type": "wait", "until": {"appears": {"text": "Saved"}}}], "observe": "none" });
     let (status, body) = sys.api.post_json(&actions, &batch).await;
     assert_eq!((status, body["error"]["code"].clone()), (StatusCode::CONFLICT, json!("agent_too_old")), "{body}");
+
+    // An Agent whose version is not semver may be too old: an ignored wait must never pass for a met one.
+    let p = login_form();
+    p.update(|s| s.version = "dev".into());
+    let agent = sys.start_agent_on(p).await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online" && d["agent_version"] == "dev").await;
+    let body = json!({ "actions": [], "until": {"appears": {"text": "Saved"}} });
+    let (status, body) = sys.api.post_json(&format!("/api/v1/devices/{dev}/actions"), &body).await;
+    assert_eq!((status, body["error"]["code"].clone()), (StatusCode::CONFLICT, json!("agent_too_old")), "{body}");
 }
 
 #[tokio::test]
