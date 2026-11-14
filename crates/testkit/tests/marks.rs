@@ -320,6 +320,10 @@ async fn the_server_refuses_wait_conditions_to_an_agent_too_old_for_them() {
     let batch = json!({ "actions": [{"type": "click", "text": "OK"}, {"type": "wait", "ms": 10}], "observe": "none" });
     let (status, body) = sys.api.post_json(&actions, &batch).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    // A Wait Condition in a wait step is refused too.
+    let batch = json!({ "actions": [{"type": "wait", "until": {"appears": {"text": "Saved"}}}], "observe": "none" });
+    let (status, body) = sys.api.post_json(&actions, &batch).await;
+    assert_eq!((status, body["error"]["code"].clone()), (StatusCode::CONFLICT, json!("agent_too_old")), "{body}");
 }
 
 #[tokio::test]

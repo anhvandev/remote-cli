@@ -216,7 +216,7 @@ const WAIT_CONDITIONS_SINCE: &str = "0.4.0";
 
 impl ActBody {
     fn has_wait_condition(&self) -> bool {
-        self.until.is_some()
+        self.until.is_some() || self.actions.iter().any(|a| matches!(a, Action::Wait { until: Some(_), .. }))
     }
 }
 
