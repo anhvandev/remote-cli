@@ -54,7 +54,11 @@ fn tools() -> Vec<Tool> {
             "observe": { "type": "string", "enum": modes.split(' ').collect::<Vec<_>>(),
                 "description": "shot = one settled screenshot (default); frames = screenshots of each change; clip = short MP4; none" },
             "display": { "description": "Display index to observe, or \"all\"; default: the display last acted on" },
-            "marks": { "type": "boolean", "description": "Number the detected UI elements (Marks) and return their table" },
+            "marks": { "type": "boolean", "description": "Number the detected UI elements (Marks) and return their table. \
+                A Mark: number, text (label), role, display, box; containers (window, dialog, menu, list) are Marks too. \
+                Optional, omitted when empty: states (only non-default: disabled, focused, checked, selected, expanded, \
+                collapsed), value (the content apart from the label; never for a password field), parent (number of \
+                the container Mark it sits in)" },
             "max_frames": { "type": "integer", "minimum": 1, "maximum": 30, "description": "frames: at most this many per display (default 10)" },
         })
     };

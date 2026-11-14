@@ -90,6 +90,7 @@ fn element(bus: &Connection, dest: &str, node: &OwnedObjectPath, editable: bool,
         y: y1 as u32,
         width: (x2 - x1) as u32,
         height: (y2 - y1) as u32,
+        ..Default::default()
     })
 }
 

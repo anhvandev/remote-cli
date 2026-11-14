@@ -435,10 +435,24 @@ fn save_observation(obs: &Value, out: &Path, frames: bool) -> anyhow::Result<Str
         text += &format!("{label}: {}x{} {}\n", i["width"], i["height"], path.display());
     }
     if let Some(marks) = obs["marks"].as_array() {
-        text += &format!("observation {}\n{:<4}  {:<7}  {:<12}  {:<19}  {}\n", obs["observation"], "MARK", "DISPLAY", "ROLE", "BOX", "TEXT");
+        text += &format!(
+            "observation {}\n{:<4}  {:<7}  {:<12}  {:<19}  {:<6}  {:<17}  {:<20}  {}\n",
+            obs["observation"], "MARK", "DISPLAY", "ROLE", "BOX", "PARENT", "STATES", "VALUE", "TEXT"
+        );
         for m in marks {
             let bbox = format!("{},{} {}x{}", m["x"], m["y"], m["width"], m["height"]);
-            text += &format!("{:<4}  {:<7}  {:<12}  {bbox:<19}  {}\n", m["number"].to_string(), m["display"].to_string(), str_of(&m["role"]), str_of(&m["text"]));
+            let parent = m["parent"].as_u64().map(|p| p.to_string()).unwrap_or_default();
+            let states = m["states"].as_array().into_iter().flatten().map(str_of).collect::<Vec<_>>().join(",");
+            let value = str_of(&m["value"]);
+            // The full value is in --json.
+            let value = if value.chars().count() > 20 { value.chars().take(19).collect::<String>() + "…" } else { value.to_owned() };
+            text += &format!(
+                "{:<4}  {:<7}  {:<12}  {bbox:<19}  {parent:<6}  {states:<17}  {value:<20}  {}\n",
+                m["number"].to_string(),
+                m["display"].to_string(),
+                str_of(&m["role"]),
+                str_of(&m["text"])
+            );
         }
     }
     if text.is_empty() {

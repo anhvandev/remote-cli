@@ -68,14 +68,23 @@ pub struct Frame {
 }
 
 /// An on-screen element a Mark is made from. Box in real pixels of its display.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct UiElement {
     pub role: String,
+    /// Label or name only; the content is `value`.
     pub text: String,
     pub x: u32,
     pub y: u32,
     pub width: u32,
     pub height: u32,
+    /// Mark States that differ from the default: disabled, focused, checked, selected, expanded, collapsed.
+    pub states: Vec<String>,
+    pub value: Option<String>,
+    /// A password field: its `value` is never reported, whatever the adapter put there.
+    pub password: bool,
+    /// Index in the same list of the nearest container (window, dialog, menu, list) above this element.
+    pub parent: Option<usize>,
 }
 
 /// One input primitive. The Executor builds clicks, drags and key combinations from these.

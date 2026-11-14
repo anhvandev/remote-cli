@@ -219,7 +219,7 @@ fn accessibility_tree(d: &DisplayInfo) -> Option<Vec<UiElement>> {
             if let (Some(origin), Some(size)) = (origin, size) {
                 if let Some((x, y, width, height)) = to_pixels(d, origin, size) {
                     if role != "text" || !text.is_empty() {
-                        out.push(UiElement { role: role.into(), text, x, y, width, height });
+                        out.push(UiElement { role: role.into(), text, x, y, width, height, ..Default::default() });
                     }
                 }
             }
@@ -436,7 +436,7 @@ impl Platform for MacPlatform {
             for observation in request.results().unwrap_or_default().iter() {
                 let Some(best) = observation.topCandidates(1).firstObject() else { continue };
                 let (x, y, width, height) = vision_box(unsafe { observation.boundingBox() }, frame.width, frame.height);
-                out.push(UiElement { role: "text".into(), text: best.string().to_string(), x, y, width, height });
+                out.push(UiElement { role: "text".into(), text: best.string().to_string(), x, y, width, height, ..Default::default() });
             }
             Ok(out)
         })

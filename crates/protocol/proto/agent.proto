@@ -320,6 +320,12 @@ message Mark {
   uint32 y = 6;
   uint32 width = 7;
   uint32 height = 8;
+  // Mark States that differ from the default: disabled, focused, checked, selected, expanded, collapsed.
+  repeated string states = 9;
+  // Content, apart from the label `text`; empty when none or a password field.
+  string value = 10;
+  // Number of the nearest container Mark (window, dialog, menu, list) this one sits in.
+  optional uint32 parent = 11;
 }
 
 message Image {
