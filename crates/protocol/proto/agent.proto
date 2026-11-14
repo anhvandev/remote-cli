@@ -232,6 +232,20 @@ message ActRequest {
   // Open media channel (LiveOffer with `media`) of this Controller: large image/clip bytes go over it, not here.
   string media_session = 26;
   reserved 27; // was unlock: typed a stored unlock password (ADR 0005)
+  // After the Actions, re-detect Marks until this holds, then observe; error "wait_timeout" (with the
+  // Observation) when it did not hold within its timeout.
+  WaitCondition until = 11;
+}
+
+// Something to wait for on screen, about the Marks whose text matches `text` (as text targets do) and, if set, `role`.
+message WaitCondition {
+  string text = 1;
+  optional string role = 2;
+  uint32 timeout_ms = 3;
+  oneof condition {
+    bool appears = 4;
+    bool disappears = 5;
+  }
 }
 
 enum ObserveMode {

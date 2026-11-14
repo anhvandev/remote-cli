@@ -148,6 +148,23 @@ Mỗi Mark có `number`, `text` (nhãn), `role`, `display` và khung. Container 
 
 Bảng Mark của CLI có thêm cột `PARENT`, `STATES`, `VALUE` (value dài bị cắt, `--json` có đủ). Mark từ OCR (màn khoá, không có cây accessibility) không có ba field này.
 
+Trên macOS, Marks lấy từ cửa sổ đang focus cùng menu bar, menu đang mở và sheet của app đó; cửa sổ khác của app nằm phía sau không còn cho Mark. Thay đổi hành vi: ô nhập mà nhãn duy nhất là nội dung của nó (`AXValue`) giờ có `text` rỗng, nội dung nằm ở `value`, nên nhắm ô đó theo nội dung không còn khớp; nhắm theo số Mark thay thế.
+
+**Wait Condition**: chờ tới khi một chữ hiện ra hoặc biến mất rồi mới chụp, thay vì đoán thời gian chờ:
+
+```bash
+rcli shot demo-pc --until-appears "Saved" --marks          # chờ chữ "Saved" hiện ra
+rcli shot demo-pc --until-disappears "Loading" --timeout-ms 20000
+rcli shot demo-pc --until-appears "OK" --role button       # chỉ tính Mark có role button
+```
+
+API: thêm `"until": {"appears": {"text": "Saved", "role": "button"}, "timeout_ms": 5000}` (hoặc `"disappears"`) vào
+request `actions`, chỉ với observe `shot`. Agent đọc lại Marks khoảng mỗi 100 ms (OCR khi không có accessibility tree,
+nên dùng được ở màn khoá và màn đăng nhập) và trả Observation khi hai lần đọc liên tiếp đều thoả. Chữ khớp như khi
+target bằng chữ: không phân biệt hoa thường, bằng hoặc chứa. `timeout_ms` mặc định 5000, tối đa 30000. Hết giờ thì lỗi
+`wait_timeout`, và trong object `error` vẫn có `images` (cùng `observation`, `marks` nếu xin Marks) của lần đọc cuối.
+Chờ không cần Control Lock.
+
 **Điều khiển** cần giữ Control Lock:
 
 ```bash
@@ -178,13 +195,14 @@ echo '[{"type":"key","keys":"ctrl+a"},{"type":"wait","ms":200},{"type":"type","t
   | rcli batch demo-pc - --observe frames --out ./shots
 ```
 
-Bước nào lỗi thì batch dừng và báo `step` (đếm từ 0). Tổng `wait` tối đa 5000 ms.
+Bước nào lỗi thì batch dừng và báo `step` (đếm từ 0). Tổng thời gian chờ của một request (các `wait` cộng `timeout_ms` của Wait Condition) tối đa 30000 ms.
 
 **Lỗi hay gặp:**
 
 - `control_lock_held`: người khác đang giữ lock, lỗi kèm tên và giờ hết hạn. Chờ rồi thử lại, không có hàng đợi.
 - `stale_mark`: số Mark từ Observation cũ, chụp lại với `--marks`.
 - `ambiguous_text` / `text_not_found`: chữ khớp nhiều chỗ hoặc không khớp chỗ nào.
+- `wait_timeout`: Wait Condition không thoả trong `timeout_ms`; lỗi kèm Observation của lần đọc cuối.
 
 **Control Lock** tự hết sau 10 phút không có Action (mọi request của người giữ, kể cả chỉ chụp, đều gia hạn). `rcli mcp` và Dashboard còn được nhả sau 60 s nếu mất kết nối; CLI thường thì không. Admin: `rcli lock force-release demo-pc` (có ghi audit).
 
@@ -278,7 +296,7 @@ claude mcp add rcli -- /đường/dẫn/rcli mcp
 
 `rcli mcp` dùng cấu hình của bản cài và Device Password đã nhớ, nên không cần biến môi trường hay bước thiết lập nào khác.
 
-Tools: `devices`, `device`, `lock_acquire`, `lock_release`, `lock_status`, `observe` (shot / frames / clip / marks), `act`, `batch`, `exec`, `wake`, `power`. Ảnh trả về inline, bảng Mark nằm trong kết quả có cấu trúc. Mỗi AI agent nên dùng một user Dashboard riêng (qua `rcli login`) để audit tách bạch.
+Tools: `devices`, `device`, `lock_acquire`, `lock_release`, `lock_status`, `observe` (shot / frames / clip / marks / Wait Condition `until`), `act`, `batch`, `exec`, `wake`, `power`. Ảnh trả về inline, bảng Mark nằm trong kết quả có cấu trúc. Mỗi AI agent nên dùng một user Dashboard riêng (qua `rcli login`) để audit tách bạch.
 
 Ở màn khoá hoặc màn đăng nhập, AI agent tự gõ mật khẩu OS mà người dùng đưa cho nó bằng `type` có `"secret": true`; rcli không lưu mật khẩu này. Chưa có tool `shell` trong MCP; dùng `exec`.
 

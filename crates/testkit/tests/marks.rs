@@ -133,6 +133,17 @@ async fn without_an_accessibility_tree_marks_come_from_ocr() {
         obs["marks"],
         json!([{"number": 1, "text": "Password", "role": "text", "display": 0, "x": 600, "y": 360, "width": 200, "height": 20}])
     );
+
+    // Waiting for text works on OCR Marks too, e.g. for the desktop after typing the password.
+    let p = agent.platform.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        p.update(|s| s.screen_text = vec![element("text", "Welcome", 900, 540, 300, 30)]);
+    });
+    let body = json!({ "actions": [], "marks": true, "until": {"appears": {"text": "welcome"}} });
+    let (status, obs) = sys.api.post_json(&format!("/api/v1/devices/{dev}/actions"), &body).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
+    assert_eq!(obs["marks"][0]["text"], "Welcome", "{obs}");
 }
 
 #[tokio::test]
@@ -220,6 +231,10 @@ async fn cli_prints_the_mark_table_and_targets_marks() {
     let out = sys.rcli(&["shot", dev, "--marks", "--out", dir_s]).await.unwrap();
     assert!(out.lines().any(|l| l.split_whitespace().eq(["2", "0", "button", "200,400", "100x40", "OK"])), "{out}");
     let observation = out.lines().find_map(|l| l.strip_prefix("observation ")).unwrap().to_owned();
+    // A Wait Condition on `shot`: met at once, or ("OK" never disappears) timed out.
+    sys.rcli(&["shot", dev, "--until-appears", "ok", "--role", "button", "--out", dir_s]).await.unwrap();
+    let err = sys.rcli(&["shot", dev, "--until-disappears", "OK", "--timeout-ms", "300", "--out", dir_s]).await.unwrap_err();
+    assert!(err.to_string().contains("wait_timeout"), "{err}");
 
     sys.rcli(&["act", dev, "click", "--mark", "3", "--observation", &observation, "--observe", "none"]).await.unwrap();
     sys.rcli(&["act", dev, "click", "--text", "OK", "--observe", "none"]).await.unwrap();
@@ -228,6 +243,59 @@ async fn cli_prints_the_mark_table_and_targets_marks() {
     let err = sys.rcli(&["act", dev, "click", "--mark", "3"]).await.unwrap_err();
     assert!(err.to_string().contains("--observation"), "{err}");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Changes FakePlatform's tree after `ms`, while a request is waiting.
+fn later(p: &FakePlatform, ms: u64, edit: impl FnOnce(&mut Vec<UiElement>) + Send + 'static) {
+    let p = p.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+        p.update(|s| edit(s.accessibility.as_mut().unwrap()));
+    });
+}
+
+fn texts(obs: &serde_json::Value) -> Vec<serde_json::Value> {
+    obs["marks"].as_array().unwrap().iter().map(|m| m["text"].clone()).collect()
+}
+
+#[tokio::test]
+async fn observe_waits_until_text_appears_or_disappears_without_the_control_lock() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent_on(login_form()).await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online").await;
+    let actions = format!("/api/v1/devices/{dev}/actions");
+
+    later(&agent.platform, 500, |tree| tree.push(element("text", "Saved", 300, 900, 150, 30)));
+    let body = json!({ "actions": [], "marks": true, "until": {"appears": {"text": "saved"}} });
+    let (status, obs) = sys.api.post_json(&actions, &body).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
+    assert!(texts(&obs).contains(&json!("Saved")), "{obs}");
+
+    later(&agent.platform, 500, |tree| tree.retain(|e| e.text != "Saved"));
+    let body = json!({ "actions": [], "marks": true, "until": {"disappears": {"text": "Saved", "role": "text"}} });
+    let (status, obs) = sys.api.post_json(&actions, &body).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
+    assert!(!texts(&obs).contains(&json!("Saved")), "{obs}");
+}
+
+#[tokio::test]
+async fn a_wait_condition_never_met_times_out_with_the_observation() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent_on(login_form()).await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online").await;
+    let actions = format!("/api/v1/devices/{dev}/actions");
+
+    let started = std::time::Instant::now();
+    let body = json!({ "actions": [], "marks": true, "until": {"appears": {"text": "Saved"}, "timeout_ms": 1000} });
+    let (status, body) = sys.api.post_json(&actions, &body).await;
+    let waited = started.elapsed();
+    assert_eq!(body["error"]["code"], "wait_timeout", "{body}");
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    assert!(waited >= std::time::Duration::from_millis(1000) && waited < std::time::Duration::from_millis(4000), "waited {waited:?}");
+    assert_eq!(texts(&body["error"]), [json!("Name"), json!("OK"), json!("Cancel")], "{body}");
+    assert!(body["error"]["images"][0]["data"].is_string(), "{body}");
 }
 
 #[tokio::test]
