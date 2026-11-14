@@ -178,7 +178,8 @@ pub struct FakeState {
     animate: Duration,
     animating_until: Option<Instant>,
     captures: u64,
-    version: String,
+    /// The Agent version reported (defaults to this build's); set it before start for an older Agent.
+    pub version: String,
     installed: Vec<String>,
     control_indicator: bool,
     pub inventory: Inventory,

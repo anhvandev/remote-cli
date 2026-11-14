@@ -203,6 +203,7 @@ Bước nào lỗi thì batch dừng và báo `step` (đếm từ 0). Tổng th�
 - `stale_mark`: số Mark từ Observation cũ, chụp lại với `--marks`.
 - `ambiguous_text` / `text_not_found`: chữ khớp nhiều chỗ hoặc không khớp chỗ nào.
 - `wait_timeout`: Wait Condition không thoả trong `timeout_ms`; lỗi kèm Observation của lần đọc cuối.
+- `agent_too_old`: Agent của Device cũ hơn 0.4.0, chưa hiểu Wait Condition (sẽ bỏ qua `until`). Nâng Agent rồi thử lại.
 
 **Control Lock** tự hết sau 10 phút không có Action (mọi request của người giữ, kể cả chỉ chụp, đều gia hạn). `rcli mcp` và Dashboard còn được nhả sau 60 s nếu mất kết nối; CLI thường thì không. Admin: `rcli lock force-release demo-pc` (có ghi audit).
 

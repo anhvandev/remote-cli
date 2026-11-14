@@ -205,6 +205,32 @@ fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "invalid_action", message)
 }
 
+/// The first Agent version with Wait Conditions; older Agents ignore them and answer at once, as if they were met.
+const WAIT_CONDITIONS_SINCE: &str = "0.4.0";
+
+impl ActBody {
+    fn has_wait_condition(&self) -> bool {
+        self.until.is_some()
+    }
+}
+
+/// `agent_too_old` when the Device's reported Agent version is below `WAIT_CONDITIONS_SINCE`.
+async fn refuse_agents_without_wait_conditions(state: &super::State, device: uuid::Uuid) -> Result<(), ApiError> {
+    let version: Option<String> = sqlx::query_scalar("SELECT agent_version FROM devices WHERE id = $1")
+        .bind(device)
+        .fetch_one(&state.db)
+        .await
+        .map_err(anyhow::Error::from)?;
+    if crate::updates::below(version.as_deref(), WAIT_CONDITIONS_SINCE) {
+        let message = format!(
+            "the Device's Agent is {}; Wait Conditions need Agent {WAIT_CONDITIONS_SINCE} or later",
+            version.unwrap_or_default()
+        );
+        return Err(ApiError::new(StatusCode::CONFLICT, "agent_too_old", message));
+    }
+    Ok(())
+}
+
 async fn act(
     Caller(user): Caller,
     State(state): State<super::State>,
@@ -226,6 +252,9 @@ async fn act(
     }
     if body.until.is_some() && body.observe != Observe::Shot {
         return Err(invalid("until needs observe \"shot\""));
+    }
+    if body.has_wait_condition() {
+        refuse_agents_without_wait_conditions(&state, device).await?;
     }
     // Every request from the holder, observe-only included, restarts the idle timer.
     control_lock::touch(&state, device, &user).await?;
