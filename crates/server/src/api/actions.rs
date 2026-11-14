@@ -49,6 +49,9 @@ struct Until {
     #[serde(flatten)]
     condition: Condition,
     timeout_ms: Option<u32>,
+    /// Keys left after the one condition: a second condition or an unknown key, refused by `check`.
+    #[serde(flatten)]
+    rest: serde_json::Map<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -68,7 +71,7 @@ struct WaitTarget {
     role: Option<String>,
 }
 
-/// `{"text", "role"?, "equals" | "contains"}`; the Agent refuses anything but exactly one of the two.
+/// `{"text", "role"?, "equals" | "contains"}`; `Until::check` refuses anything but exactly one of the two.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ValueTarget {
@@ -78,7 +81,7 @@ struct ValueTarget {
     contains: Option<String>,
 }
 
-/// `{"text", "role"?, "has" | "lacks": "<Mark State>"}`; the Agent refuses anything but exactly one of the two.
+/// `{"text", "role"?, "has" | "lacks": "<Mark State>"}`; `Until::check` refuses anything but exactly one of the two.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StateTarget {
@@ -91,6 +94,22 @@ struct StateTarget {
 impl Until {
     fn timeout_ms(&self) -> u32 {
         self.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS)
+    }
+
+    /// `invalid_action` unless it names exactly one condition, and a value or state exactly one test.
+    fn check(&self) -> Result<(), ApiError> {
+        if let Some(key) = self.rest.keys().next() {
+            return Err(invalid(format!("a Wait Condition names one condition and timeout_ms, not also {key:?}")));
+        }
+        match &self.condition {
+            Condition::Value(v) if v.equals.is_some() == v.contains.is_some() => {
+                Err(invalid("a value Wait Condition needs exactly one of equals or contains"))
+            }
+            Condition::State(s) if s.has.is_some() == s.lacks.is_some() => {
+                Err(invalid("a state Wait Condition needs exactly one of has or lacks"))
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -287,6 +306,10 @@ async fn act(
     }
     if body.until.is_some() && body.observe != Observe::Shot {
         return Err(invalid("until needs observe \"shot\""));
+    }
+    let step_untils = body.actions.iter().filter_map(|a| if let Action::Wait { until, .. } = a { until.as_ref() } else { None });
+    for until in body.until.iter().chain(step_untils) {
+        until.check()?;
     }
     if body.has_wait_condition() {
         refuse_agents_without_wait_conditions(&state, device).await?;

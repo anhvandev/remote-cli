@@ -110,6 +110,16 @@ async fn a_batch_runs_in_order_with_waits_and_stops_at_the_failing_step() {
     let steps = json!({ "actions": [{"type": "wait", "ms": 26_000}, {"type": "wait", "until": {"appears": {"text": "Saved"}}}] });
     let (status, body) = sys.api.post_json(&actions, &steps).await;
     assert_eq!((status, body["error"]["code"].clone()), (StatusCode::BAD_REQUEST, json!("invalid_action")), "{body}");
+    // A Wait Condition names exactly one condition, and a value or state exactly one test; the Server refuses others.
+    let observe = json!({ "actions": [], "until": {"appears": {"text": "OK"}, "disappears": {"text": "OK"}} });
+    let (status, body) = sys.api.post_json(&actions, &observe).await;
+    assert_eq!((status, body["error"]["code"].clone()), (StatusCode::BAD_REQUEST, json!("invalid_action")), "{body}");
+    let step = json!({ "actions": [{"type": "wait", "until": {"value": {"text": "OK", "equals": "a", "contains": "b"}}}] });
+    let (status, body) = sys.api.post_json(&actions, &step).await;
+    assert!(status == StatusCode::BAD_REQUEST && body["error"]["step"].is_null(), "refused before the Agent runs it: {body}");
+    let step = json!({ "actions": [{"type": "wait", "until": {"state": {"text": "OK"}}}] });
+    let (status, body) = sys.api.post_json(&actions, &step).await;
+    assert!(status == StatusCode::BAD_REQUEST && body["error"]["step"].is_null(), "refused before the Agent runs it: {body}");
 }
 
 #[tokio::test]
