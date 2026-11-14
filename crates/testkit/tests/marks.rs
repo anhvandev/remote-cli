@@ -299,6 +299,30 @@ async fn a_wait_condition_never_met_times_out_with_the_observation() {
 }
 
 #[tokio::test]
+async fn the_server_refuses_wait_conditions_to_an_agent_too_old_for_them() {
+    let sys = TestSystem::start().await;
+    let p = login_form();
+    p.update(|s| s.version = "0.3.0".into());
+    let agent = sys.start_agent_on(p).await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online" && d["agent_version"] == "0.3.0").await;
+    let actions = format!("/api/v1/devices/{dev}/actions");
+
+    let body = json!({ "actions": [], "until": {"appears": {"text": "Saved"}} });
+    let (status, body) = sys.api.post_json(&actions, &body).await;
+    assert_eq!(body["error"]["code"], "agent_too_old", "{body}");
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["error"]["message"].as_str().unwrap().contains("0.4.0"), "{body}");
+
+    let (status, body) = sys.api.post_json(&actions, &json!({ "actions": [], "marks": true })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    sys.api.post(&format!("/api/v1/devices/{dev}/lock")).await;
+    let batch = json!({ "actions": [{"type": "click", "text": "OK"}, {"type": "wait", "ms": 10}], "observe": "none" });
+    let (status, body) = sys.api.post_json(&actions, &batch).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
 async fn cli_mark_table_shows_states_values_and_containers_and_json_the_full_value() {
     let sys = TestSystem::start().await;
     let agent = sys.start_agent_on(save_dialog()).await;
