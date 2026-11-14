@@ -80,26 +80,26 @@ export function LockCard() {
   return (
     <Card aria-label="Control Lock" role="region" className="gap-3">
       <CardHeader>
-        <CardTitle className="text-sm font-medium text-muted-foreground">Control Lock</CardTitle>
+        <CardTitle className="text-base">Control Lock</CardTitle>
       </CardHeader>
       <CardContent className="grid gap-3">
         {lock.holder ? (
           <div className="flex flex-wrap items-center gap-2">
-            <Badge className="border border-chart-4/25 bg-chart-4/15 text-chart-4">
+            <Badge className="bg-ink text-paper">
               🔒 {lock.holder}
             </Badge>
             <span className="text-sm text-muted-foreground">
               {lock.expires_at ? (
-                <>hết hạn lúc <b className="font-mono font-medium text-foreground">{time(lock.expires_at)}</b></>
+                <>hết hạn lúc <b className="font-medium text-foreground">{time(lock.expires_at)}</b></>
               ) : (
-                lock.acquired_at && <>giữ từ <b className="font-mono font-medium text-foreground">{time(lock.acquired_at)}</b></>
+                lock.acquired_at && <>giữ từ <b className="font-medium text-foreground">{time(lock.acquired_at)}</b></>
               )}
             </span>
           </div>
         ) : (
           <div className="text-sm text-muted-foreground">Không ai giữ</div>
         )}
-        {error && <p className="text-sm text-muted-foreground">Lỗi: {error}</p>}
+        {error && <p className="text-sm text-destructive">Lỗi: {error}</p>}
         <div className="flex flex-wrap items-center gap-2">
           {holding ? (
             <Button size="sm" variant="secondary" onClick={() => send("/release")}>

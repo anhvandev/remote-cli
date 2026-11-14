@@ -2,8 +2,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const item = "rounded-md px-2.5 py-2 text-sm transition-colors hover:bg-accent hover:text-foreground";
-const tone = (active: boolean) => `${item} ${active ? "bg-accent text-foreground" : "text-muted-foreground"}`;
+// On the ink plate the current stop is the one paper cell.
+const item =
+  "px-2.5 py-2 text-sm font-medium whitespace-nowrap transition-colors duration-(--dur-micro) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-paper";
+const tone = (active: boolean) => `${item} ${active ? "bg-paper text-ink" : "text-paper-2 hover:bg-ink-2 hover:text-paper"}`;
 
 const adminPages = [
   { href: "/admin/users", name: "User" },
@@ -30,7 +32,7 @@ export function NavLinks() {
       <Link href="/admin" aria-current={onAdmin ? "page" : undefined} className={tone(onAdmin)}>
         Quản lý
       </Link>
-      <div role="group" aria-label="Quản lý" className="flex flex-wrap gap-1 md:ml-4 md:flex-col md:gap-0.5 md:border-l md:border-border md:pl-2">
+      <div role="group" aria-label="Quản lý" className="flex flex-wrap gap-1 md:ml-3 md:flex-col md:gap-0.5 md:border-l-2 md:border-ink-rule md:pl-2">
         {adminPages.map((p) => (
           <Link
             key={p.href}

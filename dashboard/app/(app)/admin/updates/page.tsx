@@ -24,7 +24,7 @@ export default async function UpdatesPage() {
         {[...versions].map(([version, targets]) => (
           <section key={version} aria-label={`Phiên bản ${version}`} className="grid gap-1">
             <div className="flex items-center justify-between">
-              <h4 className="font-mono text-sm font-medium">{version}</h4>
+              <h4 className="text-lg font-extrabold">{version}</h4>
               <Form action={act.deleteBuild} confirm={`Xoá mọi build của phiên bản ${version}?`}>
                 <input type="hidden" name="version" value={version} />
                 <Button size="xs" variant="ghost" className="text-destructive">
@@ -39,17 +39,18 @@ export default async function UpdatesPage() {
                     <TableCell>
                       {b.target}{" "}
                       {b.latest && (
-                        <Badge variant="outline" className="border-ok/40 text-ok">
+                        <Badge>
                           Latest
                         </Badge>
                       )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">{size(b.size)}</TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground" title={b.sha256}>
+                    <TableCell className="text-xs text-muted-foreground" title={b.sha256}>
                       {b.sha256.slice(0, 12)}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {b.uploaded_by} · {b.uploaded_at.slice(0, 16).replace("T", " ")}
+                      {b.uploaded_by}
+                      <span className="ml-3">{b.uploaded_at.slice(0, 16).replace("T", " ")}</span>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center justify-end gap-1.5">

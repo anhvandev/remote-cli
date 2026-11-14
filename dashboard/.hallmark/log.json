@@ -1,0 +1,32 @@
+[
+ {
+  "mode": "redesign",
+  "depth": "full",
+  "scope": "app",
+  "shape": "app screen",
+  "theme": "wayfind",
+  "axes": "light/mono/cool",
+  "hero": "none",
+  "nav": "kept sidebar as ink plate",
+  "footer": "none",
+  "imagery": "none",
+  "photos": [],
+  "entry": "none",
+  "fingerprint": "wayfind-fleet-board",
+  "sections": [
+   "fleet board",
+   "device header + square tabs",
+   "resource figures",
+   "history charts",
+   "admin rows",
+   "connect guide cards",
+   "signin ink column"
+  ],
+  "signature": "the fleet board: counts as figures over a 2px-ruled table",
+  "waived": [
+   "28b"
+  ],
+  "prompt": "console where an operator watches and controls a fleet of remote machines",
+  "date": "2026-11-14"
+ }
+]

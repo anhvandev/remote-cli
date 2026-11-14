@@ -50,7 +50,7 @@ export function UploadForm() {
         name="build"
         aria-label="File build"
         required
-        className="h-9 py-1.5"
+        className="h-10 py-1.5"
         onChange={(e) => {
           const parsed = fromName(e.target.files?.[0]?.name ?? "");
           if (parsed) {
@@ -65,12 +65,12 @@ export function UploadForm() {
           aria-label="Phiên bản"
           placeholder="phiên bản (X.Y.Z)"
           required
-          className="h-8 w-32"
+          className="h-8 w-48"
           value={version}
           onChange={(e) => setVersion(e.target.value)}
         />
         <Select name="target" required value={target} onValueChange={setTarget}>
-          <SelectTrigger aria-label="Hệ điều hành" size="sm" className="w-44">
+          <SelectTrigger aria-label="Hệ điều hành" size="sm" className="w-56">
             <SelectValue placeholder="chọn hệ điều hành" />
           </SelectTrigger>
           <SelectContent>

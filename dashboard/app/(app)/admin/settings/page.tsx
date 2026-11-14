@@ -15,7 +15,7 @@ export default async function SettingsPage() {
           <h3 className={title}>Server Key</h3>
         </div>
         <div className="grid gap-3 p-5 text-sm">
-          <code className="rounded-md bg-muted px-2 py-1.5 font-mono text-xs break-all">{settings.server_key}</code>
+          <code className="bg-muted px-2 py-1.5 text-xs break-all">{settings.server_key}</code>
           <p className="text-muted-foreground">
             Agent và Controller dùng key này để kết nối. Thay key chỉ đổi phần secret: Device đã đăng ký vẫn Online,
             nhưng bản cài mới và Controller cần key mới.

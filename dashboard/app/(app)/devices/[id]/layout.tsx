@@ -37,15 +37,21 @@ export default async function DeviceLayout({
     <>
       <Refresh />
       <ControlProvider device={d.id} me={me.name} initial={lock}>
-        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-5">
+        <div className="flex flex-wrap items-start justify-between gap-4 pb-5">
           <div className="min-w-0">
-            <h2 className="flex flex-wrap items-center gap-2.5 text-xl font-semibold tracking-tight">
+            <h2 className="flex flex-wrap items-center gap-x-4 gap-y-1 text-3xl font-extrabold tracking-tight">
               {d.name}
-              <span className="text-sm font-normal">
+              <span className="tracking-normal">
                 <Status status={d.status} wakeError={d.wake_error} />
               </span>
             </h2>
-            <p className="mt-1 truncate text-sm text-muted-foreground">{meta.join(" · ")}</p>
+            <ul className="mt-2 flex flex-wrap text-sm text-muted-foreground">
+              {meta.map((m, i) => (
+                <li key={i} className="border-rule pr-3 not-first:border-l not-first:pl-3">
+                  {m}
+                </li>
+              ))}
+            </ul>
           </div>
           <div className="flex flex-col items-end gap-2">
             <PowerButtons device={d.id} name={d.name} status={d.status} me={me.name} />

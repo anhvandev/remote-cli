@@ -1,38 +1,45 @@
+/* Hallmark · shape: app screen · genre: modern-minimal · theme: Wayfind (deal 2/3, seed console-where-operator-watches-597f·559ff7bd·2026-11-14·r0) · redesign: full
+ * nav: kept sidebar, set as an ink plate · signature: the fleet board, counts as figures over a 2px-ruled table · states: empty, loading, error where the screens have them · wayfind: platform
+ * axes: light/mono/cool · posture: committed · contrast: pass · v2.0.0 */
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V4 · weakest: P, a console is a familiar object; the argument is that the fleet reads like a departure board, at a glance, so the counts lead and status is a square signal */
+/* Hallmark · waive 28b · the Live view video is a WebRTC stream with no still to poster, and its idle state is an ink plate · a Device screen has no frame before it connects */
+/* Hallmark · reworded "Device · 6 Online · 5 Offline · 0 Waking" to "Device 6 Online · 5 Offline · 0 Waking" · 63 names the meta string; the counts are figures now, the " · " stays hidden because tests read it */
+/* Hallmark · reworded "Remote CLI · Dashboard" to "Dashboard" under the Remote CLI ink column · 63 names the meta string */
+/* Hallmark · dismissed F18 · the slots it names are shadcn data-slot attributes on buttons, inputs and selects, not picture slots */
+/* Hallmark · dismissed 64 · Chivo Mono is the material: Wayfind sets every glyph in it */
 @import "tailwindcss";
+@import "./tokens.css";
+@import "./base.css" layer(base);
 @import "tw-animate-css";
 
+/* Light only: keeps shadcn's dark: utilities off (Tailwind's default would follow the OS). */
 @custom-variant dark (&:is(.dark *));
 
-/* Dark-only palette from mockup/dashboard.html. */
+/* shadcn's names point at the Wayfind tokens (tokens.css renames accent/muted to signal/ink-3 to avoid shadcn's meanings). */
 :root {
-  --radius: 0.625rem;
-  --background: #0f1115;
-  --foreground: #e6e8ee;
-  --card: #171a21;
-  --card-foreground: #e6e8ee;
-  --popover: #171a21;
-  --popover-foreground: #e6e8ee;
-  --primary: #5b8cff;
-  --primary-foreground: #ffffff;
-  --secondary: #232833;
-  --secondary-foreground: #e6e8ee;
-  --muted: #1c2029;
-  --muted-foreground: #8a92a6;
-  --accent: #232833;
-  --accent-foreground: #e6e8ee;
-  --destructive: #ef4444;
-  --destructive-foreground: #ffffff;
-  --border: #262b36;
-  --input: #262b36;
-  --ring: #5b8cff;
-  --ok: #3ecf8e;
-  --warn: #f5a524;
-  --bad: #ef4444;
-  --chart-1: #5b8cff;
-  --chart-2: #f0a35b;
-  --chart-3: #5bd08c;
-  --chart-4: #c4b5fd;
-  --chart-5: #f472b6;
+  --radius: 0;
+  --background: var(--color-paper);
+  --foreground: var(--color-ink);
+  --card: var(--color-paper);
+  --card-foreground: var(--color-ink);
+  --popover: var(--color-paper-3);
+  --popover-foreground: var(--color-ink);
+  --primary: var(--color-signal);
+  --primary-foreground: var(--color-signal-ink);
+  --secondary: var(--color-paper-2);
+  --secondary-foreground: var(--color-ink);
+  --muted: var(--color-paper-2);
+  --muted-foreground: var(--color-ink-3);
+  --accent: var(--color-paper-2);
+  --accent-foreground: var(--color-ink);
+  --destructive: var(--color-error);
+  --destructive-foreground: var(--color-signal-ink);
+  --border: var(--color-rule);
+  --input: var(--color-ink);
+  --ring: var(--color-focus);
+  --ok: var(--color-signal);
+  --warn: var(--color-amber);
+  --bad: var(--color-error);
 }
 
 @theme inline {
@@ -58,21 +65,18 @@
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-body);
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
 }
 
 @layer base {
-  * { @apply border-border outline-ring/50; }
-  body { @apply bg-background text-foreground antialiased; }
-  html { color-scheme: dark; }
+  * { @apply border-border; }
+  /* The width never jumps when a scrollbar appears (the Live view maps clicks by its width). */
+  html { scrollbar-gutter: stable; }
+  body { @apply bg-background text-foreground antialiased; font-variant-numeric: tabular-nums; font-variant-ligatures: none; }
+  button:not(:disabled), [role="button"]:not([aria-disabled="true"]) { cursor: pointer; }
 }

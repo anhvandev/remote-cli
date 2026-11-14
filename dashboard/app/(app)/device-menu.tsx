@@ -22,7 +22,7 @@ export function DeviceMenu({ device: d, others }: { device: Device; others: Devi
         <Popover.Content
           aria-label={label}
           align="end"
-          className="z-50 grid w-80 gap-3 rounded-lg border border-border bg-popover p-4 text-sm text-popover-foreground shadow-md"
+          className="z-50 grid w-80 gap-3 border-2 border-ink bg-popover p-4 text-sm text-popover-foreground shadow-card"
         >
           <Form action={act.updateDevice}>
             <input type="hidden" name="device" value={d.id} />
@@ -41,7 +41,7 @@ export function DeviceMenu({ device: d, others }: { device: Device; others: Devi
               pattern="[0-9]{9}"
               maxLength={9}
               required
-              className="h-8 w-36 font-mono"
+              className="h-8 w-36"
             />
             <Button size="xs" variant="outline">
               Đổi Device ID

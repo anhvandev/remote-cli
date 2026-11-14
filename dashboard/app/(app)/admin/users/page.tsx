@@ -30,10 +30,10 @@ export default async function UsersPage() {
         <TableBody>
           {users.map((u) => (
             <TableRow key={u.id}>
-              <TableCell className="whitespace-normal">
+              <TableCell className="font-extrabold whitespace-normal">
                 {u.name}{" "}
                 {u.disabled_at && (
-                  <Badge variant="outline" className="border-warn/40 text-warn">
+                  <Badge className="bg-warn text-ink">
                     đã vô hiệu
                   </Badge>
                 )}

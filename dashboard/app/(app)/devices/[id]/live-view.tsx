@@ -5,9 +5,9 @@
 // which the Server checks against the lock and audits like any Controller's.
 // The video comes at the display's native size; each viewer picks a Live View Quality for their own stream.
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type WheelEvent } from "react";
-import { MonitorPlay } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { nativeSelect } from "../../styles";
 import { useHolding } from "./control";
 
 /** Waits until all ICE candidates are in the offer (the Server relays one offer, no trickle); gives up after 5 s. */
@@ -184,7 +184,7 @@ export function LiveView({ device, name }: { device: string; name: string }) {
   return (
     <Card aria-label="Live view" role="region" className="gap-3">
       <CardHeader className="flex flex-row items-center justify-between gap-3">
-        <CardTitle className="text-sm font-medium text-muted-foreground">Live view</CardTitle>
+        <CardTitle className="text-base">Live view</CardTitle>
         {state === "idle" ? (
           <Button size="sm" onClick={() => start()}>
             Xem trực tiếp
@@ -194,7 +194,7 @@ export function LiveView({ device, name }: { device: string; name: string }) {
             {displays.length > 1 && (
               <select
                 aria-label="Chọn màn hình"
-                className="h-8 rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                className={nativeSelect}
                 value={display}
                 onChange={(e) => {
                   stop();
@@ -203,7 +203,7 @@ export function LiveView({ device, name }: { device: string; name: string }) {
               >
                 {displays.map((d) => (
                   <option key={d.index} value={d.index}>
-                    Màn hình {d.index + 1} · {d.width}×{d.height}
+                    Màn hình {d.index + 1} ({d.width}×{d.height})
                   </option>
                 ))}
               </select>
@@ -211,8 +211,8 @@ export function LiveView({ device, name }: { device: string; name: string }) {
             <select
               ref={quality}
               aria-label="Live View Quality"
-              title="Quality: nét nhất · Balanced · Speed: mượt nhất"
-              className="h-8 rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              title="Quality: nét nhất. Balanced. Speed: mượt nhất."
+              className={nativeSelect}
               defaultValue="balanced"
               onChange={(e) => {
                 const picker = live.current?.picker;
@@ -235,12 +235,7 @@ export function LiveView({ device, name }: { device: string; name: string }) {
         {state === "live" && !holding && <p className="text-sm text-muted-foreground">Chỉ xem: cần giữ Control Lock để điều khiển.</p>}
         {control && inputError && <p className="text-sm text-muted-foreground">Không điều khiển được: {inputError}</p>}
         {state === "idle" && (
-          <div className="grid aspect-video place-items-center rounded-lg border border-dashed border-border bg-muted/30 text-muted-foreground">
-            <div className="flex flex-col items-center gap-2 text-sm">
-              <MonitorPlay className="size-6 opacity-60" />
-              Chưa xem màn hình
-            </div>
-          </div>
+          <div className="grid aspect-video place-items-center bg-ink text-sm font-medium text-paper-2">Chưa xem màn hình</div>
         )}
         {state !== "idle" && (
           <video
@@ -249,7 +244,7 @@ export function LiveView({ device, name }: { device: string; name: string }) {
             autoPlay
             muted
             playsInline
-            className="w-full bg-black ring-1 ring-border"
+            className="w-full bg-ink"
             style={{ cursor: control ? "crosshair" : undefined }}
             {...input}
           />
