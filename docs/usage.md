@@ -148,6 +148,8 @@ Mỗi Mark có `number`, `text` (nhãn), `role`, `display` và khung. Container 
 
 Bảng Mark của CLI có thêm cột `PARENT`, `STATES`, `VALUE` (value dài bị cắt, `--json` có đủ). Mark từ OCR (màn khoá, không có cây accessibility) không có ba field này.
 
+Trên macOS, Marks lấy từ cửa sổ đang focus cùng menu bar, menu đang mở và sheet của app đó; cửa sổ khác của app nằm phía sau không còn cho Mark. Thay đổi hành vi: ô nhập mà nhãn duy nhất là nội dung của nó (`AXValue`) giờ có `text` rỗng, nội dung nằm ở `value`, nên nhắm ô đó theo nội dung không còn khớp; nhắm theo số Mark thay thế.
+
 **Wait Condition**: chờ tới khi một chữ hiện ra hoặc biến mất rồi mới chụp, thay vì đoán thời gian chờ:
 
 ```bash
@@ -217,6 +219,7 @@ Bước nào lỗi thì batch dừng và báo `step` (đếm từ 0). Tổng th�
 - `ambiguous_text` / `text_not_found`: chữ khớp nhiều chỗ hoặc không khớp chỗ nào.
 - `wait_timeout`: Wait Condition không thoả trong `timeout_ms`; lỗi kèm Observation của lần đọc cuối.
 - `no_accessibility_tree`: Wait Condition theo value hoặc Mark State trên màn không có accessibility tree (chỉ có OCR).
+- `agent_too_old`: Agent của Device cũ hơn 0.4.0, chưa hiểu Wait Condition (sẽ bỏ qua `until`). Nâng Agent rồi thử lại.
 
 **Control Lock** tự hết sau 10 phút không có Action (mọi request của người giữ, kể cả chỉ chụp, đều gia hạn). `rcli mcp` và Dashboard còn được nhả sau 60 s nếu mất kết nối; CLI thường thì không. Admin: `rcli lock force-release demo-pc` (có ghi audit).
 
