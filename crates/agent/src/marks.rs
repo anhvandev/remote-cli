@@ -48,6 +48,12 @@ pub fn by_text<'a>(marks: &'a [Mark], text: &str) -> Result<&'a Mark, Error> {
     }
 }
 
+/// Whether some Mark (with `role`, if given) would match `text` as a text target: equal to it or containing it.
+pub fn present(marks: &[Mark], text: &str, role: Option<&str>) -> bool {
+    let want = text.trim().to_lowercase();
+    marks.iter().any(|m| role.is_none_or(|r| m.role == r) && m.text.to_lowercase().contains(&want))
+}
+
 /// Centre of a Mark, in image space.
 pub fn center(m: &Mark) -> (u32, u32) {
     (m.x + m.width / 2, m.y + m.height / 2)

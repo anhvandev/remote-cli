@@ -47,6 +47,11 @@ const ACTION: &str = "An Action: {\"type\":\"move|click|double_click|right_click
 {\"type\":\"wait\",\"ms\":500}. TARGET = \"x\",\"y\" (image pixels) with optional \"display\" (default 0), or \
 \"mark\":N,\"observation\":ID, or \"text\":\"visible text\".";
 
+const UNTIL: &str = "Wait Condition: {\"appears\":{\"text\":\"Saved\",\"role\":\"button\"?},\"timeout_ms\":5000} or \
+{\"disappears\":{...}}. Re-reads the Marks (OCR at lock/login screens) until two readings in a row agree, then \
+observes (with observe \"shot\"). Text matches like text targets (case-insensitive, exact or contained). timeout_ms \
+defaults to 5000, at most 30000; on timeout the call fails with wait_timeout.";
+
 fn tools() -> Vec<Tool> {
     let device = json!({ "type": "string", "description": "Device id or name" });
     let observe = |modes: &str| {
@@ -69,7 +74,12 @@ fn tools() -> Vec<Tool> {
         ("lock_acquire", "Take a Device's Control Lock (needed for act/batch). Fails if someone else holds it.", devices_only.clone(), vec!["device"]),
         ("lock_release", "Release a Device's Control Lock.", devices_only.clone(), vec!["device"]),
         ("lock_status", "Who holds a Device's Control Lock and until when.", devices_only.clone(), vec!["device"]),
-        ("observe", "Look at a Device's screen without acting (no lock needed).", with(devices_only.clone(), observe("shot frames clip")), vec!["device"]),
+        (
+            "observe",
+            "Look at a Device's screen without acting (no lock needed), optionally once a Wait Condition holds.",
+            with(json!({ "device": device, "until": { "type": "object", "description": UNTIL } }), observe("shot frames clip")),
+            vec!["device"],
+        ),
         (
             "act",
             "Send one mouse/keyboard Action (needs the Control Lock) and observe the result.",
@@ -140,7 +150,7 @@ impl Mcp {
             anyhow::bail!("`device` is required");
         }
         let act = |actions: Value| {
-            let mut body = pick(args, &["observe", "display", "marks", "max_frames"]);
+            let mut body = pick(args, &["observe", "display", "marks", "max_frames", "until"]);
             body.insert("actions".into(), actions);
             Value::Object(body)
         };

@@ -144,6 +144,18 @@ enum Command {
         /// Number the detected Marks on the images and print the Mark table.
         #[arg(long)]
         marks: bool,
+        /// Wait Condition: observe once this text is on screen (fails with wait_timeout otherwise).
+        #[arg(long, conflicts_with = "until_disappears")]
+        until_appears: Option<String>,
+        /// Wait Condition: observe once this text is gone from the screen.
+        #[arg(long)]
+        until_disappears: Option<String>,
+        /// Wait Condition: only Marks with this role count.
+        #[arg(long)]
+        role: Option<String>,
+        /// Wait Condition: give up after this many milliseconds (default 5000, at most 30000).
+        #[arg(long)]
+        timeout_ms: Option<u32>,
         /// Directory to save images in.
         #[arg(long, default_value = ".")]
         out: PathBuf,
@@ -952,8 +964,16 @@ where
             }
             (displays, text)
         }
-        Command::Shot { device, display, marks, out } => {
-            let body = json!({ "actions": [], "display": display_sel(display)?, "marks": marks });
+        Command::Shot { device, display, marks, until_appears, until_disappears, role, timeout_ms, out } => {
+            let mut body = json!({ "actions": [], "display": display_sel(display)?, "marks": marks });
+            let condition = match (until_appears, until_disappears) {
+                (Some(text), _) => Some(("appears", text)),
+                (_, Some(text)) => Some(("disappears", text)),
+                _ => None,
+            };
+            if let Some((condition, text)) = condition {
+                body["until"] = json!({ condition: { "text": text, "role": role }, "timeout_ms": timeout_ms });
+            }
             let obs = api.observe(&device, &body).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
             (obs, text)

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{agent_error, bad_request, devices::resolve_for, ApiError, Caller};
-use crate::{audit, auth::User, control_lock, metrics};
+use crate::{agent_link, audit, auth::User, control_lock, metrics};
 
 pub fn routes() -> Router<super::State> {
     Router::new()
@@ -39,12 +39,56 @@ struct ActBody {
     /// The caller's open media channel (`POST .../media`): large images and clips go over it peer-to-peer.
     #[serde(default)]
     media_session: String,
+    /// Wait Condition: wait (after the Actions) until it holds, then observe.
+    until: Option<Until>,
+}
+
+/// `{"appears" | "disappears": {"text": "..", "role": ".."}, "timeout_ms": N}`.
+#[derive(Deserialize)]
+struct Until {
+    #[serde(flatten)]
+    condition: Condition,
+    timeout_ms: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Condition {
+    Appears(WaitTarget),
+    Disappears(WaitTarget),
+}
+
+/// The Marks a Wait Condition is about: text matched as for text targets, optionally narrowed by role.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WaitTarget {
+    text: String,
+    role: Option<String>,
+}
+
+impl Until {
+    fn timeout_ms(&self) -> u32 {
+        self.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS)
+    }
+}
+
+impl From<Until> for proto::WaitCondition {
+    fn from(u: Until) -> Self {
+        use proto::wait_condition::Condition as C;
+        let timeout_ms = u.timeout_ms();
+        let (t, condition) = match u.condition {
+            Condition::Appears(t) => (t, C::Appears(true)),
+            Condition::Disappears(t) => (t, C::Disappears(true)),
+        };
+        Self { text: t.text, role: t.role, timeout_ms, condition: Some(condition) }
+    }
 }
 
 /// Upper bound of `max_frames`.
 const MAX_FRAMES: u32 = 30;
-/// Upper bound of all waits in one batch, so the Agent answers well within its request timeout.
-const MAX_TOTAL_WAIT_MS: u64 = 5_000;
+/// Upper bound of all waits in one request (fixed waits and Wait Condition timeouts); the Agent request timeout grows by them.
+const MAX_TOTAL_WAIT_MS: u64 = 30_000;
+const DEFAULT_WAIT_TIMEOUT_MS: u32 = 5_000;
 
 #[derive(Deserialize, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -171,7 +215,8 @@ async fn act(
     let Json(mut params) = body.map_err(|e| bad_request(e.body_text()))?;
     let body: ActBody = serde_json::from_value(params.clone())
         .map_err(|e| bad_request(e.to_string()))?;
-    let waits: u64 = body.actions.iter().map(|a| if let Action::Wait { ms } = a { u64::from(*ms) } else { 0 }).sum();
+    let fixed: u64 = body.actions.iter().map(|a| if let Action::Wait { ms } = a { u64::from(*ms) } else { 0 }).sum();
+    let waits = fixed + body.until.as_ref().map_or(0, |u| u64::from(u.timeout_ms()));
     if waits > MAX_TOTAL_WAIT_MS {
         return Err(invalid(format!("waits add up to {waits} ms; at most {MAX_TOTAL_WAIT_MS} ms per request")));
     }
@@ -179,13 +224,16 @@ async fn act(
     if !(1..=MAX_FRAMES).contains(&max_frames) {
         return Err(invalid(format!("max_frames must be 1 to {MAX_FRAMES}")));
     }
+    if body.until.is_some() && body.observe != Observe::Shot {
+        return Err(invalid("until needs observe \"shot\""));
+    }
     // Every request from the holder, observe-only included, restarts the idle timer.
     control_lock::touch(&state, device, &user).await?;
     if !body.actions.is_empty() {
         control_lock::check(&state, device, &user).await?;
     }
     mask_secrets(&state, device, &mut params);
-    let result = forward(&state, device, &user, body, max_frames).await;
+    let result = forward(&state, device, &user, body, max_frames, std::time::Duration::from_millis(waits)).await;
     let actions = params["actions"].as_array().cloned().unwrap_or_default();
     if actions.is_empty() {
         let outcome = json!({ "error": result.as_ref().err().map(|e| e.code) });
@@ -221,7 +269,14 @@ fn mask_secrets(state: &super::State, device: uuid::Uuid, params: &mut Value) {
     }
 }
 
-async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: ActBody, max_frames: u32) -> Result<Json<Value>, ApiError> {
+async fn forward(
+    state: &super::State,
+    device: uuid::Uuid,
+    user: &User,
+    body: ActBody,
+    max_frames: u32,
+    waits: std::time::Duration,
+) -> Result<Json<Value>, ApiError> {
     // One API Action can expand to several protocol Actions (type into); map failures back to the API step.
     let (mut step_of, mut actions) = (vec![], vec![]);
     for (step, action) in body.actions.into_iter().enumerate() {
@@ -249,24 +304,41 @@ async fn forward(state: &super::State, device: uuid::Uuid, user: &User, body: Ac
         max_frames,
         marks: body.marks,
         media_session: body.media_session,
+        until: body.until.map(Into::into),
     };
-    send(state, device, req, &step_of).await
+    send(state, device, req, &step_of, waits).await
 }
 
 /// Sends `req` (its request_id is filled in) and returns the Observation JSON.
-/// `step_of[i]` = the API step of protocol Action `i`, reported as `step` on failure.
-async fn send(state: &super::State, device: uuid::Uuid, req: proto::ActRequest, step_of: &[u32]) -> Result<Json<Value>, ApiError> {
+/// `step_of[i]` = the API step of protocol Action `i`, reported as `step` on failure. `waits` lengthens the timeout.
+async fn send(
+    state: &super::State,
+    device: uuid::Uuid,
+    req: proto::ActRequest,
+    step_of: &[u32],
+    waits: std::time::Duration,
+) -> Result<Json<Value>, ApiError> {
     let req = |request_id| server_message::Msg::Act(proto::ActRequest { request_id, ..req });
-    let agent_message::Msg::ActResult(result) = state.agents.request_admitted(device, req).await? else {
+    let timeout = agent_link::REQUEST_TIMEOUT + agent_link::PROMPT_BUDGET + waits;
+    let agent_message::Msg::ActResult(mut result) = state.agents.request_within(device, timeout, req).await? else {
         return Err(anyhow::anyhow!("unexpected reply to ActRequest").into());
     };
-    if let Some(e) = result.error {
-        let err = agent_error(e);
-        return Err(match result.failed_step.and_then(|s| step_of.get(s as usize)) {
-            Some(step) => err.with("step", *step),
-            None => err,
-        });
+    if let Some(e) = result.error.take() {
+        let mut err = agent_error(e);
+        if let Some(step) = result.failed_step.and_then(|s| step_of.get(s as usize)) {
+            err = err.with("step", *step);
+        }
+        // A timed-out Wait Condition still shows the screen as it was.
+        if err.code == "wait_timeout" {
+            err.details.extend(observation(result).as_object().cloned().unwrap_or_default());
+        }
+        return Err(err);
     }
+    Ok(Json(observation(result)))
+}
+
+/// The Observation JSON of an Agent's ActResult.
+fn observation(result: proto::ActResult) -> Value {
     let b64 = |data: &[u8]| base64::engine::general_purpose::STANDARD.encode(data);
     // Relayed, never stored (spec: no media in the audit log).
     // Bytes sent peer-to-peer are only referenced (`p2p`); the client puts them back into `data`.
@@ -303,7 +375,7 @@ async fn send(state: &super::State, device: uuid::Uuid, req: proto::ActRequest, 
     if let Some(clip) = clip {
         reply["clip"] = clip;
     }
-    Ok(Json(reply))
+    reply
 }
 
 async fn displays(Caller(user): Caller, State(state): State<super::State>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
