@@ -1,7 +1,47 @@
 use std::time::{Duration, Instant};
 
-use rcli_testkit::{Button, Input, StatusCode, TestSystem};
+use rcli_testkit::{Button, Input, StatusCode, TestSystem, UiElement};
 use serde_json::json;
+
+#[tokio::test]
+async fn a_wait_step_waits_until_its_condition_holds_and_a_timeout_stops_the_batch() {
+    let sys = TestSystem::start().await;
+    let agent = sys.start_agent("lab-pc").await;
+    let dev = agent.device_id();
+    sys.wait_device(dev, |d| d["status"] == "Online").await;
+    sys.api.post(&format!("/api/v1/devices/{dev}/lock")).await;
+    let actions = format!("/api/v1/devices/{dev}/actions");
+
+    // The app shows "Saved" a little after the click.
+    let p = agent.platform.clone();
+    tokio::spawn(async move {
+        while p.inputs().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let saved = UiElement { role: "text".into(), text: "Saved".into(), x: 900, y: 540, width: 150, height: 30, ..Default::default() };
+        p.update(|s| s.screen_text = vec![saved]);
+    });
+    let batch = json!({ "marks": true, "actions": [
+        {"type": "click", "x": 10, "y": 10},
+        {"type": "wait", "until": {"appears": {"text": "saved"}}},
+    ]});
+    let (status, obs) = sys.api.post_json(&actions, &batch).await;
+    assert_eq!(status, StatusCode::OK, "{obs}");
+    assert_eq!(obs["marks"][0]["text"], "Saved", "{obs}");
+
+    // A wait that times out stops the batch there, and still shows the screen.
+    let batch = json!({ "marks": true, "actions": [
+        {"type": "wait", "until": {"appears": {"text": "Never"}, "timeout_ms": 500}},
+        {"type": "type", "text": "late"},
+    ]});
+    let (status, body) = sys.api.post_json(&actions, &batch).await;
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{body}");
+    assert_eq!((body["error"]["code"].clone(), body["error"]["step"].clone()), (json!("wait_timeout"), json!(0)), "{body}");
+    assert_eq!(body["error"]["marks"][0]["text"], "Saved", "{body}");
+    assert_eq!(body["error"]["images"][0]["display"], 0, "{body}");
+    assert!(!agent.platform.inputs().contains(&Input::Text("late".into())), "a later step ran");
+}
 
 #[tokio::test]
 async fn a_batch_runs_in_order_with_waits_and_stops_at_the_failing_step() {
@@ -50,6 +90,10 @@ async fn a_batch_runs_in_order_with_waits_and_stops_at_the_failing_step() {
     assert_eq!(body["error"]["code"], "invalid_action");
     let observe = json!({ "actions": [], "until": {"appears": {"text": "Saved"}, "timeout_ms": 30_001} });
     let (status, body) = sys.api.post_json(&actions, &observe).await;
+    assert_eq!((status, body["error"]["code"].clone()), (StatusCode::BAD_REQUEST, json!("invalid_action")), "{body}");
+    // Fixed waits and Wait Condition timeouts (default 5000) count together: 26 s + 5 s.
+    let steps = json!({ "actions": [{"type": "wait", "ms": 26_000}, {"type": "wait", "until": {"appears": {"text": "Saved"}}}] });
+    let (status, body) = sys.api.post_json(&actions, &steps).await;
     assert_eq!((status, body["error"]["code"].clone()), (StatusCode::BAD_REQUEST, json!("invalid_action")), "{body}");
 }
 
@@ -125,6 +169,12 @@ async fn cli_runs_a_batch_from_json() {
     std::fs::write(&file, r#"[{"type": "key", "keys": "a"}, {"type": "click", "x": 99999, "y": 0}]"#).unwrap();
     let err = sys.rcli(&["batch", dev, file.to_str().unwrap()]).await.unwrap_err().to_string();
     assert!(err.contains("invalid_action") && err.contains("step 1"), "{err}");
+
+    // A wait step with a Wait Condition, in a batch and in `act`.
+    std::fs::write(&file, r#"[{"type": "wait", "until": {"appears": {"text": "Saved"}, "timeout_ms": 300}}]"#).unwrap();
+    let err = sys.rcli(&["batch", dev, file.to_str().unwrap(), "--out", dir.to_str().unwrap()]).await.unwrap_err().to_string();
+    assert!(err.contains("wait_timeout") && err.contains("step 0"), "{err}");
+    sys.rcli(&["act", dev, "wait", "--until-disappears", "Saved", "--observe", "none"]).await.unwrap();
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -135,8 +185,10 @@ async fn each_action_of_a_batch_is_audited() {
     let dev = agent.device_id();
     sys.wait_device(dev, |d| d["status"] == "Online").await;
     sys.api.post(&format!("/api/v1/devices/{dev}/lock")).await;
+    let until = json!({"disappears": {"text": "Loading"}, "timeout_ms": 1000});
     let batch = json!({ "observe": "none", "actions": [
         {"type": "type", "text": "a"},
+        {"type": "wait", "until": until},
         {"type": "click", "x": 99999, "y": 0},
         {"type": "type", "text": "b"},
     ]});
@@ -154,8 +206,10 @@ async fn each_action_of_a_batch_is_audited() {
         steps,
         [
             (json!(0), json!("type"), json!({"error": null})),
-            (json!(1), json!("click"), json!({"error": "invalid_action"})),
-            (json!(2), json!("type"), json!({"skipped": true})),
+            (json!(1), json!("wait"), json!({"error": null})),
+            (json!(2), json!("click"), json!({"error": "invalid_action"})),
+            (json!(3), json!("type"), json!({"skipped": true})),
         ]
     );
+    assert_eq!(entries[1]["params"]["actions"][0]["until"], until, "{entries}");
 }

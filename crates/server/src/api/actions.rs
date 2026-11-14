@@ -163,9 +163,11 @@ enum Action {
     Key {
         keys: String,
     },
-    /// Action Batch pause, in milliseconds.
+    /// Action Batch pause, in milliseconds, then (if given) until a Wait Condition holds.
     Wait {
+        #[serde(default)]
         ms: u32,
+        until: Option<Until>,
     },
 }
 
@@ -181,11 +183,15 @@ impl From<Point> for proto::Point {
 }
 
 impl Action {
-    /// The protocol Actions this one becomes (typing into a target is a click, then the text).
+    /// The protocol Actions this one becomes (typing into a target is a click, then the text; a wait with a
+    /// Wait Condition is the fixed wait, then the Wait Condition).
     fn into_proto(self) -> Vec<proto::Action> {
         let kind = match self {
             Action::Type { text, into: Some(at) } => {
                 return [Kind::Click(at.into()), Kind::TypeText(text)].map(|k| proto::Action { kind: Some(k) }).to_vec()
+            }
+            Action::Wait { ms, until: Some(u) } => {
+                return [Kind::WaitMs(ms), Kind::WaitUntil(u.into())].map(|k| proto::Action { kind: Some(k) }).to_vec()
             }
             Action::Move(p) => Kind::Move(p.into()),
             Action::Click(p) => Kind::Click(p.into()),
@@ -195,7 +201,7 @@ impl Action {
             Action::Scroll { at, dx, dy } => Kind::Scroll(proto::Scroll { at: Some(at.into()), dx, dy }),
             Action::Type { text, into: None } => Kind::TypeText(text),
             Action::Key { keys } => Kind::Key(keys),
-            Action::Wait { ms } => Kind::WaitMs(ms),
+            Action::Wait { ms, until: None } => Kind::WaitMs(ms),
         };
         vec![proto::Action { kind: Some(kind) }]
     }
@@ -215,8 +221,9 @@ async fn act(
     let Json(mut params) = body.map_err(|e| bad_request(e.body_text()))?;
     let body: ActBody = serde_json::from_value(params.clone())
         .map_err(|e| bad_request(e.to_string()))?;
-    let fixed: u64 = body.actions.iter().map(|a| if let Action::Wait { ms } = a { u64::from(*ms) } else { 0 }).sum();
-    let waits = fixed + body.until.as_ref().map_or(0, |u| u64::from(u.timeout_ms()));
+    let until_ms = |u: &Option<Until>| u.as_ref().map_or(0, |u| u64::from(u.timeout_ms()));
+    let steps: u64 = body.actions.iter().map(|a| if let Action::Wait { ms, until } = a { u64::from(*ms) + until_ms(until) } else { 0 }).sum();
+    let waits = steps + until_ms(&body.until);
     if waits > MAX_TOTAL_WAIT_MS {
         return Err(invalid(format!("waits add up to {waits} ms; at most {MAX_TOTAL_WAIT_MS} ms per request")));
     }

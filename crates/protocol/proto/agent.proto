@@ -284,6 +284,8 @@ message Action {
     string key = 8;
     // Action Batch: pause this long before the next Action.
     uint32 wait_ms = 80;
+    // Action Batch: re-detect Marks until this holds; error "wait_timeout" (with the Observation) otherwise.
+    WaitCondition wait_until = 81;
   }
 }
 

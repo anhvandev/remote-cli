@@ -54,26 +54,22 @@ impl Executor {
         if let Some(f) = frames.as_mut() {
             f.record(p, Duration::ZERO).map_err(|e| error("platform", e))?;
         }
-        self.run_actions(p, &displays, req, frames.as_mut(), failed_step)?;
-        if req.observe() == ObserveMode::None {
+        // A timed-out wait (a batch step or `until`) still returns the Observation, with the error.
+        let mut timeout = match self.run_actions(p, &displays, req, frames.as_mut(), failed_step) {
+            Err(e) if e.code == "wait_timeout" => Some(e),
+            ran => ran.map(|()| None)?,
+        };
+        if req.observe() == ObserveMode::None && timeout.is_none() {
             return Ok(ActResult::default());
         }
-        let wanted: Vec<u32> = match (req.all_displays, req.display) {
-            (true, _) => displays.iter().map(|d| d.index).collect(),
-            (false, Some(d)) => vec![find(&displays, d)?.index],
-            (false, None) => vec![self.last_display.or(displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0)],
-        };
+        let wanted = self.observed(&displays, req)?;
         if let Some(f) = frames {
             let images = self.observer.frames(p, f, &wanted, &req.controller).map_err(|e| error("platform", e))?;
-            return Ok(ActResult { images, ..Default::default() });
+            return Ok(ActResult { images, error: timeout, ..Default::default() });
         }
-        // A timed-out wait still returns the Observation, with the error.
-        let timeout = match &req.until {
-            Some(u) if !wait_until(p, &wanted, u)? => {
-                Some(error("wait_timeout", format!("Wait Condition on {:?} not met within {} ms", u.text, u.timeout_ms)))
-            }
-            _ => None,
-        };
+        if let (None, Some(u)) = (&timeout, &req.until) {
+            timeout = wait_for(p, &wanted, u)?;
+        }
         let (images, marks) = self.observer.shot(p, &wanted, &req.controller, req.marks).map_err(|e| error("platform", e))?;
         if !req.marks {
             return Ok(ActResult { images, error: timeout, ..Default::default() });
@@ -83,18 +79,33 @@ impl Executor {
         Ok(ActResult { images, observation: self.last_observation, marks, error: timeout, ..Default::default() })
     }
 
+    /// The displays to observe: all, the requested one, else the one last acted on, else the primary one.
+    fn observed(&self, displays: &[DisplayInfo], req: &ActRequest) -> Result<Vec<u32>, Error> {
+        Ok(match (req.all_displays, req.display) {
+            (true, _) => displays.iter().map(|d| d.index).collect(),
+            (false, Some(d)) => vec![find(displays, d)?.index],
+            (false, None) => vec![self.last_display.or(displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0)],
+        })
+    }
+
     /// One Action of a batch: its inputs, then its wait (recording frames meanwhile if asked).
     fn step(
         &mut self,
         p: &dyn Platform,
-        controller: &str,
+        req: &ActRequest,
         displays: &[DisplayInfo],
         frames: Option<&mut Frames>,
         action: &Action,
     ) -> Result<(), Error> {
         let kind = action.kind.as_ref().ok_or_else(|| error("invalid_action", "empty action"))?;
-        for input in self.inputs(p, controller, displays, kind)? {
+        for input in self.inputs(p, &req.controller, displays, kind)? {
             p.input(input).map_err(|e| error("platform", e))?;
+        }
+        // A Wait Condition step watches the displays an Observation would show.
+        if let Kind::WaitUntil(u) = kind {
+            if let Some(timeout) = wait_for(p, &self.observed(displays, req)?, u)? {
+                return Err(timeout);
+            }
         }
         let wait = match kind {
             Kind::WaitMs(ms) => Duration::from_millis((*ms).into()),
@@ -119,7 +130,7 @@ impl Executor {
         failed_step: &mut Option<u32>,
     ) -> Result<(), Error> {
         for (i, action) in req.actions.iter().enumerate() {
-            if let Err(e) = self.step(p, &req.controller, displays, frames.as_deref_mut(), action) {
+            if let Err(e) = self.step(p, req, displays, frames.as_deref_mut(), action) {
                 *failed_step = Some(i as u32);
                 return Err(e);
             }
@@ -142,7 +153,7 @@ impl Executor {
             Kind::Move(pt) | Kind::Click(pt) | Kind::DoubleClick(pt) | Kind::RightClick(pt) => Some(pt.display),
             Kind::Drag(d) => d.from.as_ref().map(|pt| pt.display),
             Kind::Scroll(s) => s.at.as_ref().map(|pt| pt.display),
-            Kind::TypeText(_) | Kind::Key(_) | Kind::WaitMs(_) => None,
+            Kind::TypeText(_) | Kind::Key(_) | Kind::WaitMs(_) | Kind::WaitUntil(_) => None,
         });
         let default = || self.last_display.or(displays.iter().find(|d| d.primary).map(|d| d.index)).unwrap_or(0);
         let display = find(displays, req.display.or(first_acted).unwrap_or_else(default))?.index;
@@ -193,7 +204,7 @@ impl Executor {
                 inputs.extend(modifiers.iter().rev().map(|m| Input::KeyUp(m.to_string())));
                 inputs
             }
-            Kind::WaitMs(_) => vec![],
+            Kind::WaitMs(_) | Kind::WaitUntil(_) => vec![],
         })
     }
 
@@ -268,6 +279,12 @@ fn wait_until(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Resu
         }
         met_before = met;
     }
+}
+
+/// `wait_until`, with its timeout as the `wait_timeout` error.
+fn wait_for(p: &dyn Platform, displays: &[u32], until: &WaitCondition) -> Result<Option<Error>, Error> {
+    let timeout = || error("wait_timeout", format!("Wait Condition on {:?} not met within {} ms", until.text, until.timeout_ms));
+    Ok((!wait_until(p, displays, until)?).then(timeout))
 }
 
 fn find(displays: &[DisplayInfo], index: u32) -> Result<&DisplayInfo, Error> {

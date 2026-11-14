@@ -193,6 +193,16 @@ echo '[{"type":"key","keys":"ctrl+a"},{"type":"wait","ms":200},{"type":"type","t
   | rcli batch demo-pc - --observe frames --out ./shots
 ```
 
+Bước `wait` nhận thêm Wait Condition (cùng dạng `until` ở trên), chờ sau `ms`: click Save → chờ "Saved" → chụp trong một request:
+
+```bash
+echo '[{"type":"click","text":"Save"},{"type":"wait","until":{"appears":{"text":"Saved"},"timeout_ms":10000}}]' \
+  | rcli batch demo-pc -
+rcli act demo-pc wait --until-disappears "Loading" --timeout-ms 20000
+```
+
+Hết `timeout_ms` thì batch dừng ở bước đó với `wait_timeout`, `step` và Observation của lần đọc cuối.
+
 Bước nào lỗi thì batch dừng và báo `step` (đếm từ 0). Tổng thời gian chờ của một request (các `wait` cộng `timeout_ms` của Wait Condition) tối đa 30000 ms.
 
 **Lỗi hay gặp:**

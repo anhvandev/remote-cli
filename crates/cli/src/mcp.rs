@@ -44,8 +44,11 @@ Release the lock when done.";
 const ACTION: &str = "An Action: {\"type\":\"move|click|double_click|right_click\", TARGET} | \
 {\"type\":\"drag\", TARGET, \"to\":TARGET} | {\"type\":\"scroll\", TARGET, \"dx\":0, \"dy\":3} | \
 {\"type\":\"type\",\"text\":\"..\",\"secret\":false,\"into\":TARGET?} | {\"type\":\"key\",\"keys\":\"ctrl+c\"} | \
-{\"type\":\"wait\",\"ms\":500}. TARGET = \"x\",\"y\" (image pixels) with optional \"display\" (default 0), or \
-\"mark\":N,\"observation\":ID, or \"text\":\"visible text\".";
+{\"type\":\"wait\",\"ms\":500,\"until\":UNTIL?}. TARGET = \"x\",\"y\" (image pixels) with optional \"display\" \
+(default 0), or \"mark\":N,\"observation\":ID, or \"text\":\"visible text\". UNTIL = a Wait Condition, as observe's \
+until: {\"appears\":{\"text\":\"Saved\",\"role\":\"button\"?},\"timeout_ms\":5000} or {\"disappears\":{...}}; the wait \
+step lasts until it holds (after ms). On timeout the batch stops there and fails with wait_timeout, its step and the \
+Observation. All waits and timeouts of one call add up to at most 30000 ms.";
 
 const UNTIL: &str = "Wait Condition: {\"appears\":{\"text\":\"Saved\",\"role\":\"button\"?},\"timeout_ms\":5000} or \
 {\"disappears\":{...}}. Re-reads the Marks (OCR at lock/login screens) until two readings in a row agree, then \

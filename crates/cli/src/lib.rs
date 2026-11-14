@@ -144,18 +144,8 @@ enum Command {
         /// Number the detected Marks on the images and print the Mark table.
         #[arg(long)]
         marks: bool,
-        /// Wait Condition: observe once this text is on screen (fails with wait_timeout otherwise).
-        #[arg(long, conflicts_with = "until_disappears")]
-        until_appears: Option<String>,
-        /// Wait Condition: observe once this text is gone from the screen.
-        #[arg(long)]
-        until_disappears: Option<String>,
-        /// Wait Condition: only Marks with this role count.
-        #[arg(long)]
-        role: Option<String>,
-        /// Wait Condition: give up after this many milliseconds (default 5000, at most 30000).
-        #[arg(long)]
-        timeout_ms: Option<u32>,
+        #[command(flatten)]
+        until: Until,
         /// Directory to save images in.
         #[arg(long, default_value = ".")]
         out: PathBuf,
@@ -346,6 +336,42 @@ enum ActCommand {
     },
     /// Press a key combination, e.g. ctrl+shift+t.
     Key { keys: String },
+    /// Wait this many milliseconds, then (with --until-*) until a Wait Condition holds.
+    Wait {
+        #[arg(long, default_value_t = 0)]
+        ms: u32,
+        #[command(flatten)]
+        until: Until,
+    },
+}
+
+/// A Wait Condition from flags: `--until-appears T` or `--until-disappears T`, optionally `--role`, `--timeout-ms`.
+#[derive(clap::Args)]
+struct Until {
+    /// Wait Condition: until this text is on screen (fails with wait_timeout otherwise).
+    #[arg(long, conflicts_with = "until_disappears")]
+    until_appears: Option<String>,
+    /// Wait Condition: until this text is gone from the screen.
+    #[arg(long)]
+    until_disappears: Option<String>,
+    /// Wait Condition: only Marks with this role count.
+    #[arg(long)]
+    role: Option<String>,
+    /// Wait Condition: give up after this many milliseconds (default 5000, at most 30000).
+    #[arg(long)]
+    timeout_ms: Option<u32>,
+}
+
+impl Until {
+    /// The API `until` object, or None without --until-*.
+    fn json(self) -> Option<Value> {
+        let (condition, text) = match (self.until_appears, self.until_disappears) {
+            (Some(text), _) => ("appears", text),
+            (_, Some(text)) => ("disappears", text),
+            _ => return None,
+        };
+        Some(json!({ condition: { "text": text, "role": self.role }, "timeout_ms": self.timeout_ms }))
+    }
 }
 
 /// Server administration, which a password connection can never do (ADR 0004): these need a User session.
@@ -406,6 +432,7 @@ impl ActCommand {
             }
             ActCommand::Type { text, secret } => json!({ "type": "type", "text": text, "secret": secret }),
             ActCommand::Key { keys } => json!({ "type": "key", "keys": keys }),
+            ActCommand::Wait { ms, until } => json!({ "type": "wait", "ms": ms, "until": until.json() }),
         }
     }
 }
@@ -978,16 +1005,8 @@ where
             }
             (displays, text)
         }
-        Command::Shot { device, display, marks, until_appears, until_disappears, role, timeout_ms, out } => {
-            let mut body = json!({ "actions": [], "display": display_sel(display)?, "marks": marks });
-            let condition = match (until_appears, until_disappears) {
-                (Some(text), _) => Some(("appears", text)),
-                (_, Some(text)) => Some(("disappears", text)),
-                _ => None,
-            };
-            if let Some((condition, text)) = condition {
-                body["until"] = json!({ condition: { "text": text, "role": role }, "timeout_ms": timeout_ms });
-            }
+        Command::Shot { device, display, marks, until, out } => {
+            let body = json!({ "actions": [], "display": display_sel(display)?, "marks": marks, "until": until.json() });
             let obs = api.observe(&device, &body).await?;
             let text = if cli.json { String::new() } else { save_observation(&obs, &out, false)? };
             (obs, text)
